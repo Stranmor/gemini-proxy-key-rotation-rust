@@ -1,0 +1,7 @@
+proxies:
+  - name: "google_genai_proxy"
+    listen_address: "127.0.0.1:8080"
+    target_url: "https://generativelanguage.googleapis.com"
+    api_keys:
+      - "AIzaSyBvT3CgLC0KP5DqD3amWkmHoRHg-YOJv6M"
+    key_parameter_name: "key"
