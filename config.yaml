@@ -1,7 +1,30 @@
-proxies:
-  - name: "google_genai_proxy"
-    listen_address: "127.0.0.1:8080"
+# Server configuration
+server:
+  # Hostname or IP address to bind the proxy server to.
+  host: "127.0.0.1"
+  # Port number for the proxy server to listen on.
+  port: 8080
+
+# List of key groups
+groups:
+  - name: "default" # Name for this group of keys
+    # Target API URL for this group
     target_url: "https://generativelanguage.googleapis.com"
+    # Optional proxy for this group (SOCKS5 with authentication)
+    proxy_url: "socks5://fKPj8u:GKcQNr@134.195.154.156:9074"
+    # List of API keys for this group
     api_keys:
-      - "AIzaSyBvT3CgLC0KP5DqD3amWkmHoRHg-YOJv6M"
-    key_parameter_name: "key"
+      - "AIzaSyAz-UsJfx2zu8o3xruBS3YVBpP3yaXgN9k"
+      - "AIzaSyDmdz-a412pvo8bSxV0dcg2BKf-c5rgwxU"
+      - "AIzaSyAyqDXDgywnd5NoQTALbTrUH_MCp7tse3A"
+      - "AIzaSyAgB7U3uG3e3i_EABGC-3ZyIgmigWVvCWQ"
+      - "AIzaSyBxpxdNfR_rL1IFi0_cxvPQzK7Cw_StCPg"
+      # Add more keys here if you have them
+  # You can add more groups here, each with its own name, target_url, api_keys, and optional proxy_url
+  # - name: "group2"
+  #   target_url: "https://another-api.example.com"
+  #   # No proxy for this group
+  #   # proxy_url: null
+  #   api_keys:
+  #     - "ANOTHER_KEY_1"
+  #     - "ANOTHER_KEY_2"

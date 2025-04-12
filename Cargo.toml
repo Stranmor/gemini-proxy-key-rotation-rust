@@ -1,18 +1,57 @@
 [package]
-name = "api-key-rotator"
+name = "gemini-proxy-key-rotation-rust" # More descriptive name
 version = "0.1.0"
 edition = "2021"
+authors = ["stranmor <stranmor@gmail.com>"] # Author info
+description = "A lightweight, asynchronous HTTP proxy for rotating Google Gemini API keys using Axum."
+license = "MIT" # Matches LICENSE file
+repository = "https://github.com/stranmor/gemini-proxy-key-rotation-rust" # Actual repo URL
+readme = "README.md"
+keywords = ["gemini", "google", "api", "proxy", "axum", "rust", "load-balancing", "key-rotation"]
+categories = ["web-programming::proxy", "api-bindings", "network-programming"]
 
 [dependencies]
-actix-web = "4"
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
-serde = { version = "1", features = ["derive"] }
+# Web framework
+axum = "0.7"
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+# HTTP client
+# Reverted to version 0.12.5 with known necessary features
+reqwest = { version = "0.12.5", features = ["json", "rustls-tls", "stream", "socks"], default-features = false }
+# Serialization/Deserialization
+serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
-thiserror = "1"
-url = "2"
-futures-util = "0.3"
+# Error handling
+thiserror = "1.0"
+# URL parsing
+url = "2.5" # Keep for config validation
+# Async stream utilities
+futures-util = "0.3" # Needed for stream mapping
+# Logging and tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-parking_lot = "0.12"
-clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.8"
+# Command-line argument parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Standard library types like Arc, AtomicUsize, Mutex/RwLock are used directly
+
+# Add lint configuration for better code quality checks
+# See: https://doc.rust-lang.org/clippy/lints.html
+[lints.clippy]
+pedantic = "warn" # Enable more lints, but as warnings
+nursery = "warn"
+# Examples of disabling specific lints if needed:
+# module_name_repetitions = "allow"
+# cast_possible_truncation = "allow"
+#missing_errors_doc = "allow" # Allow missing doc comments for errors temporarily
+#missing_panics_doc = "allow" # Allow missing doc comments for panics temporarily
+
+[profile.release]
+lto = true           # Enable Link Time Optimization
+codegen-units = 1    # Reduce parallelism for better optimization
+strip = true         # Strip symbols for smaller binary size
+opt-level = "z"      # Optimize for size ("s" is also an option)
+panic = "abort"      # Abort on panic for smaller binary

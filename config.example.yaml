@@ -1,0 +1,24 @@
+# Server configuration
+server:
+  # Hostname or IP address to bind the proxy server to.
+  # "0.0.0.0" binds to all available network interfaces.
+  # "127.0.0.1" binds only to the local loopback interface.
+  host: "127.0.0.1"
+
+  # Port number for the proxy server to listen on.
+  port: 8080
+
+# Target API URL (Optional)
+# The base URL of the Google Gemini API.
+# If omitted, defaults to "https://generativelanguage.googleapis.com".
+# You might change this if Google provides regional endpoints in the future.
+# target_url: "https://generativelanguage.googleapis.com"
+
+# List of your Google Gemini API keys.
+# The proxy will rotate through these keys using a round-robin strategy.
+# Add at least one key. Replace the placeholder(s) with your actual keys
+# when creating your `config.yaml`.
+api_keys:
+  - "YOUR_GEMINI_API_KEY_1"
+  - "YOUR_GEMINI_API_KEY_2"
+  # - "YOUR_GEMINI_API_KEY_3" # Add more keys if needed
