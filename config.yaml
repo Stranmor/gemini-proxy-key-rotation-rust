@@ -19,6 +19,13 @@ groups:
       - "AIzaSyAyqDXDgywnd5NoQTALbTrUH_MCp7tse3A"
       - "AIzaSyAgB7U3uG3e3i_EABGC-3ZyIgmigWVvCWQ"
       - "AIzaSyBxpxdNfR_rL1IFi0_cxvPQzK7Cw_StCPg"
+      - "AIzaSyD0uA1AtHYqidg47FXnKCmE7Vvm2wsuzLU"
+      - "AIzaSyCJWYJZGXhn_KGyO3ldD_BEIbtivOTK8gU"
+      - "AIzaSyCzXF6W1bYhL1-6SbWdvrl5v3DFrJ_8qUE"
+      - "AIzaSyDAVzQ1e3k96yPeYPVIo8Z3TJI3xmOlINQ"
+      - "AIzaSyC2TfSHuJuAinPcA_dy3mlXahlAJ_h-_V8"
+      - "AIzaSyA4zX8kBUlNGeshR1Y3TLOQbt05jVygkl4"
+      - "AIzaSyCg8RiGjdKYILpR_YbxUK6Yq7i0yRZtAjs"
       # Add more keys here if you have them
   # You can add more groups here, each with its own name, target_url, api_keys, and optional proxy_url
   # - name: "group2"
