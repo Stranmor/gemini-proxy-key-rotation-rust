@@ -17,14 +17,14 @@ axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
 # HTTP client
 # Reverted to version 0.12.5 with known necessary features
-reqwest = { version = "0.12.5", features = ["json", "rustls-tls", "stream", "socks"], default-features = false }
+reqwest = { version = "0.12.5", features = ["json", "native-tls", "stream", "socks"], default-features = false }
 # Serialization/Deserialization
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 # Error handling
 thiserror = "1.0"
 # URL parsing
-url = "2.5" # Keep for config validation
+url = "2" # Keep for config validation
 # Async stream utilities
 futures-util = "0.3" # Needed for stream mapping
 # Logging and tracing
