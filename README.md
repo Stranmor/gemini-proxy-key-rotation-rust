@@ -112,21 +112,18 @@ The proxy will automatically:
 Assuming the proxy is running on `http://localhost:8080`:
 
 ```sh
-# Example request to the standard Gemini API endpoint via the proxy
-curl --request POST \
-  --url http://localhost:8080/v1beta/models/gemini-pro:generateContent \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "contents": [{"parts":[{"text": "Explain how proxies work."}]}]
-  }'
+curl --request GET \
+  --url http://localhost:8080/v1beta/openai/models \
+  --header 'Authorization: Bearer GEMINI_API_KEY'
+```
 
-# Example request for OpenAI compatibility endpoint via the proxy
+```sh
 curl --request POST \
   --url http://localhost:8080/v1beta/openai/chat/completions \
-  --header 'Authorization: Bearer DUMMY_KEY' \
+  --header 'Authorization: Bearer GEMINI_API_KEY' \
   --header 'Content-Type: application/json' \
   --data '{
-    "model": "gemini-1.5-flash",
+    "model": "gemini-2.0-flash",
     "messages": [
       {"role": "user", "content": "hi"}
     ]
