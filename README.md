@@ -32,7 +32,6 @@ This proxy allows you to distribute requests across multiple Gemini API keys usi
     git clone https://github.com/stranmor/gemini-proxy-key-rotation-rust.git
     cd gemini-proxy-key-rotation-rust
     ```
-    *(Replace `stranmor/gemini-proxy-key-rotation-rust` with the actual path if forked)*
 
 2.  **Create your configuration file:**
     -   Copy the example:
