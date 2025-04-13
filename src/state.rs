@@ -2,7 +2,7 @@
 
 // Removed KeyState and FlattenedKeyInfo definitions (moved to key_manager.rs)
 use crate::config::AppConfig;
-use crate::error::Result;
+use crate::error::{AppError, Result}; // Re-added AppError
 // Import KeyManager
 use crate::key_manager::KeyManager;
 use reqwest::Client;
@@ -12,7 +12,10 @@ use tracing::info; // Keep info for logging
 
 // KeyState and FlattenedKeyInfo structs removed.
 
-/// Shared application state accessible by handlers.
+/// Represents the shared application state that is accessible by all Axum handlers.
+///
+/// This struct holds instances of shared resources like the HTTP client and the key manager.
+/// It is typically wrapped in an `Arc` for thread-safe sharing across asynchronous tasks.
 #[derive(Debug)]
 pub struct AppState {
     // Fields related to keys are removed.
@@ -45,7 +48,7 @@ impl AppState {
             .pool_idle_timeout(Duration::from_secs(90))
             // Set pool size based on total non-empty keys, with a minimum fallback
             .pool_max_idle_per_host(total_key_count.max(10))
-            .build()?; // Returns Result<Client, reqwest::Error>, handled by AppError::Reqwest
+            .build().map_err(AppError::from)?;
         info!("HTTP client created successfully.");
 
         // --- Key Manager Initialization ---
