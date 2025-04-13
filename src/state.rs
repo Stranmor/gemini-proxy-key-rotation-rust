@@ -48,6 +48,7 @@ impl AppState {
             .pool_idle_timeout(Duration::from_secs(90))
             // Set pool size based on total non-empty keys, with a minimum fallback
             .pool_max_idle_per_host(total_key_count.max(10))
+            .tcp_keepalive(Some(Duration::from_secs(60))) // Added TCP keep-alive
             .build().map_err(AppError::from)?;
         info!("HTTP client created successfully.");
 

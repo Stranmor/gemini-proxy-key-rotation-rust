@@ -14,6 +14,7 @@ use axum::{
 };
 use futures_util::TryStreamExt;
 use reqwest::{Client, Proxy};
+use std::time::Duration; // Added Duration for timeout settings
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 
@@ -199,7 +200,11 @@ async fn send_request_with_optional_proxy(
                 match proxy_obj_result {
                     Ok(proxy) => {
                         debug!(proxy_url = %proxy_str, scheme = %scheme, group = %group_name, "Attempting to build client with proxy");
-                        match Client::builder().proxy(proxy).build() {
+                        match Client::builder()
+                            .proxy(proxy)
+                            .connect_timeout(Duration::from_secs(10)) // Added connect timeout
+                            .timeout(Duration::from_secs(300))       // Added request timeout
+                            .build() {
                              Ok(proxy_client) => {
                                 debug!("Sending request via proxy client");
                                 proxy_client
