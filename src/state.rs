@@ -44,7 +44,7 @@ impl AppState {
         // --- HTTP Client Initialization ---
         let http_client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60)) // Adjust timeout as needed
+            .timeout(Duration::from_secs(300)) // Increased timeout to 5 minutes
             .pool_idle_timeout(Duration::from_secs(90))
             // Set pool size based on total non-empty keys, with a minimum fallback
             .pool_max_idle_per_host(total_key_count.max(10))
