@@ -62,7 +62,7 @@ impl AppState {
         let total_key_count: usize = config.groups.iter().map(|g| g.api_keys.len()).sum();
 
         let http_client = Client::builder()
-            .use_rustls_tls()
+
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60)) // Adjust timeout as needed
             .pool_idle_timeout(Duration::from_secs(90))

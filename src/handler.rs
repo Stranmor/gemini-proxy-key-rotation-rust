@@ -7,10 +7,10 @@ use axum::{
     BoxError,
 };
 use futures_util::TryStreamExt;
-use reqwest::RequestBuilder; // Import Proxy and explicitly RequestBuilder
+use reqwest::{Client, Proxy}; // Removed RequestBuilder, added Client
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, trace, warn};
-// Import Url for parsing proxy scheme
+use url::Url; // Import Url for parsing proxy scheme
 
 // Hop-by-hop headers that should not be forwarded
 const HOP_BY_HOP_HEADERS: &[&str] = &[
@@ -81,11 +81,12 @@ pub async fn proxy_handler(
     };
     debug!(target = %target_url, "Constructed target URL for request");
 
-    // 3. Prepare the outgoing request for reqwest
+    // 3. Prepare the outgoing request parts
     let outgoing_method = req.method().clone();
-    let request_headers = req.headers().clone();
+    let request_headers = req.headers().clone(); // Clone original headers
     let outgoing_headers = build_forward_headers(&request_headers, &api_key, target_url.host());
 
+    // Create the request body stream early
     let incoming_body = req.into_body();
     let outgoing_body_stream = incoming_body.into_data_stream().map_err(|e| {
         BoxError::from(std::io::Error::new(
@@ -95,21 +96,15 @@ pub async fn proxy_handler(
     });
     let outgoing_reqwest_body = reqwest::Body::wrap_stream(outgoing_body_stream);
 
-    let http_client = state.client();
-    // Start building the request
-    let outgoing_request_builder: RequestBuilder = http_client
-        .request(outgoing_method.clone(), target_url.to_string())
-        .headers(outgoing_headers);
+    // 4. Build and send the request using the appropriate client (with or without proxy)
+    info!(method = %outgoing_method, url = %target_url, api_key_preview=%request_key_preview, group=%group_name, proxy_configured=proxy_url_option.is_some(), "Forwarding request to target");
 
-    // --- Apply Proxy if configured for the group ---
-    // TEMPORARILY COMMENTED OUT TO DEBUG COMPILATION
-    /*
-
-    if let Some(proxy_url_str) = &proxy_url_option {
+    let target_response_result = if let Some(proxy_url_str) = &proxy_url_option {
+        // --- Attempt to use proxy ---
         match Url::parse(proxy_url_str) {
             Ok(parsed_proxy_url) => {
                 let scheme = parsed_proxy_url.scheme().to_lowercase();
-                let proxy_to_apply: Option<Result<Proxy, reqwest::Error>> = match scheme.as_str() {
+                let proxy_obj_result: Option<Result<Proxy, reqwest::Error>> = match scheme.as_str() {
                     "http" => Some(Proxy::http(proxy_url_str)),
                     "https" => Some(Proxy::https(proxy_url_str)),
                     "socks5" => Some(Proxy::all(proxy_url_str)), // Use all for socks5
@@ -119,34 +114,71 @@ pub async fn proxy_handler(
                     }
                 };
 
-                if let Some(proxy_result) = proxy_to_apply {
-                    match proxy_result {
-                        Ok(proxy) => {
-                            // This is the problematic line
-                            // outgoing_request_builder = outgoing_request_builder.proxy(proxy);
-                            debug!(proxy_url = %proxy_url_str, scheme = %scheme, group = %group_name, "Applying outgoing proxy for group (CODE COMMENTED OUT)");
+                if let Some(Ok(proxy)) = proxy_obj_result {
+                    debug!(proxy_url = %proxy_url_str, scheme = %scheme, group = %group_name, "Attempting to build client with proxy");
+                    // Build a NEW client with this proxy
+                    match Client::builder().proxy(proxy).build() {
+                        Ok(proxy_client) => {
+                             debug!("Sending request via proxy client");
+                             proxy_client
+                                .request(outgoing_method, target_url.to_string())
+                                .headers(outgoing_headers)
+                                .body(outgoing_reqwest_body)
+                                .send()
+                                .await
                         }
                         Err(e) => {
-                            warn!(proxy_url = %proxy_url_str, group = %group_name, scheme = %scheme, error = %e, "Failed to create proxy object from URL. Proceeding without proxy.");
+                            error!(proxy_url = %proxy_url_str, group = %group_name, error = %e, "Failed to build reqwest client with proxy. Falling back to default client.");
+                            // Fallback to default client if proxy client build fails
+                            state.client()
+                                .request(outgoing_method, target_url.to_string())
+                                .headers(outgoing_headers)
+                                .body(outgoing_reqwest_body)
+                                .send()
+                                .await
                         }
                     }
+                } else if let Some(Err(e)) = proxy_obj_result {
+                     warn!(proxy_url = %proxy_url_str, group = %group_name, scheme = %scheme, error = %e, "Failed to create proxy object from URL. Proceeding without proxy.");
+                     // Send using default client if proxy creation failed
+                     state.client()
+                        .request(outgoing_method, target_url.to_string())
+                        .headers(outgoing_headers)
+                        .body(outgoing_reqwest_body)
+                        .send()
+                        .await
+                } else {
+                    // Send using default client if scheme was unsupported
+                    state.client()
+                        .request(outgoing_method, target_url.to_string())
+                        .headers(outgoing_headers)
+                        .body(outgoing_reqwest_body)
+                        .send()
+                        .await
                 }
             }
             Err(e) => {
                  warn!(proxy_url = %proxy_url_str, group = %group_name, error = %e, "Failed to parse proxy URL string. Proceeding without proxy.");
+                 // Send using default client if URL parsing failed
+                 state.client()
+                    .request(outgoing_method, target_url.to_string())
+                    .headers(outgoing_headers)
+                    .body(outgoing_reqwest_body)
+                    .send()
+                    .await
             }
         }
-    }
-    */
-    // --- End Proxy Application ---
-
-    // Add the body
-    let final_request_builder = outgoing_request_builder.body(outgoing_reqwest_body);
-
-    // 4. Send the request using the final builder
-    // Use proxy_url_option.is_some() to log if proxy *would* have been used
-    info!(method = %outgoing_method, url = %target_url, api_key_preview=%request_key_preview, group=%group_name, proxy_configured=proxy_url_option.is_some(), "Forwarding request to target");
-    let target_response_result = final_request_builder.send().await;
+    } else {
+        // --- Send request without proxy using shared client ---
+        debug!("Sending request via default client (no proxy configured for group)");
+        state.client()
+            .request(outgoing_method, target_url.to_string())
+            .headers(outgoing_headers)
+            .body(outgoing_reqwest_body)
+            .send()
+            .await
+    };
+    // --- End sending request ---
 
     // 5. Process the response from the target
     match target_response_result {
@@ -188,7 +220,7 @@ pub async fn proxy_handler(
             } else if e.is_timeout() {
                 StatusCode::GATEWAY_TIMEOUT
             } else if e.is_request() {
-                StatusCode::BAD_GATEWAY
+                StatusCode::BAD_GATEWAY // Could be a bad request generated by us
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
