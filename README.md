@@ -110,6 +110,19 @@ curl --request POST \
 
 The proxy handles adding the `x-goog-api-key` header. Do **not** include your own API key header when sending requests to the proxy.
 
+## Using with Roo Code / Cline
+
+To use this proxy with Roo Code or Cline:
+
+1.  In the API configuration settings, select **"OpenAI Compatible"** as the **API Provider**.
+2.  Set the **Base URL** to the address where the proxy is running, including the `/v1beta/openai` path. For example: `http://localhost:8080/v1beta/openai` (replace `localhost:8080` if you configured a different host or port).
+3.  For the **OpenAI API Key**, you can enter **any non-empty value**. The proxy manages the actual Gemini keys internally, but the OpenAI Compatible setting usually requires a value in this field.
+
+Example Configuration (based on the provided image):
+![Roo Code Configuration Example](https://imgur.com/a/kpKJAmo) 
+
+*Note: The current implementation uses a single round-robin pool for all requests. Future versions plan to include proxy endpoints specific to each API key set if multiple sets are configured.*
+
 ## Project Structure
 
 ```
