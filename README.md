@@ -7,13 +7,14 @@
 
 **A lightweight, asynchronous HTTP proxy for rotating Google Gemini (Generative Language API) API keys.** Built with Rust, Axum, and Tokio for high performance and reliability.
 
-This proxy allows you to distribute requests across multiple Gemini API keys using a round-robin strategy, helping to manage rate limits and improve availability.
+This proxy allows you to distribute requests across multiple Gemini API keys (organized in groups) using a round-robin strategy, helping to manage rate limits and improve availability. It also supports routing requests through different upstream proxies on a per-group basis.
 
 ## Features
 
--   Proxy requests to the Google Gemini API (`generativelanguage.googleapis.com`).
--   Supports multiple API keys.
--   Automatic round-robin key rotation for each incoming request.
+-   Proxy requests to the Google Gemini API (`generativelanguage.googleapis.com`) or other configured target URLs.
+-   Supports multiple **groups** of API keys, each with its own target URL and optional upstream proxy.
+-   Automatic round-robin key rotation for each incoming request across **all keys** in the configuration.
+-   Handles `429 Too Many Requests` errors by temporarily disabling the rate-limited key until the next day (10:00 Moscow Time).
 -   Configurable host and port binding.
 -   Asynchronous handling of requests using Axum and Tokio.
 -   Simple YAML configuration.
@@ -38,7 +39,7 @@ This proxy allows you to distribute requests across multiple Gemini API keys usi
         ```sh
         cp config.example.yaml config.yaml
         ```
-    -   Edit `config.yaml` and add your Gemini API keys under the `api_keys` list.
+    -   Edit `config.yaml` and add your Gemini API keys under the `api_keys` list within at least one group. Configure `target_url` and optional `proxy_url` for each group as needed.
     -   **Important:** `config.yaml` is listed in `.gitignore` to prevent accidental commits of your keys. **Never commit your API keys to version control.**
 
 3.  **Build:**
@@ -56,7 +57,7 @@ This proxy allows you to distribute requests across multiple Gemini API keys usi
 
 ## Configuration
 
-Configuration is managed through the `config.yaml` file (or `config.example.yaml` as a template).
+Configuration is managed through the `config.yaml` file (refer to `config.example.yaml` for detailed comments).
 
 ```yaml
 # config.yaml
@@ -64,50 +65,75 @@ server:
   host: "127.0.0.1"  # IP address to bind the server to
   port: 8080        # Port to listen on
 
-api_keys:
-  - "YOUR_API_KEY_1"
-  - "YOUR_API_KEY_2"
-  # Add more keys as needed
+# List of key groups. Requires at least one group.
+groups:
+  - name: "default-gemini" # Unique name for this group
+    # Target API URL for this group. Defaults to Google's global endpoint if omitted.
+    target_url: "https://generativelanguage.googleapis.com"
+    # Optional outgoing proxy URL for this group (http, https, socks5 supported)
+    # proxy_url: "socks5://user:pass@your-proxy.com:1080"
+    # List of API keys for this group. Rotation happens across keys from ALL groups.
+    api_keys:
+      - "YOUR_GEMINI_API_KEY_1"
+      - "YOUR_GEMINI_API_KEY_2"
+      # Add more keys as needed
+
+  # Example of another group targeting a different endpoint or using a different proxy
+  # - name: "special-endpoint"
+  #   target_url: "https://special-regional-api.googleapis.com"
+  #   proxy_url: "http://another-proxy.example.com:8888"
+  #   api_keys:
+  #     - "YOUR_SPECIAL_API_KEY_3"
 ```
 
 -   `server.host`: The hostname or IP address the proxy server will bind to.
 -   `server.port`: The port the proxy server will listen on.
--   `api_keys`: A list of your Google Gemini API keys. The proxy will rotate through these keys for outgoing requests.
+-   `groups`: A list of key groups. Each group requires:
+    -   `name`: A unique identifier for the group.
+    -   `api_keys`: A list of API keys associated with this group.
+    -   `target_url` (Optional): The upstream API endpoint URL for this group. Defaults to `https://generativelanguage.googleapis.com`.
+    -   `proxy_url` (Optional): An upstream proxy URL (http, https, or socks5) to use for requests made with keys from this group.
 
 ## API Usage
 
-Once the proxy is running (e.g., on `http://127.0.0.1:8080`), send your Gemini API requests to the proxy instead of directly to `https://generativelanguage.googleapis.com`.
+Once the proxy is running (e.g., on `http://127.0.0.1:8080`), send your API requests to the proxy **instead of** directly to the target API (e.g., `https://generativelanguage.googleapis.com`).
 
 The proxy will automatically:
 1.  Receive your request.
-2.  Select the next API key from the `api_keys` list (round-robin).
-3.  Add the `x-goog-api-key` header with the selected key.
-4.  Forward the request (including path, query parameters, headers, and body) to `https://generativelanguage.googleapis.com`.
-5.  Stream the response back to you.
+2.  Select the next available API key from **all configured keys** across all groups (round-robin), skipping any keys currently marked as rate-limited.
+3.  Determine the correct `target_url` and optional `proxy_url` based on the group the selected key belongs to.
+4.  Add the `x-goog-api-key` header (and `Authorization: Bearer` for compatibility) with the selected key.
+5.  Forward the request (including path, query parameters, modified headers, and body) to the determined `target_url`, potentially via the group's `proxy_url`.
+6.  Stream the response back to you.
+7.  If the target API returns `429 Too Many Requests`, the proxy marks the used key as rate-limited for the day.
+
 **Example using `curl`:**
 
 Assuming the proxy is running on `http://localhost:8080`:
 
 ```sh
-curl --request GET \
-  --url http://localhost:8080/v1beta/openai/models \
-  --header 'Authorization: Bearer GEMINI_API_KEY'
-```
-
-```sh
+# Example request to the standard Gemini API endpoint via the proxy
 curl --request POST \
-  --url http://localhost:8080/v1beta/openai/chat/completions \
-  --header 'Authorization: Bearer GEMINI_API_KEY' \
+  --url http://localhost:8080/v1beta/models/gemini-pro:generateContent \
   --header 'Content-Type: application/json' \
   --data '{
-    "model": "gemini-2.0-flash",
+    "contents": [{"parts":[{"text": "Explain how proxies work."}]}]
+  }'
+
+# Example request for OpenAI compatibility endpoint via the proxy
+curl --request POST \
+  --url http://localhost:8080/v1beta/openai/chat/completions \
+  --header 'Authorization: Bearer DUMMY_KEY' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "model": "gemini-1.5-flash",
     "messages": [
       {"role": "user", "content": "hi"}
     ]
   }'
 ```
 
-The proxy handles adding the `x-goog-api-key` header. Do **not** include your own API key header when sending requests to the proxy.
+The proxy handles adding the necessary `x-goog-api-key` header. Do **not** include your own API key header when sending requests to the proxy, except for compatibility modes like OpenAI where a dummy `Authorization` header might be needed by the client.
 
 ## Using with Roo Code / Cline
 
@@ -124,7 +150,7 @@ Example Configuration (based on the provided image):
 
 ```
 .
-├── .github/workflows/rust.yml  # Example CI workflow (add this!)
+├── .github/workflows/rust.yml  # Example CI workflow
 ├── .gitignore
 ├── Cargo.lock
 ├── Cargo.toml
@@ -132,12 +158,17 @@ Example Configuration (based on the provided image):
 ├── config.yaml                 # Your configuration (ignored by git)
 ├── LICENSE
 ├── README.md                   # This file
+├── examples/                   # Directory for usage examples
 ├── src/
-│   ├── config.rs               # Configuration loading
-│   ├── handler.rs              # Request handling logic
-│   ├── main.rs                 # Application entry point
-│   └── state.rs                # Shared application state (keys, client)
-└── target/                     # Build artifacts (ignored by git)
+│   ├── config.rs               # Configuration loading and structs
+│   ├── error.rs                # Custom application error types (AppError)
+│   ├── handler.rs              # Axum request handler (receives request, calls key_manager & proxy)
+│   ├── key_manager.rs          # API key storage, rotation, and state management (KeyManager)
+│   ├── main.rs                 # Application entry point, setup, validation
+│   ├── proxy.rs                # Core request forwarding logic to target API
+│   └── state.rs                # Shared application state (AppState holding KeyManager, HttpClient)
+├── target/                     # Build artifacts (ignored by git)
+└── tests/                      # Directory for integration tests
 ```
 
 ## Contributing
@@ -150,7 +181,7 @@ Key areas for contribution:
 -   Adding more sophisticated key rotation strategies (e.g., based on usage or errors).
 -   Implementing caching.
 -   Adding metrics and monitoring endpoints.
--   Improving test coverage.
+-   Improving test coverage (especially integration tests).
 
 ## Security
 

@@ -1,7 +1,9 @@
+// src/config.rs
 use serde::Deserialize;
-use std::{fs::File, io::Read, path::Path};
-use thiserror::Error;
+use std::{fs, io, path::Path}; // Use fs::read_to_string
+// Removed use thiserror::Error;
 // Keep Url for validation
+use crate::error::{AppError, Result}; // Import AppError and Result
 
 /// Represents a group of API keys with optional proxy settings.
 #[derive(Debug, Deserialize, Clone)]
@@ -38,74 +40,30 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-/// Defines errors that can occur during configuration loading and validation.
-#[derive(Error, Debug)]
-pub enum ConfigError {
-    #[error("Failed to open config file '{path}': {source}")]
-    FileOpen {
-        path: String,
-        source: std::io::Error,
-    },
-
-    #[error("Failed to read config file '{path}': {source}")]
-    FileRead {
-        path: String,
-        source: std::io::Error,
-    },
-
-    #[error("Failed to parse config file '{path}': {source}")]
-    Parse {
-        path: String,
-        source: serde_yaml::Error,
-    },
-
-    #[error("Validation error in config file '{path}': {message}")]
-    Validation { path: String, message: String },
-}
+// ConfigError enum removed, using AppError now.
 
 /// Provides the default Gemini API URL.
 fn default_target_url() -> String {
     "https://generativelanguage.googleapis.com".to_string()
 }
 
-/// Loads and validates the application configuration from the specified YAML file.
-/// Validation logic will be updated in main.rs or a dedicated validation function later.
-pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
+/// Loads the application configuration from the specified YAML file.
+/// Performs basic parsing only; detailed validation should occur elsewhere.
+pub fn load_config(path: &Path) -> Result<AppConfig> { // Changed return type
     let path_str = path.display().to_string();
 
-    let mut file = File::open(path).map_err(|e| ConfigError::FileOpen {
-        path: path_str.clone(),
-        source: e,
-    })?;
+    // Reading the file content using AppError::Io
+    let contents = fs::read_to_string(path).map_err(|e| {
+        AppError::Io(io::Error::new( // Provide context within the error
+            e.kind(),
+            format!("Failed to read config file '{}': {}", path_str, e),
+        ))
+    })?; // Keep using ? with the new Result type
 
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .map_err(|e| ConfigError::FileRead {
-            path: path_str.clone(),
-            source: e,
-        })?;
+    // Parsing YAML using AppError::YamlParsing (#[from] handles this)
+    let config: AppConfig = serde_yaml::from_str(&contents)?; // Use ? directly
 
-    let config: AppConfig = serde_yaml::from_str(&contents).map_err(|e| ConfigError::Parse {
-        path: path_str.clone(),
-        source: e,
-    })?;
-
-    // Basic validation (more detailed validation will be in main.rs or called from there)
-    if config.server.port == 0 {
-        return Err(ConfigError::Validation {
-            path: path_str,
-            message: "Server port cannot be 0.".to_string(),
-        });
-    }
-    if config.groups.is_empty() {
-        return Err(ConfigError::Validation {
-            path: path_str,
-            message: "The 'groups' list cannot be empty.".to_string(),
-        });
-    }
-
-    // Note: Further validation (unique group names, non-empty keys per group, valid URLs)
-    // should be performed after loading, likely in main.rs.
+    // Basic validation removed from here. It's handled in main.rs.
 
     Ok(config)
 }
