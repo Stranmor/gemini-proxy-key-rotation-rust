@@ -13,11 +13,30 @@ use axum::{
     // Removed unused imports: Body, header*, Method, Uri, BoxError, futures_util, reqwest, url
 };
 use std::sync::Arc;
-use tracing::{debug, info, instrument, warn, error}; // Keep logging imports, added error
+use tracing::{debug, info, warn, error}; // Keep logging imports, added error
 
 // HOP_BY_HOP_HEADERS and helper functions removed (moved to proxy.rs)
 
-#[instrument(skip(state, req), fields(method = %req.method(), uri = %req.uri()))]
+/// The main Axum handler function that processes incoming requests.
+///
+/// This function acts as the entry point for proxied requests. It performs the following steps:
+/// 1. Retrieves the next available API key using `KeyManager` from the shared `AppState`.
+/// 2. If no key is available (all are rate-limited), returns a `SERVICE_UNAVAILABLE` error.
+/// 3. Calls `proxy::forward_request` to handle the actual request forwarding logic,
+///    passing the original request, HTTP client, and selected key information.
+/// 4. Checks the response from the upstream service.
+/// 5. If the upstream response is `429 Too Many Requests`, it marks the used key as limited
+///    via the `KeyManager`.
+/// 6. Returns the response (or error) to the client.
+///
+/// # Arguments
+///
+/// * `State(state)`: The shared application state (`Arc<AppState>`).
+/// * `req`: The incoming `axum::extract::Request`.
+///
+/// # Returns
+///
+/// Returns a `Result<Response, AppError>` which Axum converts into an HTTP response.
 pub async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     req: Request, // Request is now passed to forward_request

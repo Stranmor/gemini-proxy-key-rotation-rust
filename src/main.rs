@@ -13,15 +13,15 @@ use state::AppState;
 use std::{collections::HashSet, net::SocketAddr, path::PathBuf, process, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{error, info, warn, Level};
+use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber}; // Added EnvFilter
 use url::Url; // Keep for validation
 
-/// Command line arguments
+/// Defines command-line arguments for the application using `clap`.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
-    /// Path to the configuration file
+    /// Specifies the path to the YAML configuration file.
     #[arg(short, long, value_name = "FILE", default_value = "config.yaml")]
     config: PathBuf,
 }
@@ -57,9 +57,9 @@ async fn main() {
         Ok(cfg) => cfg,
         Err(e) => {
             error!(
-                "Failed to load configuration from {}: {}",
-                config_path.display(),
-                e
+                path = %config_path.display(),
+                error = ?e,
+                "Failed to load configuration"
             );
             process::exit(1);
         }
@@ -92,7 +92,7 @@ async fn main() {
     let app_state = match AppState::new(&app_config) {
         Ok(state) => Arc::new(state),
         Err(e) => {
-            error!("Failed to initialize application state: {}", e);
+            error!(error = ?e, "Failed to initialize application state");
             process::exit(1);
         }
     };
@@ -139,7 +139,17 @@ async fn main() {
     info!("Server shut down gracefully.");
 }
 
-/// Validates the loaded application configuration. Logs errors and returns false if invalid.
+/// Performs validation checks on the loaded `AppConfig`.
+///
+/// Checks include:
+/// - Non-empty server host and non-zero port.
+/// - Presence of at least one group.
+/// - Unique and non-empty group names.
+/// - Presence of non-empty `api_keys` within each group.
+/// - Validity of `target_url` and optional `proxy_url` formats.
+/// - Presence of at least one valid API key across all groups.
+///
+/// Logs errors or warnings using `tracing` and returns `true` if valid, `false` otherwise.
 // (Keep validate_config function as is - it seems correct)
 fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
     let mut has_errors = false;

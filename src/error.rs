@@ -7,9 +7,14 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
+/// Represents the possible errors that can occur within the application.
+///
+/// Implements `IntoResponse` to automatically convert errors into appropriate
+/// HTTP error responses with JSON bodies.
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Configuration error: {0}")]
+    #[allow(dead_code)]
     Config(String),
 
     #[error("Reqwest HTTP client error: {0}")]
@@ -27,15 +32,18 @@ pub enum AppError {
     #[error("No available API keys")]
     NoAvailableKeys,
 
+    #[allow(dead_code)] // Temporarily allow unused variant
     #[error("Upstream service error: {status} - {body}")]
     UpstreamServiceError { status: StatusCode, body: String },
 
+    #[allow(dead_code)] // Temporarily allow unused variant
     #[error("Request body processing error: {0}")]
     RequestBodyError(String), // More specific than generic Reqwest error
 
     #[error("Response body processing error: {0}")]
     ResponseBodyError(String), // More specific than generic Reqwest error
 
+    #[allow(dead_code)] // Temporarily allow unused variant
     #[error("Invalid API key provided by client")]
     InvalidClientApiKey, // If you add client-side key validation
 

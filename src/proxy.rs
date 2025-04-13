@@ -1,23 +1,22 @@
 // src/proxy.rs
 
 use crate::{
-    error::{AppError, Result},
+    error::{AppError, Result}, // Use the crate's Result alias
     key_manager::FlattenedKeyInfo, // Import FlattenedKeyInfo from key_manager
 
 };
 use axum::{
     body::Body,
     extract::Request, // Use original Request type
-    http::{header, HeaderMap, HeaderValue, Method, Uri},
+    http::{header, HeaderMap, HeaderValue, Method, Uri}, // Added StatusCode
     response::Response,
-    BoxError,
+
 };
 use futures_util::TryStreamExt;
 use reqwest::{Client, Proxy};
-use tracing::{debug, error, info, trace, warn}; // Removed instrument as it's on handler
+use tracing::{debug, error, info, trace, warn};
 use url::Url;
 
-// --- Constants and Helpers moved from handler.rs ---
 
 // Hop-by-hop headers that should not be forwarded
 const HOP_BY_HOP_HEADERS: &[&str] = &[
@@ -35,23 +34,39 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
     "x-goog-api-key",
 ];
 
-/// Forwards the incoming request to the target URL specified in KeyInfo,
-/// handling proxy settings and header manipulation.
-/// Returns the processed response from the target or an AppError.
+
+/// Takes an incoming client request and forwards it to the appropriate upstream target.
+///
+/// This function orchestrates the core proxying logic:
+/// - Determines the target URL based on the incoming request path and the key's group info.
+/// - Builds the outgoing request headers, filtering hop-by-hop headers and adding authentication.
+/// - Creates a `reqwest::Body` from the incoming Axum request body.
+/// - Calls `send_request_with_optional_proxy` to actually send the request using the correct HTTP client (direct or proxied).
+/// - Processes the upstream response, filtering hop-by-hop headers.
+/// - Streams the upstream response body back to the client.
+///
+/// Rate limit handling (checking for 429) is delegated to the calling handler (`proxy_handler`).
+///
+/// # Arguments
+///
+/// * `http_client` - A reference to the shared `reqwest::Client` instance.
+/// * `key_info` - A reference to the `FlattenedKeyInfo` for the selected API key.
+/// * `req` - The incoming `axum::extract::Request`.
+///
+/// # Returns
+///
+/// Returns a `Result<Response, AppError>` containing the response to be sent to the client, or an error.
 pub async fn forward_request(
-    // Take base client and key info by reference
-    http_client: &Client, // Pass the base client directly
+    http_client: &Client,
     key_info: &FlattenedKeyInfo,
-    req: Request, // Consume the original request
-) -> Result<Response> {
-    // Extract details from the selected key info
-    let api_key = &key_info.key; // Borrow key
+    req: Request,
+) -> Result<Response> { // Use crate::error::Result alias
+    let api_key = &key_info.key;
     let target_base_url_str = &key_info.target_url;
-    let proxy_url_option = key_info.proxy_url.as_deref(); // Borrow proxy URL string option
-    let group_name = &key_info.group_name; // Borrow group name
+    let proxy_url_option = key_info.proxy_url.as_deref();
+    let group_name = &key_info.group_name;
     let request_key_preview = format!("{}...", api_key.chars().take(4).collect::<String>());
 
-    // 2. Construct the Target URL
     let original_uri = req.uri();
     let path_and_query = original_uri.path_and_query().map_or("/", |pq| pq.as_str());
     let target_url_str = format!(
@@ -69,51 +84,52 @@ pub async fn forward_request(
     })?;
     debug!(target = %target_url, "Constructed target URL for request");
 
-    // 3. Prepare the outgoing request parts
     let outgoing_method = req.method().clone();
     let request_headers = req.headers().clone();
     let outgoing_headers = build_forward_headers(&request_headers, api_key, target_url.host());
 
     // Convert Axum body to Reqwest body using wrap_stream
-    let outgoing_body_stream = req.into_body().into_data_stream().map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Axum body read error: {}", e),
-        )
+    // Note: Body::wrap_stream requires the stream item to be Result<Bytes, Error>
+    // where Error implements std::error::Error. Let's ensure our mapping does that.
+     let outgoing_body_stream = req.into_body().into_data_stream().map_err(|e| {
+        // Box the error to satisfy the trait bounds if necessary,
+        // or convert to a concrete error type like std::io::Error.
+        Box::new(e) as Box<dyn std::error::Error + Send + Sync> // Convert to boxed dyn Error
     });
     let outgoing_reqwest_body = reqwest::Body::wrap_stream(outgoing_body_stream);
 
-    // 4. Build and send the request using the helper function
+
     info!(method = %outgoing_method, url = %target_url, api_key_preview=%request_key_preview, group=%group_name, proxy_configured=proxy_url_option.is_some(), "Forwarding request to target");
 
+    // Send request using the appropriate client (direct or proxied)
+    // send_request_with_optional_proxy now returns Result<reqwest::Response, AppError>
     let target_response = send_request_with_optional_proxy(
-        http_client, // Pass the client reference
+        http_client,
         proxy_url_option,
         outgoing_method,
-        target_url.clone(),
+        target_url.clone(), // Clone here as it's used later
         outgoing_headers,
         outgoing_reqwest_body,
         group_name,
     )
-    .await?; // Propagate AppError::Reqwest if sending fails
+    .await?; // Propagate AppError directly if sending/proxy setup fails
 
-    // 5. Process the successful response from the target
     let response_status = target_response.status();
     info!(status = %response_status, "Received response from target");
 
-    // NOTE: Rate limit handling (checking status 429 and marking key)
-    // is moved to the caller (proxy_handler) because it needs access
-    // to the KeyManager state. This function just forwards the response.
-
     let response_headers = build_response_headers(target_response.headers());
 
-    // Stream response body
-    let response_body_stream = target_response
-        .bytes_stream()
-        .map_err(|e| BoxError::from(format!("Target response stream error: {e}")));
+    // Stream response body back, mapping potential stream errors
+    let response_body_stream = target_response.bytes_stream().map_err(|e| {
+        // Map reqwest stream error to our AppError
+         warn!(error = %e, "Error reading upstream response body stream");
+         AppError::ResponseBodyError(format!("Upstream body stream error: {}", e))
+
+    });
+    // Body::from_stream requires Item = Result<Bytes, E> where E: Into<BoxError>
     let axum_response_body = Body::from_stream(response_body_stream);
 
-    // Build the final response to the client
+
     let mut client_response = Response::builder()
         .status(response_status)
         .body(axum_response_body)
@@ -124,25 +140,42 @@ pub async fn forward_request(
 
     *client_response.headers_mut() = response_headers;
 
-    // Don't log "<--- Sending response" here, let the handler do it.
     Ok(client_response)
 }
 
-// --- Helper Functions (moved from handler.rs) ---
 
-/// Sends the request using the appropriate client (proxy or default).
+/// Helper function to send the constructed `reqwest` request.
+///
+/// This function checks if a `proxy_url_str` is provided. If so, it attempts
+/// to create a *new*, temporary `reqwest::Client` configured with that proxy.
+/// If a proxy is not provided, or if building the proxy client fails, it uses
+/// the provided `base_client`.
+///
+/// # Arguments
+///
+/// * `base_client` - The shared `reqwest::Client` (used if no proxy or proxy setup fails).
+/// * `proxy_url_str` - Optional string slice containing the proxy URL.
+/// * `method` - The HTTP method for the outgoing request.
+/// * `target_url` - The `Uri` for the outgoing request.
+/// * `headers` - The `HeaderMap` for the outgoing request.
+/// * `body` - The `reqwest::Body` for the outgoing request.
+/// * `group_name` - The name of the key group (for logging).
+///
+/// # Returns
+///
+/// Returns a `Result<reqwest::Response, AppError>`, converting potential `reqwest::Error`s.
 async fn send_request_with_optional_proxy(
-    base_client: &Client, // Use the base client passed in
+    base_client: &Client,
     proxy_url_str: Option<&str>,
     method: Method,
     target_url: Uri,
     headers: HeaderMap,
     body: reqwest::Body,
     group_name: &str,
-) -> std::result::Result<reqwest::Response, AppError> { // Return standard Result with AppError
+) -> Result<reqwest::Response> { // Use the crate's Result alias
     let target_url_string = target_url.to_string();
 
-    let response_result = if let Some(proxy_str) = proxy_url_str {
+    if let Some(proxy_str) = proxy_url_str {
         match Url::parse(proxy_str) {
             Ok(parsed_proxy_url) => {
                 let scheme = parsed_proxy_url.scheme().to_lowercase();
@@ -152,21 +185,20 @@ async fn send_request_with_optional_proxy(
                     "socks5" => Proxy::all(proxy_str),
                     _ => {
                         warn!(proxy_url = %proxy_str, group = %group_name, scheme = %scheme, "Unsupported proxy scheme. Proceeding without proxy.");
-                        // Use base client directly
+                        // Use base client directly and map error here
                         return base_client
                             .request(method, &target_url_string)
                             .headers(headers)
                             .body(body)
                             .send()
                             .await
-                            .map_err(AppError::from); // Convert reqwest::Error to AppError
+                            .map_err(AppError::from); // Convert reqwest::Error here
                     }
                 };
 
                 match proxy_obj_result {
                     Ok(proxy) => {
                         debug!(proxy_url = %proxy_str, scheme = %scheme, group = %group_name, "Attempting to build client with proxy");
-                        // Build a *new* client with this proxy for this request only
                         match Client::builder().proxy(proxy).build() {
                              Ok(proxy_client) => {
                                 debug!("Sending request via proxy client");
@@ -176,44 +208,48 @@ async fn send_request_with_optional_proxy(
                                     .body(body)
                                     .send()
                                     .await
+                                    .map_err(AppError::from) // Convert reqwest::Error here
                             }
                             Err(e) => {
                                 error!(proxy_url = %proxy_str, group = %group_name, error = %e, "Failed to build reqwest client with proxy. Falling back to default client.");
-                                // Fallback to base client
+                                // Fallback to base client and map error here
                                 base_client
                                     .request(method, &target_url_string)
                                     .headers(headers)
                                     .body(body)
                                     .send()
                                     .await
+                                    .map_err(AppError::from) // Convert reqwest::Error here
                             }
                         }
                     }
                     Err(e) => {
                         warn!(proxy_url = %proxy_str, group = %group_name, scheme = %scheme, error = %e, "Failed to create proxy object from URL. Proceeding without proxy.");
-                         // Fallback to base client
+                         // Fallback to base client and map error here
                          base_client
                             .request(method, &target_url_string)
                             .headers(headers)
                             .body(body)
                             .send()
                             .await
+                            .map_err(AppError::from) // Convert reqwest::Error here
                     }
                 }
             }
             Err(e) => {
                  warn!(proxy_url = %proxy_str, group = %group_name, error = %e, "Failed to parse proxy URL string. Proceeding without proxy.");
-                 // Fallback to base client
+                 // Fallback to base client and map error here
                 base_client
                     .request(method, &target_url_string)
                     .headers(headers)
                     .body(body)
                     .send()
                     .await
+                    .map_err(AppError::from) // Convert reqwest::Error here
             }
         }
     } else {
-        // Send using shared base client
+        // Send using shared base client and map error here
         debug!("Sending request via default client (no proxy configured for group)");
         base_client
             .request(method, &target_url_string)
@@ -221,14 +257,16 @@ async fn send_request_with_optional_proxy(
             .body(body)
             .send()
             .await
-    };
-
-    // Convert Result<reqwest::Response, reqwest::Error> to Result<reqwest::Response, AppError>
-    response_result.map_err(AppError::from)
+            .map_err(AppError::from) // Convert reqwest::Error here
+    }
+    // No final map_err needed here, errors should be AppError by now
 }
 
-// --- Header manipulation functions (unchanged from handler.rs) ---
 
+/// Creates the `HeaderMap` for the outgoing request to the target service.
+///
+/// Copies non-hop-by-hop headers from the original request, adds authentication headers
+/// (`x-goog-api-key`, `Authorization: Bearer`), and sets the correct `Host` header.
 fn build_forward_headers(
     original_headers: &HeaderMap,
     api_key: &str,
@@ -241,12 +279,17 @@ fn build_forward_headers(
     filtered
 }
 
+/// Creates the `HeaderMap` for the response sent back to the original client.
+///
+/// Copies non-hop-by-hop headers from the upstream service's response.
 fn build_response_headers(original_headers: &HeaderMap) -> HeaderMap {
     let mut filtered = HeaderMap::with_capacity(original_headers.len());
     copy_non_hop_by_hop_headers(original_headers, &mut filtered, false);
     filtered
 }
 
+/// Copies headers from `source` to `dest`, excluding hop-by-hop headers defined in `HOP_BY_HOP_HEADERS`.
+/// Also skips auth headers if `is_request` is true, as they are added separately.
 fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_request: bool) {
     for (name, value) in source {
         let name_str = name.as_str().to_lowercase();
@@ -259,6 +302,7 @@ fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_requ
     }
 }
 
+/// Adds the necessary authentication headers (`x-goog-api-key`, `Authorization: Bearer`) to the outgoing request headers.
 #[allow(clippy::cognitive_complexity)] // TODO: Consider refactoring this function for lower complexity
 fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) {
      match HeaderValue::from_str(api_key) {
@@ -282,6 +326,7 @@ fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) {
     }
 }
 
+/// Sets the `Host` header on the outgoing request headers based on the target URL's host.
 fn add_host_header(headers: &mut HeaderMap, target_host: Option<&str>) {
      if let Some(host) = target_host {
         match HeaderValue::from_str(host) {
