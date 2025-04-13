@@ -93,9 +93,9 @@ pub async fn forward_request(
     // Note: Body::wrap_stream requires the stream item to be Result<Bytes, Error>
     // where Error implements std::error::Error. Let's ensure our mapping does that.
      let outgoing_body_stream = req.into_body().into_data_stream().map_err(|e| {
-        // Box the error to satisfy the trait bounds if necessary,
-        // or convert to a concrete error type like std::io::Error.
-        Box::new(e) as Box<dyn std::error::Error + Send + Sync> // Convert to boxed dyn Error
+        // Map the error from reading the incoming request body stream
+        warn!(error = %e, "Error reading client request body stream");
+        AppError::RequestBodyError(format!("Client request body stream error: {}", e))
     });
     let outgoing_reqwest_body = reqwest::Body::wrap_stream(outgoing_body_stream);
 
@@ -121,11 +121,12 @@ pub async fn forward_request(
     let response_headers = build_response_headers(target_response.headers());
 
     // Stream response body back, mapping potential stream errors
-    let response_body_stream = target_response.bytes_stream().map_err(|e| {
-        // Map reqwest stream error to our AppError
-         warn!(error = %e, "Error reading upstream response body stream");
-         AppError::ResponseBodyError(format!("Upstream body stream error: {}", e))
-
+    // Capture response_status for use in the error mapping closure
+    let captured_response_status = response_status;
+    let response_body_stream = target_response.bytes_stream().map_err(move |e| { // Add 'move'
+        // Map reqwest stream error to our AppError, logging the status
+        warn!(status = %captured_response_status, error = %e, "Error reading upstream response body stream");
+        AppError::ResponseBodyError(format!("Upstream body stream error (status {}): {}", captured_response_status, e))
     });
     // Body::from_stream requires Item = Result<Bytes, E> where E: Into<BoxError>
     let axum_response_body = Body::from_stream(response_body_stream);
@@ -204,6 +205,7 @@ async fn send_request_with_optional_proxy(
                             .proxy(proxy)
                             .connect_timeout(Duration::from_secs(10)) // Added connect timeout
                             .timeout(Duration::from_secs(300))       // Added request timeout
+                            .tcp_keepalive(Some(Duration::from_secs(60))) // Added TCP keep-alive for proxy client
                             .build() {
                              Ok(proxy_client) => {
                                 debug!("Sending request via proxy client");
