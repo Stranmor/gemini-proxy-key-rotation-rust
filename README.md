@@ -119,7 +119,7 @@ To use this proxy with Roo Code or Cline:
 3.  For the **OpenAI API Key**, you can enter **any non-empty value**. The proxy manages the actual Gemini keys internally, but the OpenAI Compatible setting usually requires a value in this field.
 
 Example Configuration (based on the provided image):
-![Roo Code Configuration Example](https://imgur.com/a/kpKJAmo) 
+![Roo Code Configuration Example](2025-04-13_14-02.png)
 
 *Note: The current implementation uses a single round-robin pool for all requests. Future versions plan to include proxy endpoints specific to each API key set if multiple sets are configured.*
 
