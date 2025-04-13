@@ -243,10 +243,10 @@ curl -X POST \
 Some clients might send requests formatted for the OpenAI API. The proxy will forward these requests as well.
 
 ```bash
-# Example if your client uses OpenAI format
+# Example if your client uses OpenAI format (ensure backslashes for line continuation if copying)
 curl --request POST \
   --url http://localhost:8081/v1beta/openai/chat/completions \
-  --header 'Authorization: Bearer ignored' \ # Client auth is ignored by the proxy
+  --header 'Authorization: Bearer ignored' \
   --header 'Content-Type: application/json' \
   --data '{
       "model": "gemini-2.0-flash",
@@ -254,6 +254,9 @@ curl --request POST \
           {"role": "user", "content": "hi"}
       ]
   }'
+
+# Single-line equivalent (safer for copy-paste):
+# curl --request POST --url http://localhost:8081/v1beta/openai/chat/completions --header 'Authorization: Bearer ignored' --header 'Content-Type: application/json' --data '{"model": "gemini-2.0-flash", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 You should receive a valid response, as the proxy manages the actual authentication with the target API using the rotated keys.
 
