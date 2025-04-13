@@ -3,7 +3,7 @@ server:
   # Hostname or IP address to bind the proxy server to.
   # "0.0.0.0" binds to all available network interfaces.
   # "127.0.0.1" binds only to the local loopback interface.
-  host: "127.0.0.1"
+  host: "0.0.0.0"
 
   # Port number for the proxy server to listen on.
   port: 8080

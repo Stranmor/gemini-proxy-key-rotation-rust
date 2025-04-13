@@ -1,8 +1,7 @@
 // src/config.rs
 use serde::Deserialize;
-use std::{fs, io, path::Path}; // Use fs::read_to_string
-// Removed use thiserror::Error;
-// Keep Url for validation
+use std::{env, fs, io, path::Path}; // Added `env`
+use tracing::{info, warn}; // Added tracing for logging overrides
 use crate::error::{AppError, Result}; // Import AppError and Result
 
 /// Represents a group of API keys with optional proxy settings.
@@ -11,7 +10,7 @@ use crate::error::{AppError, Result}; // Import AppError and Result
 pub struct KeyGroup {
     /// Unique name for the group, used for identification/logging.
     pub name: String,
-    /// List of API keys for this group.
+    /// List of API keys for this group. Can be overridden by environment variables.
     pub api_keys: Vec<String>,
     /// Optional outgoing proxy URL (e.g., "http://user:pass@host:port", "socks5://host:port")
     /// If set, requests using keys from this group will be routed through this proxy.
@@ -40,15 +39,28 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-// ConfigError enum removed, using AppError now.
-
 /// Provides the default Gemini API URL.
 fn default_target_url() -> String {
     "https://generativelanguage.googleapis.com".to_string()
 }
 
-/// Loads the application configuration from the specified YAML file.
-/// Performs basic parsing only; detailed validation should occur elsewhere.
+/// Helper function to sanitize group names for environment variable lookup.
+/// Converts to uppercase and replaces non-alphanumeric characters with underscores.
+fn sanitize_group_name_for_env(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+
+/// Loads the application configuration from the specified YAML file
+/// and overrides API keys from environment variables if present.
 pub fn load_config(path: &Path) -> Result<AppConfig> { // Changed return type
     let path_str = path.display().to_string();
 
@@ -61,9 +73,60 @@ pub fn load_config(path: &Path) -> Result<AppConfig> { // Changed return type
     })?; // Keep using ? with the new Result type
 
     // Parsing YAML using AppError::YamlParsing (#[from] handles this)
-    let config: AppConfig = serde_yaml::from_str(&contents)?; // Use ? directly
+    let mut config: AppConfig = serde_yaml::from_str(&contents)?; // Use ? directly
 
-    // Basic validation removed from here. It's handled in main.rs.
+    // --- Override API keys from environment variables ---
+    for group in &mut config.groups {
+        let sanitized_group_name = sanitize_group_name_for_env(&group.name);
+        let env_var_name = format!("GEMINI_PROXY_GROUP_{}_API_KEYS", sanitized_group_name);
+
+        match env::var(&env_var_name) {
+            Ok(env_keys_str) => {
+                if env_keys_str.trim().is_empty() {
+                    // Env var exists but is empty - override with empty list and warn
+                     warn!(
+                        "Environment variable '{}' found but is empty. Overriding API keys for group '{}' with an empty list.",
+                        env_var_name, group.name
+                    );
+                    group.api_keys = Vec::new();
+                } else {
+                    // Env var exists and is not empty - parse and override
+                    let keys_from_env: Vec<String> = env_keys_str
+                        .split(',')
+                        .map(|k| k.trim().to_string())
+                        .filter(|k| !k.is_empty()) // Filter out potential empty strings from bad formatting (e.g., "key1,,key2")
+                        .collect();
+
+                    if !keys_from_env.is_empty() {
+                         info!(
+                            "Overriding API keys for group '{}' from environment variable '{}' ({} keys found).",
+                            group.name, env_var_name, keys_from_env.len()
+                        );
+                        group.api_keys = keys_from_env;
+                    } else {
+                        // Env var contained only commas/whitespace
+                         warn!(
+                            "Environment variable '{}' found but contained no valid keys after trimming/splitting. Overriding API keys for group '{}' with an empty list.",
+                            env_var_name, group.name
+                        );
+                        group.api_keys = Vec::new();
+                    }
+                }
+            }
+            Err(env::VarError::NotPresent) => {
+                // Variable not set, keep keys from config file (do nothing)
+            }
+            Err(e) => {
+                // Other error reading environment variable (e.g., invalid UTF-8)
+                 warn!(
+                    "Error reading environment variable '{}': {}. Using API keys from config file for group '{}'.",
+                    env_var_name, e, group.name
+                );
+            }
+        }
+    }
+    // --- End of environment variable override ---
+
 
     Ok(config)
 }
