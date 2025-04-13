@@ -14,12 +14,12 @@ This proxy distributes requests across multiple Gemini API keys, helping to mana
 *   Automatic round-robin key rotation across **all** configured keys (from all groups combined).
 *   Handles `429 Too Many Requests` responses from the target API by temporarily disabling the rate-limited key (resets daily at 10:00 AM Moscow Time by default).
 *   Configurable via a single YAML file (`config.yaml`).
-*   API keys can be securely overridden using **environment variables**, avoiding the need to store them directly in the configuration file.
-*   Correctly adds the required `x-goog-api-key` header for Gemini API authentication and ignores/replaces client-sent `Authorization` headers.
+*   API keys can be securely provided using **environment variables** (recommended), avoiding the need to store them directly in the configuration file.
+*   Correctly adds the required `x-goog-api-key` and `Authorization: Bearer <key>` headers for Gemini API authentication, ignoring/replacing any client-sent `Authorization` headers.
 *   Supports `http`, `https`, and `socks5` upstream proxies per key group.
 *   High performance asynchronous request handling using Axum and Tokio.
 *   Graceful shutdown handling (responds to `SIGINT` and `SIGTERM`).
-*   Configurable logging using `tracing` and `RUST_LOG`.
+*   Configurable logging using `tracing` and the `RUST_LOG` environment variable.
 
 ## Requirements
 
@@ -42,11 +42,10 @@ server:
   port: 8080
 
 # Define one or more groups of API keys.
+# The proxy rotates through keys from ALL groups combined.
 groups:
   - name: "default" # A unique, descriptive name for this group.
-                    # Used to construct the environment variable name for key overriding.
-                    # While names like "Group 1!" are allowed in the config,
-                    # they will be sanitized for environment variables (see below).
+                    # Used for logs and environment variable construction (see below).
 
     # Target URL for requests using keys from this group.
     # If omitted, defaults to Google's Generative Language API endpoint:
@@ -62,20 +61,19 @@ groups:
     proxy_url: null # Or omit the line entirely if no proxy is needed for this group
 
     # --- API Key Configuration ---
-    # Provide API keys either directly here OR via environment variable.
-    # Using environment variables is STRONGLY RECOMMENDED for security.
+    # Provide API keys using the Environment Variable (Recommended)
+    # The proxy will look for: GEMINI_PROXY_GROUP_DEFAULT_API_KEYS
+    # See the "API Key Environment Variables" section below for naming rules.
+    # Leave api_keys empty or omit it when using environment variables.
+    api_keys: []
 
-    # OPTION 1: Define keys directly in the file (Less Secure)
+    # OPTIONALLY, define keys directly here (Less Secure)
     # Use this ONLY if you are NOT setting the corresponding environment variable.
     # Ensure this file is NOT committed to version control if it contains keys.
     # api_keys:
     #   - "YOUR_GEMINI_API_KEY_1_FOR_DEFAULT_GROUP"
     #   - "YOUR_GEMINI_API_KEY_2_FOR_DEFAULT_GROUP"
 
-    # OPTION 2: Provide keys via Environment Variable (Recommended)
-    # Leave api_keys empty or omit it entirely if using the environment variable.
-    # The proxy will look for: GEMINI_PROXY_GROUP_DEFAULT_API_KEYS
-    api_keys: []
 
   # Add more groups as needed, for example, for different users or projects.
   # - name: "special-project"
@@ -91,29 +89,30 @@ groups:
 
 *   **`server.host`**: **Must be `"0.0.0.0"` when running inside Docker** to be accessible from your host machine. Use `"127.0.0.1"` for local-only access if running directly without Docker.
 *   **`server.port`**: The port the proxy listens on (e.g., `8080`).
-*   **`groups`**: You must define at least one group. The proxy rotates through keys from *all* groups combined.
-*   **`groups[].name`**: A unique identifier for the group. Used for logging and constructing the environment variable name.
+*   **`groups`**: You must define at least one group.
+*   **`groups[].name`**: A unique identifier for the group.
 *   **`groups[].target_url`**: The API endpoint for this group. Defaults to `https://generativelanguage.googleapis.com` if omitted.
-*   **`groups[].proxy_url`**: Optional upstream proxy URL (supports `http`, `https`, `socks5`).
-*   **`groups[].api_keys`**: Define keys here **only if not** using the environment variable method for this specific group.
+*   **`groups[].proxy_url`**: Optional upstream proxy URL (`http`, `https`, `socks5`).
+*   **`groups[].api_keys`**: Define keys here **only if not** using environment variables for this group.
 
 ### API Key Environment Variables (Recommended)
 
-This is the most secure way to provide API keys.
+This is the most secure way to provide API keys. If a valid environment variable is found for a group, it **completely overrides** the `api_keys` list in `config.yaml` for that group.
 
-*   **Format:** `GEMINI_PROXY_GROUP_{GROUP_NAME}_API_KEYS`
-*   **Sanitization Rule:**
-    1.  Take the group `name` from `config.yaml`.
-    2.  Convert it to **UPPERCASE**.
-    3.  Replace any character that is **not** alphanumeric (A-Z, 0-9) with an **underscore (`_`)**.
+*   **Variable Name Format:** `GEMINI_PROXY_GROUP_{SANITIZED_GROUP_NAME}_API_KEYS`
+*   **Sanitization Rule:** Convert the group `name` from `config.yaml` to **UPPERCASE** and replace any non-alphanumeric character (not A-Z, 0-9) with an **underscore (`_`)**.
 *   **Value:** A **comma-separated** string of your API keys (e.g., `"key1,key2,key3"`). Spaces around commas are trimmed.
-*   **Examples:**
-    *   Group name `default` -> `GEMINI_PROXY_GROUP_DEFAULT_API_KEYS`
-    *   Group name `special-project` -> `GEMINI_PROXY_GROUP_SPECIAL_PROJECT_API_KEYS`
-    *   Group name `no-proxy-group` -> `GEMINI_PROXY_GROUP_NO_PROXY_GROUP_API_KEYS`
-    *   Group name `Group 1!` -> `GEMINI_PROXY_GROUP_GROUP_1__API_KEYS` (Note the double underscore from ` ` and `!`)
 
-If a valid environment variable is found for a group, it **completely overrides** the `api_keys` list specified in the `config.yaml` for that group. If the environment variable is set but empty or contains only whitespace/commas, the keys from the file (if any) will be used, and a warning will be logged.
+**Examples:**
+
+| Group Name in `config.yaml` | Corresponding Environment Variable                     |
+| :-------------------------- | :------------------------------------------------------ |
+| `default`                   | `GEMINI_PROXY_GROUP_DEFAULT_API_KEYS`                   |
+| `special-project`           | `GEMINI_PROXY_GROUP_SPECIAL_PROJECT_API_KEYS`           |
+| `no-proxy-group`            | `GEMINI_PROXY_GROUP_NO_PROXY_GROUP_API_KEYS`            |
+| `Group 1!`                  | `GEMINI_PROXY_GROUP_GROUP_1__API_KEYS` (*Note double `_`*) |
+
+If the environment variable is set but empty or contains only whitespace/commas, the keys from the file (if any) will be used, and a warning will be logged.
 
 ## Quick Start with Docker (Recommended)
 
@@ -130,7 +129,8 @@ If a valid environment variable is found for a group, it **completely overrides*
         ```
     *   Edit `config.yaml`:
         *   Ensure `server.host` is set to `"0.0.0.0"`.
-        *   Define your desired `groups`. You can remove the example `api_keys` list within the groups if you plan to use environment variables (recommended). Adjust `target_url` or `proxy_url` if needed. Ensure at least one group (e.g., `default`) exists.
+        *   Define your desired `groups`. Remove or leave the `api_keys` list empty within the groups if using environment variables (recommended).
+        *   Adjust `target_url` or `proxy_url` if needed.
 
 3.  **Build the Docker Image:**
     ```bash
@@ -138,35 +138,33 @@ If a valid environment variable is found for a group, it **completely overrides*
     ```
 
 4.  **Run the Container:**
-    *   Replace `<YOUR_KEYS_FOR_DEFAULT>` with your actual comma-separated API keys for the `default` group (or whichever group name you are configuring).
-    *   Adjust the environment variable name (`GEMINI_PROXY_GROUP_DEFAULT_API_KEYS`) if your group name in `config.yaml` is different. Add more `-e` flags for other groups if needed.
-    *   Adjust the host port mapping (`8081:8080`) if port `8081` is already in use on your machine. The format is `<HOST_PORT>:<CONTAINER_PORT>`.
+    *   Replace `<YOUR_KEYS_FOR_DEFAULT>` with your actual comma-separated API keys for the `default` group.
+    *   Adjust the environment variable name if your group name in `config.yaml` is different. Add more `-e` flags for other groups.
+    *   Adjust the host port mapping (`8081:8080`) if port `8081` is busy on your host. Format: `<HOST_PORT>:<CONTAINER_PORT>`.
 
     ```bash
     docker run -d --name gemini-proxy \
-      -p 8081:8080 \
-      -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-      -e GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="<YOUR_KEYS_FOR_DEFAULT>" \
-      # -e GEMINI_PROXY_GROUP_ANOTHER_GROUP_API_KEYS="<YOUR_KEYS_FOR_ANOTHER_GROUP>" \
+      -p 8081:8080 \                                    # Map host port 8081 to container port 8080
+      -v "$(pwd)/config.yaml:/app/config.yaml:ro" \     # Mount local config file (read-only)
+      -e GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="<YOUR_KEYS_FOR_DEFAULT>" \ # Provide API keys for the 'default' group
+      # -e GEMINI_PROXY_GROUP_ANOTHER_GROUP_API_KEYS="<KEYS_FOR_ANOTHER_GROUP>" \ # Add more env vars for other groups if needed
       gemini-proxy-key-rotation
     ```
-    *   The `-v "$(pwd)/config.yaml:/app/config.yaml:ro"` part mounts your local `config.yaml` into the container at `/app/config.yaml` in read-only mode.
-    *   The `-e` flag sets the environment variable inside the container.
 
 5.  **Verify:**
-    *   Check container logs for startup messages and confirmation of key loading:
+    *   Check container logs:
         ```bash
         docker logs gemini-proxy
         ```
-    *   Test the proxy by sending a request to the host port you mapped (e.g., `8081`):
+    *   Test the proxy (replace `localhost:8081` if you used a different host port):
         ```bash
         # Example using direct Gemini generateContent endpoint
         curl -X POST \
           -H "Content-Type: application/json" \
           -d '{"contents":[{"parts":[{"text":"Explain Large Language Models in simple terms"}]}]}' \
-          http://localhost:8081/v1beta/models/gemini-2.0-flash:generateContent
+          http://localhost:8081/v1beta/models/gemini-pro:generateContent
         ```
-        *(Replace `localhost:8081` if needed)*. You should receive a valid JSON response from the Gemini API.
+        You should receive a valid JSON response from the Gemini API.
 
 ### Common Docker Commands
 
@@ -178,7 +176,7 @@ If a valid environment variable is found for a group, it **completely overrides*
 
 ## Building and Running Locally (Without Docker)
 
-Requires Rust and Cargo to be installed ([rustup.rs](https://rustup.rs/)).
+Requires Rust and Cargo installed ([rustup.rs](https://rustup.rs/)).
 
 1.  **Clone the Repository:** (If not already done)
     ```bash
@@ -189,15 +187,15 @@ Requires Rust and Cargo to be installed ([rustup.rs](https://rustup.rs/)).
 2.  **Prepare Configuration:**
     *   Copy `config.example.yaml` to `config.yaml`.
     *   Edit `config.yaml`:
-        *   Set `server.host` to `"127.0.0.1"` (or `"0.0.0.0"` if you need access from other machines on your network).
-        *   Set `server.port` to your desired listening port (e.g., `8080`).
-        *   Define `groups` and provide API keys either directly in the file or via environment variables (see Configuration section).
+        *   Set `server.host` to `"127.0.0.1"` (or `"0.0.0.0"` for network access).
+        *   Set `server.port` (e.g., `8080`).
+        *   Define `groups` and provide API keys (in file or via environment variables).
 
 3.  **Build:**
     ```bash
     cargo build --release
     ```
-    (The `--release` flag enables optimizations for better performance).
+    (The `--release` flag enables optimizations).
 
 4.  **Run:**
     *   **Using Keys from `config.yaml`:**
@@ -216,60 +214,58 @@ Requires Rust and Cargo to be installed ([rustup.rs](https://rustup.rs/)).
 
 5.  **Verify:**
     *   Check the terminal output for logs.
-    *   Send requests to `http://<HOST>:<PORT>` as configured (e.g., `http://127.0.0.1:8080`), using the direct Gemini API example shown in the Docker section.
+    *   Send requests to `http://<HOST>:<PORT>` as configured (e.g., `http://127.0.0.1:8080`), using the `curl` example from the Docker section.
 
 ## Client Usage
 
-Once the proxy is running, send your API requests to the proxy's address. The proxy will automatically select an available API key, add the necessary `x-goog-api-key` header (and `Authorization: Bearer <key>` header for Gemini compatibility), and forward the request to the configured `target_url` for that key's group.
+Once the proxy is running, configure your client application to send API requests **to the proxy's address** (`http://<PROXY_HOST>:<PROXY_PORT>`).
 
-**Important:** You **do not need to** add any API key or `Authorization` header to your client request when talking *to the proxy*. The proxy handles the authentication with the actual target API. If your client sends an `Authorization` header, the proxy will ignore and replace it.
+**Important:** Your client **should NOT send** any API key or `Authorization` header when talking *to the proxy*. The proxy handles the authentication with the actual target API internally:
+*   It selects an available Gemini API key from its pool.
+*   It adds the correct `x-goog-api-key: <selected_key>` header.
+*   It adds the `Authorization: Bearer <selected_key>` header (required by some Gemini API endpoints/clients).
+*   Any `Authorization` header sent by your client will be ignored and replaced by the proxy.
 
-**Example (`curl` for direct Gemini endpoint):**
+**Example (`curl`):**
 
-Assuming the proxy is running and accessible at `http://localhost:8081`:
+Assuming the proxy runs at `http://localhost:8081`:
 
 ```bash
 curl -X POST \
   -H "Content-Type: application/json" \
   -d '{"contents":[{"parts":[{"text":"Explain Large Language Models in simple terms"}]}]}' \
-  http://localhost:8081/v1beta/models/gemini-2.0-flash:generateContent
+  http://localhost:8081/v1beta/models/gemini-pro:generateContent # Send request to the proxy
 ```
 
-*   Replace `http://localhost:8081` with your proxy's actual address and port.
-*   The proxy handles adding the `x-goog-api-key` and `Authorization` headers internally.
+The proxy receives this request, adds the necessary Gemini authentication headers using a rotated key, and forwards it to `https://generativelanguage.googleapis.com` (or the `target_url` configured for the key's group).
 
-**Using OpenAI Compatible Endpoints:**
+**Using OpenAI Compatible Endpoints / Clients:**
 
-Some clients might send requests formatted for the OpenAI API. The proxy will forward these requests as well.
+If your client sends requests formatted for the OpenAI API (e.g., to `/v1beta/openai/chat/completions`), the proxy will forward them correctly, handling the Gemini authentication.
 
 ```bash
-# Example if your client uses OpenAI format (ensure backslashes for line continuation if copying)
+# Example OpenAI-formatted request sent TO THE PROXY
 curl --request POST \
   --url http://localhost:8081/v1beta/openai/chat/completions \
-  --header 'Authorization: Bearer ignored' \
+  --header 'Authorization: Bearer any_dummy_key_will_be_ignored' \ # This header is ignored/replaced by the proxy
   --header 'Content-Type: application/json' \
   --data '{
-      "model": "gemini-2.0-flash",
+      "model": "gemini-pro",
       "messages": [
           {"role": "user", "content": "hi"}
       ]
   }'
-
-# Single-line equivalent (safer for copy-paste):
-# curl --request POST --url http://localhost:8081/v1beta/openai/chat/completions --header 'Authorization: Bearer ignored' --header 'Content-Type: application/json' --data '{"model": "gemini-2.0-flash", "messages": [{"role": "user", "content": "hi"}]}'
 ```
-You should receive a valid response, as the proxy manages the actual authentication with the target API using the rotated keys.
-
 
 ## Using with Roo Code / Cline
 
-This proxy can be used as a backend for tools compatible with the OpenAI API format, like Roo Code / Cline.
+This proxy is compatible with tools that support the OpenAI API format, like Roo Code / Cline.
 
-1.  In the API configuration settings of your tool (e.g., Roo Code), select **"OpenAI Compatible"** as the **API Provider**.
-2.  Set the **Base URL** to the address where the proxy is running. Use *only* the base address (protocol, host, port), **without** any specific path like `/v1beta/openai`. The proxy forwards the path it receives from the client.
-    *   Example (Docker): `http://localhost:8081` (if mapped to host port 8081)
-    *   Example (Local): `http://127.0.0.1:8080` (if running on port 8080)
-3.  For the **API Key** field, enter **any non-empty value** (e.g., "dummy-key", "ignored"). The proxy manages the actual Gemini keys internally and will ignore/replace this value, but the setting usually requires some input.
+1.  In your tool's API settings, select **"OpenAI Compatible"** as the **API Provider**.
+2.  Set the **Base URL** to the proxy's address (protocol, host, port only, **without** any specific path like `/v1beta/openai`).
+    *   Example (Docker): `http://localhost:8081`
+    *   Example (Local): `http://127.0.0.1:8080`
+3.  For the **API Key** field, enter **any non-empty placeholder** (e.g., "dummy-key", "ignored"). The proxy manages the real keys and ignores this value, but the field usually requires input.
 
 **Example Configuration Screenshot:**
 *(Illustrates settings for Base URL and API Key within an OpenAI-compatible tool)*
@@ -277,23 +273,23 @@ This proxy can be used as a backend for tools compatible with the OpenAI API for
 
 ## Logging
 
-*   Logging is implemented using the `tracing` crate.
-*   Log levels can be controlled via the `RUST_LOG` environment variable.
-*   **Default:** If `RUST_LOG` is not set, it defaults to the `info` level (equivalent to `RUST_LOG=info`).
+*   Logging uses the `tracing` crate.
+*   Control verbosity via the `RUST_LOG` environment variable.
+*   **Default:** `info` (if `RUST_LOG` is not set).
 *   **Examples:**
     *   `RUST_LOG=debug`: Show debug messages for all crates.
     *   `RUST_LOG=gemini_proxy_key_rotation_rust=debug`: Show debug messages only for this proxy.
     *   `RUST_LOG=warn,gemini_proxy_key_rotation_rust=trace`: Show trace messages for the proxy, warn for others.
-*   Set the environment variable before running the application (either locally or via `-e RUST_LOG=debug` in `docker run`).
+*   Set the environment variable before running (e.g., `export RUST_LOG=debug` locally, or `-e RUST_LOG=debug` in `docker run`).
 
 ## Error Handling
 
-*   The proxy attempts to forward underlying HTTP status codes from the target API (e.g., 400 Bad Request, 500 Internal Server Error).
-*   If a key results in a `429 Too Many Requests` response, the proxy logs a warning, marks that specific key as rate-limited, and automatically tries the next available key for subsequent requests. The limited key becomes available again after its reset time (daily 10:00 Moscow Time).
-*   If *all* keys are currently rate-limited, the proxy returns a `503 Service Unavailable` status code.
-*   Configuration errors (invalid YAML, invalid URLs, no keys found) are logged during startup, and the proxy will exit.
-*   Network errors during forwarding (e.g., connection refused to the target API or upstream proxy) result in a `502 Bad Gateway` status code.
-*   Authentication errors (`401 Unauthorized` or similar) from the target API usually indicate an invalid or revoked API key being used by the proxy. Double-check that your API keys are valid and correctly entered in the configuration or environment variables.
+*   Forwards underlying HTTP status codes from the target API (e.g., 400, 500) when possible.
+*   `429 Too Many Requests` from target: Logs a warning, marks the key as rate-limited, and retries with the next available key. Limited keys reset daily (10:00 Moscow Time).
+*   `503 Service Unavailable`: Returned by the proxy if *all* configured keys are currently rate-limited.
+*   `502 Bad Gateway`: Returned if there's a network error connecting to the target API or upstream proxy.
+*   Configuration errors: Logged on startup, causing the proxy to exit.
+*   Authentication errors from target (e.g., `401`, `403`): Usually indicate an invalid or revoked API key provided to the proxy. Check your keys.
 
 ## Project Structure
 
@@ -313,36 +309,33 @@ This proxy can be used as a backend for tools compatible with the OpenAI API for
 ├── LICENSE                     # Project License (MIT)
 ├── README.md                   # This file
 └── src/
-    ├── config.rs               # Configuration loading, validation, and structs (AppConfig, KeyGroup)
-    ├── error.rs                # Custom application error types (AppError) and IntoResponse implementation
-    ├── handler.rs              # Axum request handler (entry point for requests)
-    ├── key_manager.rs          # API key storage, rotation logic, and state management (KeyManager, KeyState)
-    ├── main.rs                 # Application entry point, CLI args, setup, validation call
-    ├── proxy.rs                # Core request forwarding logic (building requests, handling proxies, sending)
-    └── state.rs                # Shared application state (AppState holding KeyManager, HttpClient)
+    ├── config.rs               # Configuration loading, validation, structs
+    ├── error.rs                # Custom error types (AppError), HTTP response conversion
+    ├── handler.rs              # Axum request handler (request entry point)
+    ├── key_manager.rs          # Key storage, rotation, state management (KeyManager)
+    ├── main.rs                 # Application entry point, setup, validation call
+    ├── proxy.rs                # Core request forwarding, header manipulation, proxy logic
+    └── state.rs                # Shared application state (AppState: HttpClient, KeyManager)
 
 (target/ directory is generated during build and ignored by git)
 ```
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-Please review the [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) files for guidelines.
-
-Key areas for potential contributions:
-*   More sophisticated key rotation strategies (e.g., usage-based, least-recently-used).
+Potential areas:
+*   More sophisticated key rotation strategies.
 *   Health check endpoint.
-*   Metrics endpoint (e.g., Prometheus).
-*   Expanded test coverage (integration tests for proxying, rate limiting).
-*   Support for different API authentication methods if needed.
+*   Metrics endpoint (Prometheus).
+*   Expanded test coverage.
 
 ## Security
 
-*   **NEVER commit `config.yaml` files containing real API keys** to version control (like Git). Use the `.gitignore` file (which already lists `config.yaml`).
-*   **Prioritize using environment variables** for API keys, especially in production or shared environments.
-*   Use strong, unique API keys obtained from Google AI Studio.
-*   Consider network security: run the proxy in a trusted network environment and potentially restrict access using firewalls if necessary.
+*   **NEVER commit `config.yaml` files containing real API keys** to version control. Use `.gitignore` (it already lists `config.yaml`).
+*   **Prioritize using environment variables** for API keys.
+*   Use strong, unique API keys from Google AI Studio.
+*   Secure your network environment; consider firewalls.
 
 ## License
 
