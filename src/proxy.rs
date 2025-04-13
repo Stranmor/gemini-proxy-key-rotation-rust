@@ -3,14 +3,11 @@
 use crate::{
     error::{AppError, Result}, // Use the crate's Result alias
     key_manager::FlattenedKeyInfo, // Import FlattenedKeyInfo from key_manager
-
 };
 use axum::{
-    body::Body,
-    extract::Request, // Use original Request type
-    http::{header, HeaderMap, HeaderValue, Method, Uri}, // Added StatusCode
-    response::Response,
-
+    body::{Body, Bytes}, // Use Bytes
+    http::{header, HeaderMap, HeaderValue, Method, Uri}, // Removed Request, added Method, Uri, HeaderMap
+    response::Response, // Keep Response type
 };
 use futures_util::TryStreamExt;
 use reqwest::{Client, Proxy};
@@ -36,12 +33,12 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 ];
 
 
-/// Takes an incoming client request and forwards it to the appropriate upstream target.
+/// Takes incoming request components and forwards them to the appropriate upstream target.
 ///
 /// This function orchestrates the core proxying logic:
 /// - Determines the target URL based on the incoming request path and the key's group info.
 /// - Builds the outgoing request headers, filtering hop-by-hop headers and adding authentication.
-/// - Creates a `reqwest::Body` from the incoming Axum request body.
+/// - Creates a `reqwest::Body` from the provided `Bytes`.
 /// - Calls `send_request_with_optional_proxy` to actually send the request using the correct HTTP client (direct or proxied).
 /// - Processes the upstream response, filtering hop-by-hop headers.
 /// - Streams the upstream response body back to the client.
@@ -52,7 +49,10 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 ///
 /// * `http_client` - A reference to the shared `reqwest::Client` instance.
 /// * `key_info` - A reference to the `FlattenedKeyInfo` for the selected API key.
-/// * `req` - The incoming `axum::extract::Request`.
+/// * `method` - The HTTP `Method` of the original request.
+/// * `uri` - The `Uri` of the original request.
+/// * `headers` - The `HeaderMap` from the original request.
+/// * `body_bytes` - The buffered body (`Bytes`) of the original request.
 ///
 /// # Returns
 ///
@@ -60,7 +60,10 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 pub async fn forward_request(
     http_client: &Client,
     key_info: &FlattenedKeyInfo,
-    req: Request,
+    method: Method, // Changed from req: Request
+    uri: Uri,       // Changed from req: Request
+    headers: HeaderMap, // Changed from req: Request
+    body_bytes: Bytes, // Changed from req: Request
 ) -> Result<Response> { // Use crate::error::Result alias
     let api_key = &key_info.key;
     let target_base_url_str = &key_info.target_url;
@@ -68,8 +71,8 @@ pub async fn forward_request(
     let group_name = &key_info.group_name;
     let request_key_preview = format!("{}...", api_key.chars().take(4).collect::<String>());
 
-    let original_uri = req.uri();
-    let path_and_query = original_uri.path_and_query().map_or("/", |pq| pq.as_str());
+    // Use the provided uri directly
+    let path_and_query = uri.path_and_query().map_or("/", |pq| pq.as_str());
     let target_url_str = format!(
         "{}{}",
         target_base_url_str.trim_end_matches('/'),
@@ -85,19 +88,12 @@ pub async fn forward_request(
     })?;
     debug!(target = %target_url, "Constructed target URL for request");
 
-    let outgoing_method = req.method().clone();
-    let request_headers = req.headers().clone();
-    let outgoing_headers = build_forward_headers(&request_headers, api_key, target_url.host());
+    // Use the provided method and headers
+    let outgoing_method = method;
+    let outgoing_headers = build_forward_headers(&headers, api_key, target_url.host());
 
-    // Convert Axum body to Reqwest body using wrap_stream
-    // Note: Body::wrap_stream requires the stream item to be Result<Bytes, Error>
-    // where Error implements std::error::Error. Let's ensure our mapping does that.
-     let outgoing_body_stream = req.into_body().into_data_stream().map_err(|e| {
-        // Map the error from reading the incoming request body stream
-        warn!(error = %e, "Error reading client request body stream");
-        AppError::RequestBodyError(format!("Client request body stream error: {}", e))
-    });
-    let outgoing_reqwest_body = reqwest::Body::wrap_stream(outgoing_body_stream);
+    // Convert Bytes to Reqwest body
+    let outgoing_reqwest_body = reqwest::Body::from(body_bytes);
 
 
     info!(method = %outgoing_method, url = %target_url, api_key_preview=%request_key_preview, group=%group_name, proxy_configured=proxy_url_option.is_some(), "Forwarding request to target");
@@ -107,10 +103,10 @@ pub async fn forward_request(
     let target_response = send_request_with_optional_proxy(
         http_client,
         proxy_url_option,
-        outgoing_method,
+        outgoing_method, // Use the cloned method
         target_url.clone(), // Clone here as it's used later
-        outgoing_headers,
-        outgoing_reqwest_body,
+        outgoing_headers, // Use the built headers
+        outgoing_reqwest_body, // Use the reqwest body
         group_name,
     )
     .await?; // Propagate AppError directly if sending/proxy setup fails
