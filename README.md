@@ -121,8 +121,6 @@ To use this proxy with Roo Code or Cline:
 Example Configuration (based on the provided image):
 ![Roo Code Configuration Example](2025-04-13_14-02.png)
 
-*Note: The current implementation uses a single round-robin pool for all requests. Future versions plan to include proxy endpoints specific to each API key set if multiple sets are configured.*
-
 ## Project Structure
 
 ```
