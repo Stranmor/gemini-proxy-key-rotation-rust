@@ -11,7 +11,7 @@ groups:
     # Target API URL for this group
     target_url: "https://generativelanguage.googleapis.com"
     # Optional proxy for this group (SOCKS5 with authentication)
-    proxy_url: "socks5://fKPj8u:GKcQNr@134.195.154.156:9074"
+    # proxy_url: "socks5://fKPj8u:GKcQNr@134.195.154.156:9074"
     # List of API keys for this group
     api_keys:
       - "AIzaSyAz-UsJfx2zu8o3xruBS3YVBpP3yaXgN9k"

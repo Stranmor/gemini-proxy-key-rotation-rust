@@ -85,21 +85,27 @@ The proxy will automatically:
 3.  Add the `x-goog-api-key` header with the selected key.
 4.  Forward the request (including path, query parameters, headers, and body) to `https://generativelanguage.googleapis.com`.
 5.  Stream the response back to you.
-
 **Example using `curl`:**
 
 Assuming the proxy is running on `http://localhost:8080`:
 
 ```sh
-curl -X POST http://localhost:8080/v1beta/models/gemini-pro:generateContent \
-     -H "Content-Type: application/json" \
-     -d '{
-           "contents": [{
-             "parts":[{
-               "text": "Write a short story about a mischievous cat."
-             }]
-           }]
-         }'
+curl --request GET \
+  --url http://localhost:8080/v1beta/openai/models \
+  --header 'Authorization: Bearer GEMINI_API_KEY'
+```
+
+```sh
+curl --request POST \
+  --url http://localhost:8080/v1beta/openai/chat/completions \
+  --header 'Authorization: Bearer GEMINI_API_KEY' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "model": "gemini-2.0-flash",
+    "messages": [
+      {"role": "user", "content": "hi"}
+    ]
+  }'
 ```
 
 The proxy handles adding the `x-goog-api-key` header. Do **not** include your own API key header when sending requests to the proxy.

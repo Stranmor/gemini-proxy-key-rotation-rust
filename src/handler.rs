@@ -104,6 +104,7 @@ pub async fn proxy_handler(
     // --- Apply Proxy if configured for the group ---
     // TEMPORARILY COMMENTED OUT TO DEBUG COMPILATION
     /*
+
     if let Some(proxy_url_str) = &proxy_url_option {
         match Url::parse(proxy_url_str) {
             Ok(parsed_proxy_url) => {
