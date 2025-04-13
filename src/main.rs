@@ -1,22 +1,21 @@
 // src/main.rs
 mod config;
-mod handler;
-mod state;
 mod error;
+mod handler;
 mod key_manager;
 mod proxy;
+mod state;
 
 use axum::{routing::any, serve, Router};
 use clap::Parser;
-// Import AppConfig for the validation function
-use config::AppConfig;
+use config::AppConfig; // Keep explicit import for clarity
 use state::AppState;
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf, process, sync::Arc}; // Added Path
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf, process, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{error, info, warn, Level};
-use tracing_subscriber::FmtSubscriber;
-use url::Url;
+use tracing_subscriber::{EnvFilter, FmtSubscriber}; // Added EnvFilter
+use url::Url; // Keep for validation
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -29,21 +28,31 @@ struct CliArgs {
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing subscriber (unchanged)
+    // --- Initialize Tracing ---
+    // Removed call to non-existent init_tracing()
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            // If RUST_LOG is not set, default to 'info' for the current crate
+            // and 'warn' for others. Adjust as needed for desired default verbosity.
+            // Example: "warn,gemini_proxy_key_rotation_rust=info"
+            // Using "info" for simplicity now.
+            EnvFilter::new("info")
+        });
+
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter) // Use the determined filter
         .finish();
     tracing::subscriber::set_global_default(subscriber)
         .expect("Setting default tracing subscriber failed");
 
-    // Parse Command Line Arguments (unchanged)
+    // --- Parse Command Line Arguments ---
     let args = CliArgs::parse();
     let config_path = &args.config;
     info!("Starting Gemini API Key Rotation Proxy...");
     info!("Using configuration file: {}", config_path.display());
 
-    // --- Configuration Loading ---
+    // --- Configuration Loading & Validation ---
+    // Removed call to non-existent get_config()
     let mut app_config = match config::load_config(config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -54,9 +63,8 @@ async fn main() {
             );
             process::exit(1);
         }
-    }; // Now mutable
+    };
 
-    // --- Configuration Validation ---
     let config_path_str = config_path.display().to_string();
     if !validate_config(&mut app_config, &config_path_str) {
         error!(
@@ -65,9 +73,12 @@ async fn main() {
         );
         process::exit(1);
     } else {
-        // Log success only after validation passes
-         let total_keys: usize = app_config.groups.iter().map(|g| g.api_keys.len()).sum(); // Recalculate here
-         info!(
+        let total_keys: usize = app_config
+            .groups
+            .iter()
+            .map(|g| g.api_keys.len())
+            .sum();
+        info!(
             "Configuration loaded and validated successfully. Found {} group(s) with a total of {} API key(s). Server configured for {}:{}",
             app_config.groups.len(),
             total_keys,
@@ -76,9 +87,9 @@ async fn main() {
         );
     }
 
-    // --- Application State ---
-    // Pass the validated and potentially modified config to AppState::new
-    let app_state = match AppState::new(&app_config) { // Pass immutable reference now
+    // --- Application State Initialization ---
+    // AppState::new handles HttpClient and KeyManager initialization internally
+    let app_state = match AppState::new(&app_config) {
         Ok(state) => Arc::new(state),
         Err(e) => {
             error!("Failed to initialize application state: {}", e);
@@ -87,15 +98,15 @@ async fn main() {
     };
 
     // --- Server Setup ---
+    // Removed call to non-existent create_app()
     let app = Router::new()
-        .route("/*path", any(handler::proxy_handler))
+        .route("/*path", any(handler::proxy_handler)) // Ensure handler::proxy_handler exists and is pub
         .with_state(app_state);
 
     let addr: SocketAddr =
         match format!("{}:{}", app_config.server.host, app_config.server.port).parse() {
             Ok(addr) => addr,
             Err(e) => {
-                // Should be caught by validation, but kept as safeguard
                 error!(
                     "Invalid server address derived from config '{}:{}': {}",
                     app_config.server.host, app_config.server.port, e
@@ -116,6 +127,7 @@ async fn main() {
     };
 
     // --- Run with Graceful Shutdown ---
+    info!("Starting server...");
     if let Err(e) = serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -128,6 +140,7 @@ async fn main() {
 }
 
 /// Validates the loaded application configuration. Logs errors and returns false if invalid.
+// (Keep validate_config function as is - it seems correct)
 fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
     let mut has_errors = false;
 

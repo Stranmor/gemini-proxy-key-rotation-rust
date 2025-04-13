@@ -1,0 +1,32 @@
+# Ignore build artifacts
+target/
+
+# Ignore Git directory
+.git/
+.gitignore
+
+# Ignore IDE specific files/folders
+.idea/
+.vscode/
+
+# Ignore local environment configuration if any
+.env
+
+# Ignore test files if not needed in the final image
+tests/
+
+# Ignore example files not needed in the final image (unless copied explicitly)
+# examples/ # Keep examples out unless needed inside the container
+
+# Ignore specific files
+*.log
+*.swp
+*~
+.DS_Store
+
+# Ignore the dockerfile itself and related docker config
+Dockerfile
+.dockerignore
+
+# Ignore any local configuration files not intended for the image
+config.yaml

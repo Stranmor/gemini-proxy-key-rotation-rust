@@ -2,31 +2,31 @@
 
 [![CI](https://github.com/stranmor/gemini-proxy-key-rotation-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/stranmor/gemini-proxy-key-rotation-rust/actions/workflows/rust.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-<!-- [![Crates.io](https://img.shields.io/crates/v/your-crate-name.svg)](https://crates.io/crates/your-crate-name) -->
-<!-- [![Docs.rs](https://docs.rs/your-crate-name/badge.svg)](https://docs.rs/your-crate-name) -->
 
-**A lightweight, asynchronous HTTP proxy for rotating Google Gemini (Generative Language API) API keys.** Built with Rust, Axum, and Tokio for high performance and reliability.
+**A lightweight, asynchronous HTTP proxy for rotating Google Gemini (Generative Language API) API keys.** Built with Rust and Axum for high performance.
 
-This proxy allows you to distribute requests across multiple Gemini API keys (organized in groups) using a round-robin strategy, helping to manage rate limits and improve availability. It also supports routing requests through different upstream proxies on a per-group basis.
+This proxy distributes requests across multiple Gemini API keys, helping to manage rate limits and improve availability. It supports grouping keys and routing through different upstream proxies per group.
 
 ## Features
 
--   Proxy requests to the Google Gemini API (`generativelanguage.googleapis.com`) or other configured target URLs.
--   Supports multiple **groups** of API keys, each with its own target URL and optional upstream proxy.
--   Automatic round-robin key rotation for each incoming request across **all keys** in the configuration.
--   Handles `429 Too Many Requests` errors by temporarily disabling the rate-limited key until the next day (10:00 Moscow Time).
--   Configurable host and port binding.
--   Asynchronous handling of requests using Axum and Tokio.
--   Simple YAML configuration.
--   Graceful shutdown handling.
+*   Proxies requests to Google Gemini API or other target URLs.
+*   Supports multiple **groups** of API keys (different targets, optional upstream proxies).
+*   Automatic round-robin key rotation across **all** configured keys.
+*   Handles `429 Too Many Requests` by temporarily disabling the rate-limited key.
+*   Configurable via YAML file and/or environment variables (for API keys).
+*   High performance asynchronous handling (Axum/Tokio).
+*   Graceful shutdown.
+*   Logs request details and key usage.
 
 ## Requirements
 
--   Rust (latest stable version recommended, check `rust-toolchain.toml` or install via [rustup](https://rustup.rs/))
--   Cargo (comes with Rust)
--   Google Gemini API Keys (get them from [Google AI Studio](https://aistudio.google.com/app/apikey))
+*   **Docker:** The easiest way to run the proxy. ([Install Docker](https://docs.docker.com/engine/install/))
+*   **Google Gemini API Keys:** Get them from [Google AI Studio](https://aistudio.google.com/app/apikey).
+*   **(Optional) Rust/Cargo:** Only needed if you want to build or develop locally without Docker. ([Install Rust](https://rustup.rs/))
 
-## Quick Start
+## Quick Start with Docker (Recommended)
+
+This is the simplest way to get the proxy running.
 
 1.  **Clone the repository:**
     ```sh
@@ -34,103 +34,149 @@ This proxy allows you to distribute requests across multiple Gemini API keys (or
     cd gemini-proxy-key-rotation-rust
     ```
 
-2.  **Create your configuration file:**
-    -   Copy the example:
+2.  **Build the Docker Image:**
+    ```sh
+    docker build -t gemini-proxy-key-rotation .
+    ```
+
+3.  **Prepare Configuration Base:**
+    *   The proxy needs a basic configuration file for server settings (host/port) and defining key groups (names, target URLs, etc.). We'll use the provided example as a base.
+    *   **Important:** Ensure `config.example.yaml` has `server.host` set to `"0.0.0.0"` for Docker usage. (It should be by default now).
+
+4.  **Run the Container using Environment Variables for Keys:**
+    *   Replace `YOUR_KEY_1,YOUR_KEY_2,...` with your actual comma-separated API keys.
+    *   The example below assumes a group named `default` exists in `config.example.yaml`. Adjust the variable name (`GEMINI_PROXY_GROUP_DEFAULT_API_KEYS`) if your group has a different name (see Configuration section for details).
+    *   Adjust the host port (`8081`) if it's already in use on your machine.
+
+    ```sh
+    docker run -d --name gemini-proxy \
+      -p 8081:8080 \
+      -v "$(pwd)/config.example.yaml:/app/config.yaml:ro" \
+      -e GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="YOUR_KEY_1,YOUR_KEY_2,YOUR_KEY_3" \
+      gemini-proxy-key-rotation
+    ```
+
+5.  **Verify:**
+    *   Check logs: `docker logs gemini-proxy` (You should see startup messages).
+    *   Test the proxy (replace `localhost:8081` if you used a different host port):
         ```sh
-        cp config.example.yaml config.yaml
+        curl http://localhost:8081/v1beta/models
         ```
-    -   Edit `config.yaml` and add your Gemini API keys under the `api_keys` list within at least one group. Configure `target_url` and optional `proxy_url` for each group as needed.
-    -   **Important:** `config.yaml` is listed in `.gitignore` to prevent accidental commits of your keys. **Never commit your API keys to version control.**
+        (You should get a response from the Google API, possibly `401` if the keys are invalid, but not a connection error).
 
-3.  **Build:**
+## Docker Usage Details
+
+### Running the Container
+
+There are two main ways to provide configuration:
+
+**Method 1: Environment Variables for API Keys (Recommended)**
+
+*   **How it works:** Mount a base config file (`config.example.yaml` or your own `config.yaml` *without* sensitive keys) for server settings and group definitions. Provide the actual API keys via environment variables.
+*   **Why:** More secure (keys aren't stored in files), easier to manage in deployment scripts and orchestration tools.
+*   **Command:**
     ```sh
-    cargo build --release
+    # Ensure config.example.yaml (or your base config.yaml) exists
+    docker run -d --name gemini-proxy \
+      -p <HOST_PORT>:8080 \
+      -v "$(pwd)/config.example.yaml:/app/config.yaml:ro" \
+      -e GEMINI_PROXY_GROUP_<GROUP_NAME>_API_KEYS="<KEY1,KEY2,...>" \
+      # Add more -e flags for other groups if needed
+      gemini-proxy-key-rotation
     ```
+    *   Replace `<HOST_PORT>` with the port you want to use on your machine (e.g., `8080`, `8081`).
+    *   Replace `<GROUP_NAME>` with the name of the group from your config file (uppercase, non-alphanumeric replaced by `_`). Example: `default` -> `DEFAULT`, `my-group` -> `MY_GROUP`.
+    *   Replace `<KEY1,KEY2,...>` with your comma-separated API keys.
 
-4.  **Run:**
+**Method 2: Mounting `config.yaml` with API Keys**
+
+*   **How it works:** Create a complete `config.yaml` file including your sensitive API keys and mount this file into the container. **Do not** set the `GEMINI_PROXY_GROUP_..._API_KEYS` environment variables.
+*   **Why:** Simpler for local testing if you prefer managing keys in the file. **Use with caution** – ensure this file is not committed to Git or exposed.
+*   **Command:**
     ```sh
-    ./target/release/gemini-proxy-key-rotation-rust
-    # Or using cargo:
-    # cargo run --release
+    # Ensure your complete config.yaml with API keys exists
+    docker run -d --name gemini-proxy \
+      -p <HOST_PORT>:8080 \
+      -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+      gemini-proxy-key-rotation
     ```
-    The proxy will start listening on the host and port specified in `config.yaml` (default: `127.0.0.1:8080`).
+    *   Replace `<HOST_PORT>` as needed.
 
-## Configuration
+### Common Docker Commands
 
-Configuration is managed through the `config.yaml` file (refer to `config.example.yaml` for detailed comments).
+*   **View Logs:** `docker logs gemini-proxy` (replace `gemini-proxy` if you used a different `--name`)
+*   **Stop Container:** `docker stop gemini-proxy`
+*   **Start Container:** `docker start gemini-proxy`
+*   **Remove Container:** `docker rm gemini-proxy` (stop it first)
+*   **Rebuild Image (after code changes):** `docker build -t gemini-proxy-key-rotation .`
+
+## Configuration (`config.yaml`)
+
+This file defines server settings and key groups. It's always needed, even if keys are provided via environment variables.
 
 ```yaml
-# config.yaml
+# config.yaml (or config.example.yaml)
 server:
-  host: "127.0.0.1"  # IP address to bind the server to
-  port: 8080        # Port to listen on
+  # IMPORTANT for Docker: Use "0.0.0.0" to accept connections from the host.
+  host: "0.0.0.0"
+  # Port the server listens on *inside* the container.
+  port: 8080
 
-# List of key groups. Requires at least one group.
+# Define your key groups here.
 groups:
-  - name: "default-gemini" # Unique name for this group
-    # Target API URL for this group. Defaults to Google's global endpoint if omitted.
+  - name: "default" # Unique name for this group
+    # Target URL for this group (defaults to Google Gemini API if omitted)
     target_url: "https://generativelanguage.googleapis.com"
-    # Optional outgoing proxy URL for this group (http, https, socks5 supported)
+    # Optional upstream proxy for this group (http, https, socks5)
     # proxy_url: "socks5://user:pass@your-proxy.com:1080"
-    # List of API keys for this group. Rotation happens across keys from ALL groups.
-    api_keys:
-      - "YOUR_GEMINI_API_KEY_1"
-      - "YOUR_GEMINI_API_KEY_2"
-      # Add more keys as needed
 
-  # Example of another group targeting a different endpoint or using a different proxy
-  # - name: "special-endpoint"
-  #   target_url: "https://special-regional-api.googleapis.com"
-  #   proxy_url: "http://another-proxy.example.com:8888"
-  #   api_keys:
-  #     - "YOUR_SPECIAL_API_KEY_3"
+    # API Keys for this group.
+    # OMIT this section or leave it empty if providing keys via ENV VAR:
+    # GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="KEY1,KEY2"
+    api_keys:
+       - "YOUR_GEMINI_API_KEY_1" # Ignored if ENV VAR is set
+       - "YOUR_GEMINI_API_KEY_2" # Ignored if ENV VAR is set
+
+  # Add more groups as needed
+  # - name: "special-group"
+  #   target_url: "https://..."
+  #   api_keys: [] # Provide via GEMINI_PROXY_GROUP_SPECIAL_GROUP_API_KEYS
 ```
 
--   `server.host`: The hostname or IP address the proxy server will bind to.
--   `server.port`: The port the proxy server will listen on.
--   `groups`: A list of key groups. Each group requires:
-    -   `name`: A unique identifier for the group.
-    -   `api_keys`: A list of API keys associated with this group.
-    -   `target_url` (Optional): The upstream API endpoint URL for this group. Defaults to `https://generativelanguage.googleapis.com`.
-    -   `proxy_url` (Optional): An upstream proxy URL (http, https, or socks5) to use for requests made with keys from this group.
+**Key Points:**
+
+*   `server.host`: **Must be `"0.0.0.0"`** for Docker usage.
+*   `server.port`: Internal container port (usually `8080`).
+*   `groups`: Define at least one group.
+*   `groups[].name`: Used to identify the group (and in the ENV VAR name).
+*   `groups[].api_keys`: List keys here **only** if you are *not* using environment variables for this group.
+
+**Environment Variable Naming for Keys:**
+
+*   Format: `GEMINI_PROXY_GROUP_{GROUP_NAME}_API_KEYS`
+*   Rule: Take group `name` from YAML, convert to UPPERCASE, replace non-alphanumeric characters with `_`.
+    *   `default` -> `GEMINI_PROXY_GROUP_DEFAULT_API_KEYS`
+    *   `no-proxy` -> `GEMINI_PROXY_GROUP_NO_PROXY_API_KEYS`
+    *   `group-123` -> `GEMINI_PROXY_GROUP_GROUP_123_API_KEYS`
+*   Value: Comma-separated keys (`KEY1,KEY2,KEY3`).
 
 ## API Usage
 
-Once the proxy is running (e.g., on `http://127.0.0.1:8080`), send your API requests to the proxy **instead of** directly to the target API (e.g., `https://generativelanguage.googleapis.com`).
+Send your API requests to the proxy's address (e.g., `http://localhost:8081` if you mapped to host port `8081`) instead of the direct Google API URL. The proxy handles adding the correct API key.
 
-The proxy will automatically:
-1.  Receive your request.
-2.  Select the next available API key from **all configured keys** across all groups (round-robin), skipping any keys currently marked as rate-limited.
-3.  Determine the correct `target_url` and optional `proxy_url` based on the group the selected key belongs to.
-4.  Add the `x-goog-api-key` header (and `Authorization: Bearer` for compatibility) with the selected key.
-5.  Forward the request (including path, query parameters, modified headers, and body) to the determined `target_url`, potentially via the group's `proxy_url`.
-6.  Stream the response back to you.
-7.  If the target API returns `429 Too Many Requests`, the proxy marks the used key as rate-limited for the day.
-
-**Example using `curl`:**
-
-Assuming the proxy is running on `http://localhost:8080`:
+**Example (`curl`):**
 
 ```sh
-curl --request GET \
-  --url http://localhost:8080/v1beta/openai/models \
-  --header 'Authorization: Bearer GEMINI_API_KEY'
+# Assuming proxy is accessible at http://localhost:8081
+curl http://localhost:8081/v1beta/models
 ```
 
 ```sh
-curl --request POST \
-  --url http://localhost:8080/v1beta/openai/chat/completions \
-  --header 'Authorization: Bearer GEMINI_API_KEY' \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "model": "gemini-2.0-flash",
-    "messages": [
-      {"role": "user", "content": "hi"}
-    ]
-  }'
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"parts":[{"text":"Explain Large Language Models"}]}]}' \
+  http://localhost:8081/v1beta/models/gemini-pro:generateContent
 ```
-
-The proxy handles adding the necessary `x-goog-api-key` header. Do **not** include your own API key header when sending requests to the proxy, except for compatibility modes like OpenAI where a dummy `Authorization` header might be needed by the client.
 
 ## Using with Roo Code / Cline
 
@@ -147,10 +193,12 @@ Example Configuration (based on the provided image):
 
 ```
 .
+├── .dockerignore               # Files ignored by Docker build
 ├── .github/workflows/rust.yml  # Example CI workflow
 ├── .gitignore
 ├── Cargo.lock
 ├── Cargo.toml
+├── Dockerfile                  # Docker build instructions
 ├── config.example.yaml         # Example configuration
 ├── config.yaml                 # Your configuration (ignored by git)
 ├── LICENSE
@@ -182,7 +230,7 @@ Key areas for contribution:
 
 ## Security
 
--   **NEVER** commit your `config.yaml` file or expose your API keys in public repositories or client-side code.
+-   **NEVER** commit your `config.yaml` file or expose your API keys in public repositories or client-side code. Use environment variables for keys in production/Docker environments.
 -   Use strong, unique API keys.
 -   Consider running the proxy in a trusted network environment.
 
