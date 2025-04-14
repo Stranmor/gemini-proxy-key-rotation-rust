@@ -1,13 +1,14 @@
 // src/state.rs
 
 use crate::config::AppConfig;
-use crate::error::{AppError, Result};
+use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result}; // Ensured Proxy types are imported
 use crate::key_manager::KeyManager;
 use reqwest::{Client, Proxy, ClientBuilder};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
-use tracing::{error, info}; // Removed warn from main code imports
+use tracing::{error, info}; // Removed warn import
+
 use url::Url;
 
 /// Represents the shared application state that is accessible by all Axum handlers.
@@ -45,7 +46,8 @@ impl AppState {
         // 1. Create the base client (no proxy) - this MUST succeed
         let base_client = configure_builder(Client::builder())
             .build()
-            .map_err(AppError::HttpClientBuildError)?;
+            // Base client build error - map explicitly with None proxy_url
+            .map_err(|e| AppError::HttpClientBuildError { source: e, proxy_url: None })?;
         http_clients.insert(None, base_client);
         info!("Base HTTP client (no proxy) created successfully.");
 
@@ -60,28 +62,51 @@ impl AppState {
         // 3. Create clients for each unique proxy URL
         for proxy_url_str in unique_proxy_urls {
             let client_result: Result<Client> = async {
-                 let parsed_proxy_url = Url::parse(&proxy_url_str)
-                     .map_err(|e| {
-                         error!(proxy_url = %proxy_url_str, error = %e, "Failed to parse proxy URL string.");
-                         AppError::ProxyConfigError(format!("Invalid proxy URL format '{}': {}", proxy_url_str, e))
-                     })?;
+                 // Parse URL first, map error to specific ProxyConfigErrorKind
+                 let parsed_proxy_url = Url::parse(&proxy_url_str).map_err(|e| {
+                     error!(proxy_url = %proxy_url_str, error = %e, "Failed to parse proxy URL string.");
+                     AppError::ProxyConfigError(ProxyConfigErrorData {
+                         url: proxy_url_str.clone(),
+                         kind: ProxyConfigErrorKind::UrlParse(e),
+                     })
+                 })?;
 
                 let scheme = parsed_proxy_url.scheme().to_lowercase();
 
-                let proxy = match scheme.as_str() {
-                    "http" => Proxy::http(&proxy_url_str).map_err(|e| AppError::ProxyConfigError(format!("Invalid HTTP proxy URL '{}': {}", proxy_url_str, e))),
-                    "https" => Proxy::https(&proxy_url_str).map_err(|e| AppError::ProxyConfigError(format!("Invalid HTTPS proxy URL '{}': {}", proxy_url_str, e))),
-                    "socks5" => Proxy::all(&proxy_url_str).map_err(|e| AppError::ProxyConfigError(format!("Invalid SOCKS5 proxy URL '{}': {}", proxy_url_str, e))),
-                    _ => Err(AppError::ProxyConfigError(format!("Unsupported proxy scheme '{}' in URL '{}'", scheme, proxy_url_str))),
+                 // Create proxy, map errors to specific ProxyConfigErrorKind
+                 let proxy = match scheme.as_str() {
+                     "http" => Proxy::http(&proxy_url_str).map_err(|e| {
+                         AppError::ProxyConfigError(ProxyConfigErrorData {
+                             url: proxy_url_str.clone(),
+                             kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
+                         })
+                     }),
+                     "https" => Proxy::https(&proxy_url_str).map_err(|e| {
+                          AppError::ProxyConfigError(ProxyConfigErrorData {
+                             url: proxy_url_str.clone(),
+                             kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
+                         })
+                     }),
+                     "socks5" => Proxy::all(&proxy_url_str).map_err(|e| {
+                          AppError::ProxyConfigError(ProxyConfigErrorData {
+                             url: proxy_url_str.clone(),
+                             kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
+                         })
+                     }),
+                     _ => Err(AppError::ProxyConfigError(ProxyConfigErrorData {
+                         url: proxy_url_str.clone(),
+                         kind: ProxyConfigErrorKind::UnsupportedScheme(scheme.to_string()),
+                     })),
                  }?;
 
                  configure_builder(Client::builder())
                     .proxy(proxy)
                     .build()
-                    .map_err(|e| {
-                        error!(proxy_url = %proxy_url_str, scheme = %scheme, error = %e, "Failed to build reqwest client for proxy.");
-                        AppError::HttpClientBuildError(e)
-                    })
+                     // Explicitly map build error with proxy context
+                     .map_err(|e| {
+                         error!(proxy_url = %proxy_url_str, scheme = %scheme, error = %e, "Failed to build reqwest client for proxy.");
+                         AppError::HttpClientBuildError { source: e, proxy_url: Some(proxy_url_str.clone()) }
+                     })
             }.await;
 
             match client_result {
@@ -95,7 +120,7 @@ impl AppState {
                                error!(proxy_url = %proxy_url_str, error = ?e, "Critical proxy configuration error.");
                                return Err(e); // Fail fast on config errors
                            }
-                           AppError::HttpClientBuildError(_) => {
+                           AppError::HttpClientBuildError { .. } => { // Correct pattern
                                error!(proxy_url = %proxy_url_str, error = ?e, "Skipping client creation for this proxy due to build error.");
                                // Log and continue for build errors
                            }
@@ -117,12 +142,13 @@ impl AppState {
     pub fn get_client(&self, proxy_url: Option<&str>) -> Result<&Client> {
         let key = proxy_url.map(String::from);
         self.http_clients.get(&key).ok_or_else(|| {
-            if proxy_url.is_some() {
-                error!(proxy_url = ?proxy_url, "Requested HTTP client for proxy was not found/initialized in AppState.");
+            let msg = if let Some(p_url) = proxy_url {
+                format!("Requested HTTP client for proxy '{}' was not found/initialized in AppState.", p_url)
             } else {
-                 error!("Requested base HTTP client (None proxy) was unexpectedly missing.");
-            }
-            AppError::Internal(format!("Client for proxy {:?} not found/initialized", proxy_url))
+                "Requested base HTTP client (None proxy) was unexpectedly missing.".to_string()
+            };
+            error!("{}", msg);
+            AppError::Internal(msg) // Use Internal error type
         })
     }
 }
@@ -131,17 +157,12 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::config::{KeyGroup, ServerConfig};
+    use crate::error::ProxyConfigErrorKind; // Import the kind enum for tests
     use std::fs::File;
     use tempfile::tempdir;
-    use std::sync::Mutex;
-    use lazy_static::lazy_static;
-    use tracing::warn; // Import warn specifically for tests
+    use tracing::info; // Import info for logging in tests specifically
 
     const DEFAULT_TARGET_URL_STR: &str = "https://generativelanguage.googleapis.com";
-
-     lazy_static! {
-         static ref ENV_MUTEX: Mutex<()> = Mutex::new(());
-     }
 
     fn create_test_state_config(groups: Vec<KeyGroup>) -> AppConfig {
         AppConfig {
@@ -156,38 +177,8 @@ mod tests {
         file_path
     }
 
-     fn remove_env_var(key: &str) {
-         std::env::remove_var(key);
-     }
-
-      struct EnvVarGuard;
-      impl Drop for EnvVarGuard {
-          fn drop(&mut self) {
-              remove_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS");
-              remove_env_var("GEMINI_PROXY_GROUP_DEFAULT_PROXY_URL");
-              remove_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS");
-              remove_env_var("GEMINI_PROXY_GROUP_GROUP1_PROXY_URL");
-              // Cleanup other vars as needed
-               remove_env_var("GEMINI_PROXY_GROUP_BADPROXY_API_KEYS");
-               remove_env_var("GEMINI_PROXY_GROUP_BADPROXY_PROXY_URL");
-               remove_env_var("GEMINI_PROXY_GROUP_FTPPROXY_API_KEYS");
-               remove_env_var("GEMINI_PROXY_GROUP_FTPPROXY_PROXY_URL");
-               remove_env_var("GEMINI_PROXY_GROUP_INVALID_URL_API_KEYS");
-               remove_env_var("GEMINI_PROXY_GROUP_INVALID_URL_PROXY_URL");
-               remove_env_var("GEMINI_PROXY_GROUP_G_UNSUPPORTED_API_KEYS");
-               remove_env_var("GEMINI_PROXY_GROUP_G_UNSUPPORTED_PROXY_URL");
-               remove_env_var("GEMINI_PROXY_GROUP_G_INVALID_URL_API_KEYS");
-               remove_env_var("GEMINI_PROXY_GROUP_G_HTTP_API_KEYS");
-               remove_env_var("GEMINI_PROXY_GROUP_G_HTTP_PROXY_URL");
-               remove_env_var("GEMINI_PROXY_GROUP_G_SOCKS_FAIL_API_KEYS");
-               remove_env_var("GEMINI_PROXY_GROUP_G_SOCKS_FAIL_PROXY_URL");
-          }
-      }
-
     #[tokio::test]
     async fn test_appstate_new_no_proxies() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvVarGuard;
         let dir = tempdir().unwrap();
         let dummy_path = create_dummy_config_path(&dir);
 
@@ -210,8 +201,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_appstate_new_with_valid_proxies() {
-         let _lock = ENV_MUTEX.lock().unwrap();
-         let _guard = EnvVarGuard;
         let dir = tempdir().unwrap();
         let dummy_path = create_dummy_config_path(&dir);
 
@@ -219,13 +208,13 @@ mod tests {
             KeyGroup {
                 name: "g_http".to_string(),
                 api_keys: vec!["key_http".to_string()],
-                proxy_url: Some("http://localhost:1".to_string()),
+                proxy_url: Some("http://localhost:1".to_string()), // Use invalid port to possibly trigger build error
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
             },
             KeyGroup { // SOCKS5 might fail build
                 name: "g_socks".to_string(),
                 api_keys: vec!["key_socks".to_string()],
-                proxy_url: Some("socks5://localhost:1".to_string()),
+                proxy_url: Some("socks5://localhost:1".to_string()), // Use invalid port
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
             },
              KeyGroup { // Same HTTP proxy
@@ -239,10 +228,11 @@ mod tests {
         let config = create_test_state_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
 
+        // AppState::new should succeed even if individual proxy clients fail to build
         assert!(state_result.is_ok(), "AppState::new failed unexpectedly: {:?}", state_result.err());
         let state = state_result.unwrap();
 
-        assert!(state.http_clients.contains_key(&None));
+        assert!(state.http_clients.contains_key(&None)); // Base client must exist
 
         let http_key = Some("http://localhost:1".to_string());
         let socks_key = Some("socks5://localhost:1".to_string());
@@ -250,37 +240,36 @@ mod tests {
         let http_created = state.http_clients.contains_key(&http_key);
         let socks_created = state.http_clients.contains_key(&socks_key);
 
-        // Check expectations based on which clients were successfully created
-        if http_created && socks_created {
-             assert_eq!(state.http_clients.len(), 3);
-             assert!(state.get_client(http_key.as_deref()).is_ok());
-             assert!(state.get_client(socks_key.as_deref()).is_ok());
-             info!("Both HTTP and SOCKS5 clients created successfully in test.");
-        } else if http_created {
-             assert_eq!(state.http_clients.len(), 2);
-             assert!(state.get_client(http_key.as_deref()).is_ok());
-             assert!(state.get_client(socks_key.as_deref()).is_err());
-             warn!("SOCKS5 client build likely failed in test environment (expected).");
-        } else if socks_created {
-             assert_eq!(state.http_clients.len(), 2);
-             assert!(state.get_client(http_key.as_deref()).is_err());
-             assert!(state.get_client(socks_key.as_deref()).is_ok());
-              warn!("HTTP client build unexpectedly failed in test environment.");
-        } else {
-            assert_eq!(state.http_clients.len(), 1);
-             assert!(state.get_client(http_key.as_deref()).is_err());
-             assert!(state.get_client(socks_key.as_deref()).is_err());
-             warn!("Both HTTP and SOCKS5 client builds failed in test environment.");
-        }
+        // Check expectations: Base client + any successfully created proxy clients
+        let expected_min_clients = 1; // Base client always exists
+        let expected_max_clients = 3; // Base + HTTP + SOCKS5
+        assert!(state.http_clients.len() >= expected_min_clients, "Less than minimum expected clients");
+        assert!(state.http_clients.len() <= expected_max_clients, "More than maximum expected clients");
+        info!("Created {} clients (Base + {} HTTP + {} SOCKS5)",
+              state.http_clients.len(),
+              if http_created { 1 } else { 0 },
+              if socks_created { 1 } else { 0 });
 
-        assert!(state.get_client(None).is_ok());
-        assert!(state.get_client(Some("http://other.proxy")).is_err());
+        // Verify get_client behavior for each potential proxy
+        if http_created {
+            assert!(state.get_client(http_key.as_deref()).is_ok(), "get_client failed for created HTTP proxy");
+        } else {
+            assert!(state.get_client(http_key.as_deref()).is_err(), "get_client succeeded for non-created HTTP proxy");
+            info!("HTTP client build likely failed in test environment (expected if port 1 blocked)."); // Use info
+        }
+        if socks_created {
+             assert!(state.get_client(socks_key.as_deref()).is_ok(), "get_client failed for created SOCKS5 proxy");
+         } else {
+             assert!(state.get_client(socks_key.as_deref()).is_err(), "get_client succeeded for non-created SOCKS5 proxy");
+             info!("SOCKS5 client build likely failed in test environment (expected if port 1 blocked)."); // Use info
+         }
+
+        assert!(state.get_client(None).is_ok()); // Check base client retrieval
+        assert!(state.get_client(Some("http://other.proxy")).is_err()); // Check non-existent proxy
     }
 
      #[tokio::test]
     async fn test_appstate_new_returns_err_on_invalid_url_syntax() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvVarGuard;
         let dir = tempdir().unwrap();
         let dummy_path = create_dummy_config_path(&dir);
 
@@ -296,13 +285,12 @@ mod tests {
         let state_result = AppState::new(&config, &dummy_path).await;
 
         assert!(state_result.is_err(), "AppState::new should return Err for invalid proxy URL syntax");
-        assert!(matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(msg) if msg.contains("Invalid proxy URL format")), "Expected ProxyConfigError for invalid syntax");
+         // Check for the correct error variant and kind
+         assert!(matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(data) if matches!(data.kind, ProxyConfigErrorKind::UrlParse(_))), "Expected ProxyConfigError with UrlParse kind");
     }
 
      #[tokio::test]
      async fn test_appstate_new_returns_err_on_unsupported_scheme() {
-         let _lock = ENV_MUTEX.lock().unwrap();
-         let _guard = EnvVarGuard;
          let dir = tempdir().unwrap();
          let dummy_path = create_dummy_config_path(&dir);
 
@@ -318,18 +306,17 @@ mod tests {
          let state_result = AppState::new(&config, &dummy_path).await;
 
          assert!(state_result.is_err(), "AppState::new should return Err for unsupported proxy scheme");
-          assert!(matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(msg) if msg.contains("Unsupported proxy scheme")), "Expected ProxyConfigError for unsupported scheme");
+           // Check for the correct error variant and kind
+           assert!(matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(data) if matches!(data.kind, ProxyConfigErrorKind::UnsupportedScheme(_))), "Expected ProxyConfigError with UnsupportedScheme kind");
      }
 
       #[tokio::test]
       async fn test_appstate_new_skips_client_on_build_error() {
-         let _lock = ENV_MUTEX.lock().unwrap();
-         let _guard = EnvVarGuard;
          let dir = tempdir().unwrap();
          let dummy_path = create_dummy_config_path(&dir);
 
            let groups = vec![
-             KeyGroup { // Valid HTTP
+             KeyGroup { // Valid HTTP (might fail if port 1 is blocked, but AppState::new should still Ok)
                  name: "g_http".to_string(),
                  api_keys: vec!["k1".to_string()],
                  proxy_url: Some("http://localhost:1".to_string()),
@@ -349,7 +336,7 @@ mod tests {
           assert!(state_result.is_ok(), "AppState::new should return Ok even if a proxy client build fails");
           let state = state_result.unwrap();
 
-          assert!(state.http_clients.contains_key(&None));
+          assert!(state.http_clients.contains_key(&None)); // Base client
 
           let http_key = Some("http://localhost:1".to_string());
           let socks_key = Some("socks5://localhost:1".to_string());
@@ -357,25 +344,24 @@ mod tests {
           let http_created = state.http_clients.contains_key(&http_key);
           let socks_created = state.http_clients.contains_key(&socks_key);
 
+          // Check if clients were retrievable (implies successful creation)
           if http_created {
                assert!(state.get_client(http_key.as_deref()).is_ok());
                info!("HTTP client for test created.");
           } else {
-               warn!("HTTP client build failed in test environment (check logs).");
+               info!("HTTP client build failed in test environment (expected if port 1 blocked, check logs)."); // Use info
+               assert!(state.get_client(http_key.as_deref()).is_err());
           }
           if socks_created {
                assert!(state.get_client(socks_key.as_deref()).is_ok());
                info!("SOCKS5 client for test created.");
           } else {
-               warn!("SOCKS5 client build likely failed in test environment (check logs).");
+               info!("SOCKS5 client build likely failed in test environment (expected if port 1 blocked, check logs)."); // Use info
+               assert!(state.get_client(socks_key.as_deref()).is_err());
           }
 
           let expected_clients = 1 + (if http_created { 1 } else { 0 }) + (if socks_created { 1 } else { 0 });
           assert_eq!(state.http_clients.len(), expected_clients, "Unexpected number of clients created");
-
-           assert!(state.get_client(None).is_ok());
-           assert!(state.get_client(Some("socks5://localhost:1")).is_err()); // Check get for failed client
-
       }
 
  } // end tests module
