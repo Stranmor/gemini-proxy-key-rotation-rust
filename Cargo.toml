@@ -36,6 +36,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.8" # Needed for specific timezone reset logic
 # Command-line argument parsing
 clap = { version = "4.5", features = ["derive"] }
+uuid = { version = "1.16.0", features = ["v4"] }
 
 # Standard library types like Arc, AtomicUsize, Mutex/RwLock are used directly
 
