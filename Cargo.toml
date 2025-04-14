@@ -33,7 +33,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.8"
+chrono-tz = "0.8" # Needed for specific timezone reset logic
 # Command-line argument parsing
 clap = { version = "4.5", features = ["derive"] }
 
@@ -62,3 +62,4 @@ panic = "abort"      # Abort on panic for smaller binary
 wiremock = "0.6" # Mocking HTTP server
 tempfile = "3.10" # For creating temporary files/dirs in tests
 lazy_static = "1.5" # For static mutex in tests
+http-body-util = { version = "0.1", features = ["full"] } # For working with bodies in tests

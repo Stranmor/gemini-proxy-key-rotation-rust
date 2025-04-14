@@ -1,7 +1,7 @@
 // src/config.rs
 use serde::Deserialize;
 use std::{env, fs, io, path::Path, collections::HashSet};
-use tracing::{info, warn, error};
+use tracing::{debug, info, warn, error}; // Ensure debug is imported
 use crate::error::{AppError, Result};
 use url::Url;
 
@@ -74,6 +74,8 @@ fn sanitize_group_name_for_env(name: &str) -> String {
 /// This function reads the file, parses the YAML content into an `AppConfig` struct,
 /// and then checks for environment variables (`GEMINI_PROXY_GROUP_{GROUP_NAME}_API_KEYS`)
 /// to potentially override the `api_keys` listed in the file for each group.
+/// If the environment variable exists, its value (after splitting and filtering)
+/// **completely replaces** the keys from the file, even if the resulting list is empty.
 ///
 /// # Arguments
 ///
@@ -105,36 +107,36 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 
         match env::var(&env_var_name) {
             Ok(env_keys_str) => {
-                let trimmed_env_keys = env_keys_str.trim();
-                if trimmed_env_keys.is_empty() {
+                // Environment variable found, its value dictates the keys for this group.
+                let keys_from_env: Vec<String> = env_keys_str
+                    .trim()
+                    .split(',')
+                    .map(|k| k.trim().to_string())
+                    .filter(|k| !k.is_empty()) // Filter out empty strings resulting from split/trim
+                    .collect();
+
+                if keys_from_env.is_empty() {
                      warn!(
-                        "Environment variable '{}' found but is empty after trimming. Using keys from config file for group '{}'.",
-                        env_var_name, group.name
+                        "Overriding API keys for group '{}' from environment variable '{}', which resulted in an empty list of keys (env var was empty or contained only separators/whitespace).",
+                        group.name, env_var_name
                     );
                 } else {
-                    let keys_from_env: Vec<String> = trimmed_env_keys
-                        .split(',')
-                        .map(|k| k.trim().to_string())
-                        .filter(|k| !k.is_empty())
-                        .collect();
-
-                    if !keys_from_env.is_empty() {
-                         info!(
-                            "Overriding API keys for group '{}' from environment variable '{}' ({} keys found).",
-                            group.name, env_var_name, keys_from_env.len()
-                        );
-                        group.api_keys = keys_from_env;
-                    } else {
-                         warn!(
-                            "Environment variable '{}' found but contained no valid keys after trimming/splitting. Using keys from config file for group '{}'.",
-                            env_var_name, group.name
-                        );
-                    }
+                    info!(
+                        "Overriding API keys for group '{}' from environment variable '{}' ({} keys found).",
+                        group.name, env_var_name, keys_from_env.len()
+                    );
                 }
+                // Replace the keys from the config file unconditionally.
+                group.api_keys = keys_from_env;
             }
-            Err(env::VarError::NotPresent) => {} // Do nothing, use file keys
+            Err(env::VarError::NotPresent) => {
+                // Environment variable not found, use keys from the config file (no action needed).
+                debug!("No environment override found ('{}'). Using API keys from config file for group '{}'.", env_var_name, group.name);
+            }
             Err(e) => {
-                 warn!(
+                // Error reading the environment variable (e.g., invalid UTF-8).
+                // Log the error but proceed with keys from the config file.
+                warn!(
                     "Error reading environment variable '{}': {}. Using keys from config file for group '{}'.",
                     env_var_name, e, group.name
                 );
@@ -202,10 +204,12 @@ pub fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
             warn!("Configuration warning in {}: Group name '{}' contains potentially problematic characters (/, :, space).", config_path_str, group.name);
         }
 
+        // Check for empty strings within the final api_keys list for the group
         if group.api_keys.iter().any(|key| key.trim().is_empty()) {
-             error!("Configuration error in {}: Group '{}' contains one or more empty API key strings AFTER potential environment override.", config_path_str, group.name);
+             error!("Configuration error in {}: Group '{}' contains one or more empty API key strings AFTER potential environment override. Please check the config file or the corresponding environment variable.", config_path_str, group.name);
              has_errors = true;
         } else {
+            // Count keys only after checking they are not empty strings
              total_keys_after_override += group.api_keys.len();
         }
 
@@ -245,8 +249,10 @@ pub fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
         }
     }
 
+    // This validation now correctly checks the total number of *usable* keys
+    // after considering overrides and filtering empty strings.
     if total_keys_after_override == 0 {
-        error!("Configuration error in {}: No usable API keys found after processing config file and environment variables. At least one valid key is required.", config_path_str);
+        error!("Configuration error in {}: No usable API keys found across all groups after processing config file and environment variables. At least one valid key is required.", config_path_str);
         has_errors = true;
     }
 
@@ -371,7 +377,7 @@ groups:
     }
 
      #[test]
-    fn test_override_with_empty_env_var() {
+    fn test_override_with_empty_env_var_empties_keys() { // Renamed test
         let _guard = ENV_MUTEX.lock().unwrap();
         let dir = tempdir().unwrap();
         let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
@@ -379,16 +385,19 @@ groups:
         std::env::remove_var("GEMINI_PROXY_GROUP_GROUP_TWO_API_KEYS");
         std::env::remove_var("GEMINI_PROXY_GROUP_SPECIAL_CHARS__API_KEYS");
 
+        // Set env var to empty string
         std::env::set_var(env_var_name, "  ");
 
         let config = load_config(&config_path).expect("Failed to load config");
         std::env::remove_var(env_var_name);
 
-        assert_eq!(config.groups[0].api_keys, vec!["file_key_1", "file_key_2"], "Keys should be from file when env var is empty");
+        // Keys for 'default' group should now be empty due to the override
+        assert!(config.groups[0].api_keys.is_empty(), "Keys should be empty when env var override is empty");
+        assert_eq!(config.groups[1].api_keys, vec!["file_key_3"], "Other group keys should be unaffected");
     }
 
      #[test]
-    fn test_override_with_comma_only_env_var() {
+    fn test_override_with_comma_only_env_var_empties_keys() { // Renamed test
         let _guard = ENV_MUTEX.lock().unwrap();
         let dir = tempdir().unwrap();
         let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
@@ -396,12 +405,14 @@ groups:
         std::env::remove_var("GEMINI_PROXY_GROUP_GROUP_TWO_API_KEYS");
         std::env::remove_var("GEMINI_PROXY_GROUP_SPECIAL_CHARS__API_KEYS");
 
-        std::env::set_var(env_var_name, ",,,");
+        // Set env var to only commas
+        std::env::set_var(env_var_name, ",,, ,,");
 
         let config = load_config(&config_path).expect("Failed to load config");
         std::env::remove_var(env_var_name);
 
-        assert_eq!(config.groups[0].api_keys, vec!["file_key_1", "file_key_2"], "Keys should be from file when env var contains only commas");
+        // Keys for 'default' group should be empty after filtering
+        assert!(config.groups[0].api_keys.is_empty(), "Keys should be empty when env var override contains only commas/whitespace");
     }
 
 
@@ -498,20 +509,44 @@ groups:
   - name: "group1"
     api_keys: ["file_key1"] # Key in file
     target_url: "https://valid.base"
+  - name: "group2"
+    api_keys: ["file_key2"] # Another key to ensure total keys > 0 initially
+    target_url: "https://valid.base2"
 "#;
         let config_path = create_temp_config(&dir, config_content);
         let env_var_name = "GEMINI_PROXY_GROUP_GROUP1_API_KEYS";
 
-        // Override with an empty string
+        // Override group1 with an empty string
         std::env::set_var(env_var_name, "   ");
 
+        // Load config *after* setting env var
         let mut config = load_config(&config_path).expect("Load should succeed");
-        std::env::remove_var(env_var_name);
+        std::env::remove_var(env_var_name); // Clean up env var
 
-        // Validation should FAIL because the override resulted in zero keys for the group,
-        // and the fallback logic in load_config was removed.
+        // Pre-validation check: group1 should have no keys, group2 should have 1
+        assert!(config.groups.iter().find(|g| g.name == "group1").unwrap().api_keys.is_empty());
+        assert_eq!(config.groups.iter().find(|g| g.name == "group2").unwrap().api_keys.len(), 1);
+
+        // Validation should PASS because group2 still has a key, making total > 0
         let is_valid = validate_config(&mut config, &config_path.display().to_string());
-        assert!(!is_valid, "Config with no usable keys after override should fail validation");
+        assert!(is_valid, "Validation should pass if at least one group has keys after override");
+
+        // --- Test case where *all* keys become empty ---
+        let env_var_name_2 = "GEMINI_PROXY_GROUP_GROUP2_API_KEYS";
+        std::env::set_var(env_var_name, "   "); // Override group1 to empty
+        std::env::set_var(env_var_name_2, ",,,"); // Override group2 to empty
+
+        let mut config_all_empty = load_config(&config_path).expect("Load should succeed");
+        std::env::remove_var(env_var_name);
+        std::env::remove_var(env_var_name_2);
+
+         // Pre-validation check: both groups should have empty keys
+        assert!(config_all_empty.groups.iter().find(|g| g.name == "group1").unwrap().api_keys.is_empty());
+        assert!(config_all_empty.groups.iter().find(|g| g.name == "group2").unwrap().api_keys.is_empty());
+
+        // Validation should FAIL because total usable keys is now 0
+        let is_valid_all_empty = validate_config(&mut config_all_empty, &config_path.display().to_string());
+        assert!(!is_valid_all_empty, "Config with no usable keys across all groups after override should fail validation");
      }
 
      #[test]

@@ -517,6 +517,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "futures-util",
+ "http-body-util",
  "lazy_static",
  "reqwest",
  "serde",
@@ -618,6 +619,7 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
