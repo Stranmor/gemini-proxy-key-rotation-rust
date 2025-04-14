@@ -83,7 +83,7 @@ async fn main() {
 
     // --- Application State Initialization ---
     // AppState::new is available via the library import
-    let app_state = match AppState::new(&app_config) {
+    let app_state = match AppState::new(&app_config, config_path).await {
         Ok(state) => Arc::new(state),
         Err(e) => {
             error!(error = ?e, "Failed to initialize application state");
