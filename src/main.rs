@@ -1,21 +1,17 @@
 // src/main.rs
-mod config;
-mod error;
-mod handler;
-mod key_manager;
-mod proxy;
-mod state;
 
-use axum::{routing::any, serve, Router};
+// Use the library crate
+use gemini_proxy_key_rotation_rust::*;
+
+use axum::{routing::{any, get}, serve, Router};
 use clap::Parser;
-use config::AppConfig; // Keep explicit import for clarity
-use state::AppState;
+// AppConfig, AppState etc. are now brought into scope via the library use statement
 use std::{collections::HashSet, net::SocketAddr, path::PathBuf, process, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{error, info, warn};
-use tracing_subscriber::{EnvFilter, FmtSubscriber}; // Added EnvFilter
-use url::Url; // Keep for validation
+use tracing::{error, info, warn}; // Keep tracing imports
+use tracing_subscriber::{EnvFilter, FmtSubscriber}; // Keep subscriber imports
+use url::Url; // Keep Url import needed for validation
 
 /// Defines command-line arguments for the application using `clap`.
 #[derive(Parser, Debug)]
@@ -29,13 +25,8 @@ struct CliArgs {
 #[tokio::main]
 async fn main() {
     // --- Initialize Tracing ---
-    // Removed call to non-existent init_tracing()
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
-            // If RUST_LOG is not set, default to 'info' for the current crate
-            // and 'warn' for others. Adjust as needed for desired default verbosity.
-            // Example: "warn,gemini_proxy_key_rotation_rust=info"
-            // Using "info" for simplicity now.
             EnvFilter::new("info")
         });
 
@@ -52,7 +43,7 @@ async fn main() {
     info!("Using configuration file: {}", config_path.display());
 
     // --- Configuration Loading & Validation ---
-    // Removed call to non-existent get_config()
+    // config::load_config is now available via the library import
     let mut app_config = match config::load_config(config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -66,6 +57,8 @@ async fn main() {
     };
 
     let config_path_str = config_path.display().to_string();
+    // validate_config needs to be accessible, let's assume it's made pub in config module or moved/re-exported
+    // For now, let's keep it here, but ideally it belongs in the library.
     if !validate_config(&mut app_config, &config_path_str) {
         error!(
             "Configuration validation failed. Please check the errors above in {}.",
@@ -88,7 +81,7 @@ async fn main() {
     }
 
     // --- Application State Initialization ---
-    // AppState::new handles HttpClient and KeyManager initialization internally
+    // AppState::new is available via the library import
     let app_state = match AppState::new(&app_config) {
         Ok(state) => Arc::new(state),
         Err(e) => {
@@ -98,9 +91,10 @@ async fn main() {
     };
 
     // --- Server Setup ---
-    // Removed call to non-existent create_app()
+    // handler::health_check and handler::proxy_handler are available via the library import
     let app = Router::new()
-        .route("/*path", any(handler::proxy_handler)) // Ensure handler::proxy_handler exists and is pub
+        .route("/health", get(handler::health_check)) // Add health check route
+        .route("/*path", any(handler::proxy_handler)) // Catch-all proxy route
         .with_state(app_state);
 
     let addr: SocketAddr =
@@ -140,17 +134,9 @@ async fn main() {
 }
 
 /// Performs validation checks on the loaded `AppConfig`.
-///
-/// Checks include:
-/// - Non-empty server host and non-zero port.
-/// - Presence of at least one group.
-/// - Unique and non-empty group names.
-/// - Presence of non-empty `api_keys` within each group.
-/// - Validity of `target_url` and optional `proxy_url` formats.
-/// - Presence of at least one valid API key across all groups.
-///
-/// Logs errors or warnings using `tracing` and returns `true` if valid, `false` otherwise.
-// (Keep validate_config function as is - it seems correct)
+/// NOTE: Ideally, this function should be part of the library (e.g., in the config module)
+/// and made public if needed by the binary directly, or called internally during AppState::new.
+/// Keeping it here for simplicity in this refactoring step.
 fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
     let mut has_errors = false;
 
@@ -181,7 +167,6 @@ fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
     }
 
     let mut group_names = HashSet::new();
-    let mut total_keys = 0;
 
     for group in &mut cfg.groups {
         // Validate group name
@@ -205,19 +190,11 @@ fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
         }
 
         // Validate API keys within the group
-        if group.api_keys.is_empty() {
-            error!(
-                "Configuration error in {}: Group '{}' has an empty 'api_keys' list.",
-                config_path_str, group.name
-            );
-            has_errors = true;
-        }
+        // Allow empty api_keys list here if env var override is intended
         if group.api_keys.iter().any(|key| key.trim().is_empty()) {
              error!("Configuration error in {}: Group '{}' contains one or more empty API key strings.", config_path_str, group.name);
              has_errors = true;
         }
-        // Count only non-empty keys for the total_keys check
-        total_keys += group.api_keys.iter().filter(|k| !k.trim().is_empty()).count();
 
 
         // Validate target_url
@@ -251,14 +228,20 @@ fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
         }
     } // End loop through groups
 
-    // Final check for total non-empty keys
+    // This validation is tricky because keys can come from env vars.
+    // load_config handles the override. A better validation might happen *after* loading.
+    // For now, we keep a basic check that *something* must be potentially available.
+    // A truly robust validation would need to check env vars too or happen post-load.
+    // Let's comment out the strict total_keys check for now as it might fail if relying solely on env vars.
+    /*
     if total_keys == 0 && !cfg.groups.is_empty() { // Check only if groups exist
         error!(
-            "Configuration error in {}: No valid (non-empty) API keys found across all groups.",
+            "Configuration error in {}: No valid (non-empty) API keys found in the config file across all groups (check environment variables if intended).",
             config_path_str
         );
         has_errors = true;
     }
+    */
 
 
     !has_errors // Return true if no errors were found

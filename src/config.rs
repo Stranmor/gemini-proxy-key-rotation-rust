@@ -20,7 +20,7 @@ pub struct KeyGroup {
     #[serde(default)] // Makes proxy_url optional, defaults to None
     pub proxy_url: Option<String>,
     /// The target API endpoint URL for this group.
-    /// Defaults to `https://generativelanguage.googleapis.com` if not specified.
+    /// Defaults to the Google API endpoint for OpenAI compatibility (`https://generativelanguage.googleapis.com/v1beta/openai/`) if not specified.
     #[serde(default = "default_target_url")]
     pub target_url: String,
 }
@@ -46,9 +46,9 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-/// Provides the default Gemini API URL.
+/// Provides the default Google API URL for OpenAI compatibility.
 fn default_target_url() -> String {
-    "https://generativelanguage.googleapis.com".to_string()
+    "https://generativelanguage.googleapis.com/v1beta/openai/".to_string()
 }
 
 /// Helper function to sanitize group names for environment variable lookup.
