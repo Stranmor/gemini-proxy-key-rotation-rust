@@ -10,13 +10,13 @@
 
  ## Overview
 
- This proxy acts as a middleman between your OpenAI-compatible application (like clients using OpenAI libraries or tools like Roo Code/Cline) and the Google Gemini API's OpenAI compatibility endpoint. You provide it with multiple Gemini API keys **(ideally via environment variables)**, and it automatically rotates through them for outgoing requests, handling authentication and rate limits.
-
+ This proxy acts as a middleman between your OpenAI-compatible application (like clients using OpenAI libraries or tools like Roo Code/Cline) and the Google Gemini API's OpenAI compatibility endpoint. You provide it with multiple Gemini API keys, either via **environment variables (recommended)** or directly in the **`config.yaml` file**. The proxy automatically rotates through them for outgoing requests, handling authentication and rate limits.
+ 
  **Key Benefits:**
-
+ 
  *   **Avoid Rate Limits:** Distributes requests across many Gemini keys.
  *   **Increased Availability:** If one key hits its limit, the proxy automatically switches to another.
- *   **Secure Key Management:** **Recommended method:** Provide keys via environment variables, avoiding storage in configuration files.
+ *   **Flexible Key Management:** Supports providing keys via environment variables (most secure) or directly in `config.yaml`. Environment variables always override the config file.
  *   **Simplified Client Configuration:** Point your OpenAI client's base URL to this proxy; no need to manage Gemini keys in the client.
  *   **Group-Specific Routing:** Use different upstream proxies (e.g., SOCKS5) for different sets of keys if needed.
  *   **State Persistence:** Remembers rate-limited keys between restarts, avoiding checks on known limited keys until their reset time (daily midnight Pacific Time by default).
@@ -28,9 +28,9 @@
  *   Automatic round-robin key rotation across **all** configured keys (from all groups combined).
  *   Handles `429 Too Many Requests` responses from the target API by temporarily disabling the rate-limited key.
  *   **Rate Limit Reset:** Limited keys are automatically considered available again after the next **daily midnight in the Pacific Time zone (America/Los_Angeles)** by default.
- *   **Persists Rate Limit State:** Saves the limited status and UTC reset time of keys to `key_states.json` (located next to `config.yaml`), allowing the proxy to skip known limited keys on startup.
+ *   **Persists Rate Limit State:** Saves the limited status and UTC reset time of keys to `key_states.json` (located in the same directory as the active `config.yaml`), allowing the proxy to skip known limited keys on startup.
  *   Configurable via a single YAML file (`config.yaml`).
- *   **API keys should ideally be provided using environment variables** for better security (overrides `config.yaml`).
+ *   **API Keys:** Can be provided via environment variables (recommended, overrides `config.yaml`) or directly within `config.yaml` (less secure, used if environment variable is not set).
  *   Correctly adds the required `x-goog-api-key` and `Authorization: Bearer <key>` headers, replacing any client-sent `Authorization` headers.
  *   High performance asynchronous request handling using Axum and Tokio.
  *   Graceful shutdown handling (`SIGINT`, `SIGTERM`).
@@ -64,45 +64,71 @@
          *   Set `server.host` to `"0.0.0.0"`.
          *   Set `server.port` (e.g., `8080`).
          *   Define your `groups`. Add group names (e.g., `default`, `team-a`).
-         *   **IMPORTANT:** For groups where you will provide keys via environment variables, leave the `api_keys` list **empty (`api_keys: []`)** or **omit it entirely** within that group's definition.
-         *   Configure `proxy_url` per group only if needed.
-     *   *(The `key_states.json` file will be automatically created/updated in the same directory where `config.yaml` is mounted inside the container).*
+         *   **Configure API Keys:** Choose **one** method per group:
+             *   **Environment Variables (Recommended):** Leave `api_keys: []` empty or omit the `api_keys` field entirely for the group in `config.yaml`. You will provide keys via `-e GEMINI_PROXY_GROUP_...=...` when running the container.
+             *   **Directly in `config.yaml` (Less Secure):** Add your keys directly to the `api_keys:` list for the group. **Ensure you do NOT set the corresponding `GEMINI_PROXY_GROUP_...` environment variable when running the container**, otherwise the file keys will be ignored.
+         *   Configure `proxy_url` and `target_url` per group if needed (otherwise defaults apply).
+     *   *(The `key_states.json` file will be automatically created/updated in the same directory as the mounted `config.yaml`)*.
 
  3.  **Build the Docker Image:**
      ```bash
      docker build -t gemini-proxy-openai .
      ```
 
- 4.  **Run the Container (Providing Keys via Environment Variables):**
-
-     Replace `<YOUR_COMMA_SEPARATED_GEMINI_KEYS>` with your actual keys. Adjust ports and add more `-e` variables for other groups as needed. **Mount the directory containing `config.yaml`.**
-
+ 4.  **Run the Container:** Choose the method that suits your key management preference.
+ 
+     **Method A: Providing Keys via Environment Variables (Recommended)**
+ 
+     *   Ensure `api_keys: []` is empty (or omitted) in `config.yaml` for the groups you are providing keys for via environment variables.
+     *   Replace `<YOUR_COMMA_SEPARATED_GEMINI_KEYS>` with your actual keys. Adjust ports and add more `-e` variables for other groups as needed.
+     *   **Mount only the `config.yaml` file.**
+ 
      ```bash
-     # Example: Using the 'default' group defined in config.yaml
-     docker run -d --name gemini-proxy \
+     # Example: Keys for 'default' group via Env Var
+     docker run -d --name gemini-proxy-env \
        -p 8081:8080 \
-       -v "$(pwd):/app" \
+       -v "$(pwd)/config.yaml:/app/config.yaml" \
+       # Optional: Mount state file for persistence. Create if it doesn't exist: touch key_states.json
+       -v "$(pwd)/key_states.json:/app/key_states.json" \
        -e RUST_LOG="info" \
        -e GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="<YOUR_COMMA_SEPARATED_GEMINI_KEYS>" \
-       gemini-proxy-openai --config /app/config.yaml
+       gemini-proxy-openai
      ```
-     *   **Why environment variables?** This prevents storing your secret API keys directly in configuration files, which is much safer.
      *   **Explanation:**
-         *   `-p 8081:8080`: Maps host port 8081 to container port 8080.
-         *   `-v "$(pwd):/app"`: Mounts the host directory (containing `config.yaml`) to `/app` in the container. Needed for reading config and writing `key_states.json`.
+         *   `-p 8081:8080`: Maps host port 8081 to container port 8080 (adjust host port if needed).
+         *   `-v "$(pwd)/config.yaml:/app/config.yaml"`: **Crucially mounts only the config file** to `/app/config.yaml` inside the container.
+         *   `-v "$(pwd)/key_states.json:/app/key_states.json"`: (Optional but recommended) Mounts the key state file for persistence across container restarts. Create an empty `key_states.json` file locally first if it doesn't exist (`touch key_states.json`).
          *   `-e RUST_LOG="info"`: Sets log level.
-         *   `-e GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="..."`: Securely provides keys for the group named `default`. See [API Key Environment Variables](#api-key-environment-variables) for naming rules for other groups.
-         *   `--config /app/config.yaml`: Tells the proxy where to find the config *inside* the container.
+         *   `-e GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="..."`: Securely provides keys for the 'default' group. See [API Key Environment Variables](#api-key-environment-variables).
+         *   *(No `--config` argument needed, defaults to `/app/config.yaml`)*
+ 
+     **Method B: Using Keys Directly from `config.yaml` (Less Secure)**
+ 
+     *   Ensure your API keys are listed under `api_keys:` in your `config.yaml` for the desired groups.
+     *   **Do NOT set** the corresponding `GEMINI_PROXY_GROUP_..._API_KEYS` environment variables for the groups you want to use from the file.
+     *   **Mount only the `config.yaml` file.**
+ 
+     ```bash
+     # Example: Keys read from the mounted config.yaml
+     docker run -d --name gemini-proxy-yaml \
+       -p 8082:8080 \
+       -v "$(pwd)/config.yaml:/app/config.yaml" \
+       # Optional: Mount state file. Create if it doesn't exist: touch key_states.json
+       -v "$(pwd)/key_states.json:/app/key_states.json" \
+       -e RUST_LOG="info" \
+       gemini-proxy-openai
+     ```
+     *   **Explanation:** Similar to Method A, but **without** the `-e GEMINI_PROXY_GROUP_...` flags. The proxy will load keys from the mounted `/app/config.yaml`. Adjust host port (`8082` used here) as needed. *(No `--config` argument needed)*.
 
  5.  **Verify:**
-     *   Check logs: `docker logs gemini-proxy`.
-     *   Check health: `curl http://localhost:8081/health`
-     *   Test with an OpenAI client pointed to `http://localhost:8081`.
-     *   Check if `key_states.json` appeared in your local directory.
+     *   Check logs: `docker logs <container_name>` (e.g., `gemini-proxy-env` or `gemini-proxy-yaml`).
+     *   Check health: `curl http://localhost:<host_port>/health` (e.g., `http://localhost:8081/health`)
+     *   Test with an OpenAI client pointed to `http://localhost:<host_port>`.
+     *   Check if `key_states.json` was created/updated in your local directory (if mounted).
 
- ### Option 2: Building and Running Locally (Less Secure for Keys)
+ ### Option 2: Building and Running Locally
 
- Use this primarily for development or if you understand the security implications of potentially storing keys in `config.yaml`. Using environment variables (Step 4 below) is still recommended even for local runs.
+ Use this primarily for development. Again, you can provide keys via environment variables or directly in `config.yaml`.
 
  1.  **Clone Repository:** (If needed)
      ```bash
@@ -112,20 +138,41 @@
  2.  **Prepare `config.yaml`:**
      *   Copy `config.example.yaml` to `config.yaml`.
      *   Edit `server.host` (`127.0.0.1` or `0.0.0.0`) and `server.port`.
-     *   Define `groups`. **Preferably, leave `api_keys: []` empty and use environment variables (Step 4).** If you must add keys here, be aware of the security risk.
+     *   Define `groups`. Decide whether to use environment variables (Method A below) or keys in the file (Method B below), configuring `config.yaml` accordingly.
  3.  **Build:**
      ```bash
      cargo build --release
      ```
- 4.  **Run (Recommended: Using Environment Variables):**
+ 4.  **Run:** Choose your key management method.
+
+     **Method A: Using Environment Variables (Recommended)**
+
+     *   Ensure `api_keys: []` is empty (or omitted) in `config.yaml` for the corresponding groups.
+     *   Set environment variables before running.
+
      ```bash
      export RUST_LOG="info" # Optional
      export GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="key1,key2"
      # export GEMINI_PROXY_GROUP_ANOTHER_GROUP_API_KEYS="key3"
 
+     # Run using the relative path to your config file
      ./target/release/gemini-proxy-key-rotation-rust --config config.yaml
      ```
-     *   *(The `key_states.json` file will be created/updated in the same directory as `config.yaml`)*
+
+     **Method B: Using Keys from `config.yaml` (Less Secure)**
+
+     *   Ensure keys are listed in `config.yaml`.
+     *   **Do NOT set** the corresponding `GEMINI_PROXY_GROUP_..._API_KEYS` environment variables.
+
+     ```bash
+     export RUST_LOG="info" # Optional
+
+     # Make sure the relevant GEMINI_PROXY_GROUP_* variables are unset
+     # unset GEMINI_PROXY_GROUP_DEFAULT_API_KEYS
+
+     ./target/release/gemini-proxy-key-rotation-rust --config config.yaml
+     ```
+     *   *(In both methods, the `key_states.json` file will be created/updated in the same directory as `config.yaml`)*
 
  5.  **Verify:**
      *   Check terminal logs.
@@ -196,11 +243,13 @@
      # Keys provided by GEMINI_PROXY_GROUP_TEAM_X_PROXY_API_KEYS env var
      api_keys: []
 
-   # --- Example Group 3: Keys directly in config (NOT RECOMMENDED for secrets) ---
-   # - name: "direct-keys-example"
-   #   api_keys:
-   #     - "AIzaSy..............." # Less secure
-   #     - "AIzaSy..............."
+   # --- Example Group 3: Keys directly in config (Less Secure) ---
+   # Use this ONLY if the corresponding environment variable
+   # (GEMINI_PROXY_GROUP_DIRECT_KEYS_EXAMPLE_API_KEYS) is NOT set.
+   - name: "direct-keys-example"
+     api_keys:
+       - "AIzaSy..............." # Less secure, visible in the file
+       - "AIzaSy..............."
  ```
  *   **Key Management Priority:** If an [environment variable](#api-key-environment-variables) exists for a group's keys, it **always overrides** the `api_keys` list in this file for that group.
 
@@ -239,7 +288,7 @@
 
  ### Key State Persistence (`key_states.json`)
  *   **Purpose:** Remembers rate-limited keys to avoid checking them immediately after restarts.
- *   **Location:** Same directory as the active `config.yaml`.
+ *   **Location:** Same directory as the active `config.yaml`. If running in Docker, ensure this file is mapped via a volume (e.g., `-v "$(pwd)/key_states.json:/app/key_states.json"`) for persistence. Create an empty file locally first if it doesn't exist (`touch key_states.json`).
  *   **Reset Logic:** Daily midnight Pacific Time (America/Los_Angeles).
  *   **Management:** Automatic. Deleting the file resets the state memory.
  *   **.gitignore:** Included by default.
@@ -254,16 +303,16 @@
  *   **Config Errors:** Logged on startup, proxy exits.
 
  ### Common Docker Commands
- *   Logs: `docker logs gemini-proxy`
- *   Stop: `docker stop gemini-proxy`
- *   Start: `docker start gemini-proxy`
- *   Remove: `docker rm gemini-proxy`
+ *   Logs: `docker logs <container_name>` (e.g., `gemini-proxy-env` or `gemini-proxy-yaml`)
+ *   Stop: `docker stop <container_name>`
+ *   Start: `docker start <container_name>`
+ *   Remove: `docker rm <container_name>` (Use `-f` to force removal if running: `docker rm -f <container_name>`)
  *   Rebuild: `docker build -t gemini-proxy-openai .`
 
  ## Security Considerations
 
- *   **API Keys:** **Use environment variables.** Avoid storing keys in `config.yaml`.
- *   **Files:** Do not commit `config.yaml` (if it contains secrets) or `key_states.json` to Git.
+ *   **API Keys:** **Using environment variables is strongly recommended** over storing keys directly in `config.yaml`. If you must use `config.yaml` for keys, ensure the file has strict permissions and is never committed to version control. Remember environment variables *always* override the file.
+ *   **Files:** Do not commit `config.yaml` (if it contains secrets) or `key_states.json` to Git. (`.gitignore` includes these by default).
  *   **Network:** Expose the proxy only to trusted networks. Consider a reverse proxy (Nginx/Caddy) for TLS and advanced access control if needed.
 
  ## Contributing
