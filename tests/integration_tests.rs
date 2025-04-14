@@ -51,7 +51,7 @@ async fn test_forward_request_openai_compat_success_no_proxy() { // Renamed for 
     // Use a dummy server host/port for AppConfig as it's not directly used in this test logic
     let config = create_test_config(vec![test_group], "127.0.0.1", 9999);
     let app_state = AppState::new(&config).expect("Failed to create AppState for test");
-    let client = app_state.client(); // Get the shared reqwest client
+    // Line 54 completely removed
 
     // Prepare key info for the request
     let key_info = FlattenedKeyInfo {
@@ -72,8 +72,9 @@ async fn test_forward_request_openai_compat_success_no_proxy() { // Renamed for 
     let body_bytes = Bytes::new();
 
     // 4. Call the function under test
+    // Pass the whole AppState now
     let result = proxy::forward_request(
-        client,
+        &app_state, // Pass the AppState reference
         &key_info,
         method,
         uri,
@@ -99,3 +100,5 @@ async fn test_forward_request_openai_compat_success_no_proxy() { // Renamed for 
 // - Test rate limit handling (429 response from mock server) -> Need KeyManager interaction
 // - Test error scenarios (e.g., mock server returning 500, connection error)
 // - Test SOCKS5 proxy scenario (requires more complex setup, potentially external process or dockerized proxy)
+//   - This would involve creating config with a proxy_url, ensuring the proxy client is created in AppState,
+//     and potentially mocking the proxy server itself or using a real one.

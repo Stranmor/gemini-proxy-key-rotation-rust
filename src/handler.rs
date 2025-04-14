@@ -29,7 +29,7 @@ pub async fn health_check() -> StatusCode {
 ///       - If a previous attempt resulted in a 429, returns that last 429 response.
 ///       - Otherwise, returns a `SERVICE_UNAVAILABLE` error.
 ///    c. Calls `proxy::forward_request` to handle the actual request forwarding logic,
-///       passing the request components (method, uri, headers, body) and key info.
+///       passing the shared AppState, request components (method, uri, headers, body), and key info.
 ///    d. Checks the response from the upstream service.
 ///    e. If the upstream response is `429 Too Many Requests`:
 ///       - Marks the used key as limited via the `KeyManager`.
@@ -100,10 +100,10 @@ pub async fn proxy_handler(
         debug!(api_key_preview = %key_preview, group = %group_name, "Handler: Trying key");
 
         // 2. Forward the request using the proxy module
-        // Pass cloned components and key info.
+        // Pass the reference to the AppState itself.
         // Note: We clone body_bytes for each attempt. Consider Arc<Bytes> if performance critical.
         let forward_result = proxy::forward_request(
-            state.client(),
+            &state, // Pass reference to the AppState (Arc derefs to AppState)
             &key_info,
             method.clone(),
             uri.clone(), // Clone Uri
