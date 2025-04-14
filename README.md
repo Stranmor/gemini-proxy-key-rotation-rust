@@ -96,11 +96,22 @@ This method uses Docker Compose and a `.env` file to manage configuration, allow
     *   Test with an OpenAI client pointed to `http://localhost:<SERVER_PORT_HOST>`.
     *   Check if `key_states.json` was created/updated in your local directory.
 
-7.  **Stopping:**
-    ```bash
-    docker compose down
-    ```
-    *(Use `docker compose down -v` to also remove the anonymous volume if you used named volumes instead of bind mounts for `key_states.json`)*.
+7.  **Applying `.env` Changes:**
+   *   If you modify the `.env` file after the container is running, you **must restart** the container for the changes to take effect. Docker Compose reads the `.env` file only when the container starts.
+   *   Use one of the following commands:
+       ```bash
+       # Option A: Restart the specific service (faster)
+       docker compose restart gemini-proxy
+
+       # Option B: Stop and restart all services defined in the compose file
+       docker compose down && docker compose up -d
+       ```
+
+8.  **Stopping:**
+   ```bash
+   docker compose down
+   ```
+   *(Use `docker compose down -v` to also remove the anonymous volume if you used named volumes instead of bind mounts for `key_states.json`)*.
 
 ### Option 2: Building and Running Locally
 

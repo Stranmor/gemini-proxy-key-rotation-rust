@@ -19,7 +19,8 @@ COPY src ./src
 # Build the application in release mode targeting musl for a static binary
 # Enable the "vendored" feature for openssl via the reqwest crate's feature flag.
 # Vendoring implies static linking for musl targets, so OPENSSL_STATIC is removed.
-RUN cargo build --release --target x86_64-unknown-linux-musl --features reqwest/native-tls-vendored
+RUN cargo build --release --target x86_64-unknown-linux-musl --features reqwest/native-tls-vendored \
+    && strip /app/target/x86_64-unknown-linux-musl/release/gemini-proxy-key-rotation-rust
 
 # Stage 2: Create the final minimal image
 FROM alpine:latest
@@ -36,7 +37,7 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/gemini-proxy-k
 
 # Copy the example configuration file - this will be overwritten by the volume mount
 # but having it ensures the container can technically start without a mount (though non-functional)
-COPY config.example.yaml /app/config.yaml
+# COPY config.example.yaml /app/config.yaml # Removed: Configuration primarily via env vars and mounts
 
 # Expose the port the application listens on (defaulting to 8080, adjust if needed)
 # Make sure this matches the port in your config.yaml
