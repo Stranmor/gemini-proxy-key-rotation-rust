@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  gemini-proxy:
+    # Build the image using the Dockerfile in the current directory
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gemini-proxy-openai-compose
+    # Use an env_file to load environment variables (API keys, port, etc.)
+    # Users should copy .env.example to .env and fill in their secrets
+    # env_file directive removed, using explicit environment variables below
+    # Ensure values are set in the .env file
+    # Expose ports. Reads SERVER_PORT from .env, defaults to 8080 if not set.
+    ports:
+      - "${SERVER_PORT_HOST:-8081}:${SERVER_PORT_CONTAINER:-8080}" # Maps host port (default 8081) to container port (default 8080)
+    volumes:
+      # Mount key_states.json for persistence. Create an empty file if it doesn't exist first.
+      - ./key_states.json:/app/key_states.json
+      # Optional: Mount config.yaml if you still need some settings from it that are NOT overridden by env vars.
+      # Generally, prefer env vars for Docker deployments when using compose + .env
+      # - ./config.yaml:/app/config.yaml # Mount config.yaml if needed for specific group target_urls or server settings
+    environment:
+      # Values are substituted from the .env file or host environment
+      # Server settings
+      SERVER_PORT: ${SERVER_PORT_CONTAINER:-8080} # Port inside the container
+      RUST_LOG: ${RUST_LOG:-info}
+
+      # --- Group Configurations ---
+      # Add variables for ALL groups defined in your .env file
+
+      # Group: gemini-alt-8
+      GEMINI_PROXY_GROUP_GEMINI_ALT_8_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_8_API_KEYS}
+      GEMINI_PROXY_GROUP_GEMINI_ALT_8_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_8_PROXY_URL}
+
+      # Group: main
+      GEMINI_PROXY_GROUP_MAIN_API_KEYS: ${GEMINI_PROXY_GROUP_MAIN_API_KEYS}
+      # GEMINI_PROXY_GROUP_MAIN_PROXY_URL: ${GEMINI_PROXY_GROUP_MAIN_PROXY_URL:-} # Optional: Provide default empty if not set
+
+      # Group: gemini-alt-9
+      GEMINI_PROXY_GROUP_GEMINI_ALT_9_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_9_API_KEYS}
+      GEMINI_PROXY_GROUP_GEMINI_ALT_9_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_9_PROXY_URL}
+
+      # Group: gemini-alt-10
+      GEMINI_PROXY_GROUP_GEMINI_ALT_10_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_10_API_KEYS}
+      GEMINI_PROXY_GROUP_GEMINI_ALT_10_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_10_PROXY_URL}
+
+      # Group: gemini-alt-11
+      GEMINI_PROXY_GROUP_GEMINI_ALT_11_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_11_API_KEYS}
+      GEMINI_PROXY_GROUP_GEMINI_ALT_11_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_11_PROXY_URL}
+    restart: unless-stopped
+    # Optional: Add healthcheck based on the /health endpoint
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${SERVER_PORT_CONTAINER:-8080}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s # Give the container time to start
+
+volumes:
+  # Define the volume if you prefer named volumes over bind mounts, though bind mount is simpler here.
+  key_state_data:
+
+# Note: Ensure you have a .env file based on .env.example with your actual API keys.

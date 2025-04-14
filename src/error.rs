@@ -49,8 +49,12 @@
 
      #[error("Internal server error: {0}")]
      Internal(String), // Catch-all for unexpected errors
-
-     // Add more specific error types as needed
+ 
+     #[error("Proxy configuration error: {0}")]
+     ProxyConfigError(String),
+ 
+     #[error("HTTP client build error: {0}")]
+     HttpClientBuildError(reqwest::Error),
  }
 
  // Implement IntoResponse for AppError to automatically convert errors into HTTP responses
@@ -70,7 +74,8 @@
              AppError::ResponseBodyError(msg) => (StatusCode::BAD_GATEWAY, format!("Response body error: {}", msg)),
              AppError::InvalidClientApiKey => (StatusCode::UNAUTHORIZED, "Invalid API key provided".to_string()),
              AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Internal server error: {}", msg)),
-             // Ensure all variants are handled
+             AppError::ProxyConfigError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Proxy configuration error: {}", msg)),
+             AppError::HttpClientBuildError(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("HTTP client build error: {}", e)),
          };
 
          let body = Json(json!({

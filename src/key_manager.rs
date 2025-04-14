@@ -7,14 +7,14 @@
  use serde::{Deserialize, Serialize};
  use std::{
      collections::HashMap,
-     fs as std_fs, // Import standard fs for rename
+     // fs as std_fs, // Removed: No longer needed after removing rename logic
      io as std_io, // Import standard io for Error kind
-     path::{Path, PathBuf}, // Added Path, PathBuf
+     path::{Path, PathBuf},
      sync::atomic::{AtomicUsize, Ordering},
  };
- use tokio::fs::{self as async_fs, File as TokioFile}; // Added async_fs, TokioFile
- use tokio::io::AsyncWriteExt; // Added AsyncWriteExt
- use tokio::sync::RwLock;
+ use tokio::fs::{self as async_fs}; // Removed TokioFile import
+ // use tokio::io::AsyncWriteExt; // Removed AsyncWriteExt import
+ use tokio::sync::{Mutex, RwLock}; // Added Mutex
  use tracing::{debug, error, info, warn};
 
  // --- Structures moved from state.rs ---
@@ -60,6 +60,8 @@
      key_states: RwLock<HashMap<String, KeyState>>,
      /// The path to the file where key states are persisted.
      state_file_path: PathBuf,
+     /// Mutex to serialize write operations to the state file.
+     save_mutex: Mutex<()>,
  }
 
  impl KeyManager {
@@ -156,6 +158,7 @@
              key_index: AtomicUsize::new(0),
              key_states: RwLock::new(initial_key_states),
              state_file_path,
+             save_mutex: Mutex::new(()), // Initialize the save mutex
          };
 
          // Perform an initial save synchronously before returning the manager.
@@ -303,46 +306,39 @@
          }
      }
 
-     /// Asynchronously saves the current state of all keys to the state file using atomic write.
-     async fn save_current_states(&self) -> Result<(), std_io::Error> { // Use std_io::Error
+     /// Asynchronously saves the current state of all keys to the state file using a Mutex for serialization.
+     async fn save_current_states(&self) -> Result<(), std_io::Error> {
+         // Acquire the mutex lock to ensure only one save operation happens at a time.
+         let _save_guard = self.save_mutex.lock().await;
+         debug!("Acquired save mutex lock for {}", self.state_file_path.display());
+
          let states_guard = self.key_states.read().await;
-         let states_to_save = states_guard.clone(); // Clone the map to release the lock quickly
+         let states_to_save = states_guard.clone(); // Clone the map to release the RwLock quickly
          drop(states_guard);
 
-         debug!("Attempting to save {} key states to {}", states_to_save.len(), self.state_file_path.display());
+         debug!("Attempting to save {} key states directly to {}", states_to_save.len(), self.state_file_path.display());
 
-         // Use compact JSON format for saving state
-         let json_data = serde_json::to_string(&states_to_save)
-             .map_err(|e| std_io::Error::new(std_io::ErrorKind::InvalidData, format!("Failed to serialize key states: {}", e)))?;
+         // Serialize state to JSON
+         let json_data = match serde_json::to_string_pretty(&states_to_save) { // Use pretty print for readability
+             Ok(data) => data,
+             Err(e) => {
+                  error!(error = %e, "Failed to serialize key states to JSON");
+                  return Err(std_io::Error::new(std_io::ErrorKind::InvalidData, format!("Failed to serialize key states: {}", e)));
+             }
+         };
 
-         // --- Atomic Write Implementation using std::fs::rename ---
-         let temp_file_path = self.state_file_path.with_extension("json.tmp");
-
-         // Block to ensure temp_file is dropped before rename
-         {
-             // 1. Write to temporary file asynchronously
-             let mut temp_file = TokioFile::create(&temp_file_path).await?;
-             temp_file.write_all(json_data.as_bytes()).await?;
-             temp_file.sync_all().await?; // Ensure data is written to disk
-             // temp_file is dropped here, closing the handle
-         }
-
-         // 2. Rename temporary file to the final destination using synchronous std::fs::rename
-         // This is generally atomic on POSIX systems.
-         match std_fs::rename(&temp_file_path, &self.state_file_path) {
+         // Write directly to the final file path (protected by the save_mutex)
+         match async_fs::write(&self.state_file_path, json_data.as_bytes()).await {
              Ok(()) => {
                  info!("Successfully saved {} key states to {}", states_to_save.len(), self.state_file_path.display());
                  Ok(())
              }
              Err(e) => {
-                 error!(error = ?e, temp_path = %temp_file_path.display(), final_path = %self.state_file_path.display(), "Failed to rename temp state file");
-                 // Attempt to clean up the temporary file if rename failed
-                 if let Err(remove_err) = async_fs::remove_file(&temp_file_path).await {
-                     warn!(error = ?remove_err, temp_path = %temp_file_path.display(), "Failed to remove temporary state file after rename error");
-                 }
-                 Err(e) // Propagate the original rename error
+                  error!(error = ?e, file_path = %self.state_file_path.display(), "Failed to write key states directly to file");
+                  Err(e) // Propagate the write error
              }
          }
+          // _save_guard is dropped here, releasing the mutex lock
      }
 
      /// Creates a short, safe preview of an API key string for logging purposes.
