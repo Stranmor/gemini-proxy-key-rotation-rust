@@ -59,5 +59,6 @@ panic = "abort"      # Abort on panic for smaller binary
 
 # Dependencies only used for tests, examples, benchmarks
 [dev-dependencies]
+wiremock = "0.6" # Mocking HTTP server
 tempfile = "3.10" # For creating temporary files/dirs in tests
 lazy_static = "1.5" # For static mutex in tests

@@ -6,13 +6,18 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    body::Bytes, // Import Bytes
     extract::{Request, State},
-    http::{HeaderMap, Method, StatusCode, Uri}, // Import components needed for request reconstruction
+    http::StatusCode,
     response::Response,
 };
 use std::sync::Arc;
 use tracing::{debug, error, info, warn}; // Keep logging imports, added error
+
+/// Simple health check handler. Returns HTTP 200 OK.
+pub async fn health_check() -> StatusCode {
+    StatusCode::OK
+}
+
 
 /// The main Axum handler function that processes incoming requests.
 ///
