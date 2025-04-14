@@ -28,5 +28,6 @@ tests/
 Dockerfile
 .dockerignore
 
-# Ignore any local configuration files not intended for the image
+# Ignore any local configuration and state files not intended for the image
 config.yaml
+key_states.json
