@@ -103,6 +103,16 @@
      info!(method = %outgoing_method, url = %final_target_url, api_key_preview=%request_key_preview, group=%group_name, proxy_used=?proxy_url_option, "Forwarding request to target");
 
      // --- Send request using the retrieved client ---
+     let start_time = std::time::Instant::now();
+     // Use info level for initiation as it's a key step. Keep group/proxy info.
+     tracing::info!(
+         target_url = %final_target_url,
+         api_key_preview = %request_key_preview,
+         group = %group_name,
+         proxy_used = ?proxy_url_option,
+         "Initiating request to target via proxy"
+     );
+
      let target_response_result = http_client
          .request(outgoing_method, final_target_url.clone()) // Clone Url for request
          .headers(outgoing_headers)
@@ -110,17 +120,42 @@
          .send()
          .await;
 
+     let elapsed_time = start_time.elapsed(); // Calculate duration immediately after await
+
      let target_response = match target_response_result {
-         Ok(resp) => resp,
+         Ok(resp) => {
+             let status = resp.status();
+             // Log success with duration
+             tracing::info!(
+                 status = %status,
+                 duration = ?elapsed_time,
+                 target_url = %final_target_url,
+                 api_key_preview = %request_key_preview,
+                 group = %group_name,
+                 proxy_used = ?proxy_url_option,
+                 "Received successful response from target"
+             );
+             resp // Return the response
+         }
          Err(e) => {
-              error!(error = %e, proxy_used=?proxy_url_option, "Upstream request failed");
-              return Err(AppError::Reqwest(e));
+             // Log error with duration
+             error!(
+                 error = %e,
+                 duration = ?elapsed_time,
+                 target_url = %final_target_url,
+                 api_key_preview = %request_key_preview,
+                 group = %group_name,
+                 proxy_used = ?proxy_url_option,
+                 "Received error from target"
+             );
+             // Return the error wrapped in AppError
+             return Err(AppError::Reqwest(e));
          }
      };
      // ---
 
      let response_status = target_response.status();
-     info!(status = %response_status, "Received response from target");
+     // info!(status = %response_status, "Received response from target"); // Removed: Now logged within the match arms with duration
 
      let response_headers = build_response_headers(target_response.headers());
 
