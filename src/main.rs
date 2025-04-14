@@ -6,13 +6,11 @@ use gemini_proxy_key_rotation_rust::*;
 use axum::{routing::{any, get}, serve, Router};
 use clap::Parser;
 // AppConfig, AppState etc. are now brought into scope via the library use statement
-// Removed HashSet import as it's no longer used here
 use std::{net::SocketAddr, path::PathBuf, process, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{error, info}; // Keep tracing imports (removed warn)
-use tracing_subscriber::{EnvFilter, FmtSubscriber}; // Keep subscriber imports
-// Removed Url import as it's no longer used here
+use tracing::{error, info};
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 /// Defines command-line arguments for the application using `clap`.
 #[derive(Parser, Debug)]
@@ -28,6 +26,7 @@ async fn main() {
     // --- Initialize Tracing ---
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
+            // Default to `info` level if RUST_LOG is not set
             EnvFilter::new("info")
         });
 
@@ -41,58 +40,56 @@ async fn main() {
     let args = CliArgs::parse();
     let config_path = &args.config;
     info!("Starting Gemini API Key Rotation Proxy...");
-    info!("Using configuration file: {}", config_path.display());
+    // Log path only if it exists or if explicitly provided, to avoid confusion when it's optional
+    if config_path.exists() || args.config != PathBuf::from("config.yaml") {
+        info!("Using configuration file: {}", config_path.display());
+    } else {
+         info!("Optional configuration file '{}' not found. Using defaults and environment variables.", config_path.display());
+    }
+
 
     // --- Configuration Loading & Validation ---
-    // config::load_config is now available via the library import
-    let mut app_config = match config::load_config(config_path) {
+    // load_config now handles defaults, optional file, env vars, and validation internally
+    // Correctly handle the Result from load_config which performs validation internally
+    let app_config = match config::load_config(config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
             error!(
-                path = %config_path.display(),
+                config_path = %config_path.display(),
                 error = ?e,
-                "Failed to load configuration"
+                "Failed to load or validate configuration"
             );
             process::exit(1);
         }
     };
 
-    let config_path_str = config_path.display().to_string();
-    // Call the validate_config function from the config module
-    if !config::validate_config(&mut app_config, &config_path_str) {
-        error!(
-            "Configuration validation failed. Please check the errors above in {}.",
-            config_path_str
-        );
-        process::exit(1);
-    } else {
-        // Calculate total keys *after* validation (which happens after loading/overrides)
-        let total_keys: usize = app_config
-            .groups
-            .iter()
-            .map(|g| g.api_keys.len())
-            .sum();
-        info!(
-            "Configuration loaded and validated successfully. Found {} group(s) with a total of {} API key(s). Server configured for {}:{}",
-            app_config.groups.len(),
-            total_keys,
-            app_config.server.host,
-            app_config.server.port
-        );
-    }
+     // Log successful load details
+     let total_keys: usize = app_config
+         .groups
+         .iter()
+         .map(|g| g.api_keys.len())
+         .sum();
+     info!(
+         "Configuration loaded successfully. Found {} group(s) with a total of {} API key(s). Server configured for {}:{}",
+         app_config.groups.len(),
+         total_keys,
+         app_config.server.host,
+         app_config.server.port
+     );
+
 
     // --- Application State Initialization ---
-    // AppState::new is available via the library import
+    // AppState::new now returns a Result, handle it properly
     let app_state = match AppState::new(&app_config, config_path).await {
         Ok(state) => Arc::new(state),
         Err(e) => {
-            error!(error = ?e, "Failed to initialize application state");
+            // Log the specific error from AppState initialization
+            error!(error = ?e, "Failed to initialize application state (e.g., HTTP client creation failed)");
             process::exit(1);
         }
     };
 
     // --- Server Setup ---
-    // handler::health_check and handler::proxy_handler are available via the library import
     let app = Router::new()
         .route("/health", get(handler::health_check)) // Add health check route
         .route("/*path", any(handler::proxy_handler)) // Catch-all proxy route
@@ -133,8 +130,6 @@ async fn main() {
 
     info!("Server shut down gracefully.");
 }
-
-// validate_config function removed from here. It's now in src/config.rs
 
 async fn shutdown_signal() {
     let ctrl_c = async {

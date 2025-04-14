@@ -8,7 +8,8 @@ Cargo.lock
 key_states.json
 # Local configuration file (might contain secrets if not using env vars)
 config.yaml
-
+# Environment variables file (contains secrets!)
+.env
 # IDE files (optional, adjust as needed)
 .idea/
 .vscode/

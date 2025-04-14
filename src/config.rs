@@ -1,39 +1,42 @@
 // src/config.rs
 use serde::Deserialize;
-use std::{env, fs, io, path::Path, collections::HashSet};
-use tracing::{debug, info, warn, error}; // Ensure debug is imported
-use crate::error::{AppError, Result};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs, io,
+    path::Path,
+};
+use tracing::{error, info, warn};
 use url::Url;
+
+use crate::error::{AppError, Result};
 
 /// Represents a group of API keys with associated target URL and optional proxy settings.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct KeyGroup {
-    /// A unique identifier for this group, used for logging and potentially future features.
-    /// Also used to construct the environment variable name for overriding API keys.
+    /// Group name, derived from environment variables (e.g., DEFAULT, GROUP1).
     pub name: String,
-    /// A list of API keys associated with this group.
-    /// The proxy will rotate through these keys (along with keys from other groups).
-    /// This list can be overridden by the `GEMINI_PROXY_GROUP_{GROUP_NAME}_API_KEYS` environment variable.
+    /// API keys, populated from `GEMINI_PROXY_GROUP_{NAME}_API_KEYS` env var.
+    #[serde(default)]
     pub api_keys: Vec<String>,
-    /// An optional upstream proxy URL (supports http, https, socks5) for requests made using keys from this group.
-    /// Example: "socks5://user:pass@host:port"
-    #[serde(default)] // Makes proxy_url optional, defaults to None
+    /// Optional upstream proxy URL, populated from `GEMINI_PROXY_GROUP_{NAME}_PROXY_URL` env var.
+    #[serde(default)]
     pub proxy_url: Option<String>,
-    /// The base target API endpoint URL (scheme + host + port, e.g., "https://generativelanguage.googleapis.com").
-    /// The path and query from the incoming request will be appended to this base.
-    /// Defaults to the Google API endpoint host (`https://generativelanguage.googleapis.com`) if not specified.
+    /// Target API endpoint URL, populated from `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL` env var,
+    /// or from `config.yaml` as a fallback, or the hardcoded default.
     #[serde(default = "default_target_url")]
     pub target_url: String,
 }
 
-/// Represents the root of the application configuration, typically loaded from `config.yaml`.
+/// Represents the root of the application configuration.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
-    /// Configuration for the proxy server itself (host and port).
+    /// Server configuration (host/port). Defaults can be set in config.yaml.
+    #[serde(default)]
     pub server: ServerConfig,
-    /// A list of key groups. The proxy rotates through keys from all groups combined.
+    /// List of key groups, constructed primarily from environment variables.
+    #[serde(default)]
     pub groups: Vec<KeyGroup>,
 }
 
@@ -41,219 +44,211 @@ pub struct AppConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    /// The hostname or IP address to bind to (e.g., "0.0.0.0", "127.0.0.1").
-    /// Use "0.0.0.0" when running inside Docker.
+    #[serde(default = "default_server_host")]
     pub host: String,
-    /// The port number to listen on (e.g., 8080).
+    #[serde(default = "default_server_port")]
     pub port: u16,
 }
 
-/// Provides the default Google API base URL.
-fn default_target_url() -> String {
-    // Should only contain the scheme and host. Path is appended from the request.
-    "https://generativelanguage.googleapis.com".to_string()
+// Default implementations
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig { server: ServerConfig::default(), groups: Vec::new() }
+    }
 }
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig { host: default_server_host(), port: default_server_port() }
+    }
+}
+fn default_server_host() -> String { "0.0.0.0".to_string() }
+fn default_server_port() -> u16 { 8080 }
+fn default_target_url() -> String { "https://generativelanguage.googleapis.com".to_string() }
 
-/// Helper function to sanitize group names for environment variable lookup.
-/// Converts to uppercase and replaces non-alphanumeric characters with underscores.
-fn sanitize_group_name_for_env(name: &str) -> String {
+/// Helper function to sanitize group names for matching YAML keys if needed.
+fn sanitize_for_matching(name: &str) -> String {
     name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
         .collect()
 }
 
+// Environment variable constants
+const ENV_VAR_PREFIX: &str = "GEMINI_PROXY_GROUP_";
+const API_KEYS_SUFFIX: &str = "_API_KEYS";
+const PROXY_URL_SUFFIX: &str = "_PROXY_URL";
+const TARGET_URL_SUFFIX: &str = "_TARGET_URL";
 
-/// Loads the application configuration from the specified YAML file path.
-///
-/// This function reads the file, parses the YAML content into an `AppConfig` struct,
-/// and then checks for environment variables (`GEMINI_PROXY_GROUP_{GROUP_NAME}_API_KEYS`)
-/// to potentially override the `api_keys` listed in the file for each group.
-/// If the environment variable exists, its value (after splitting and filtering)
-/// **completely replaces** the keys from the file, even if the resulting list is empty.
-///
-/// # Arguments
-///
-/// * `path` - A `Path` reference to the configuration file.
-///
-/// # Errors
-///
-/// Returns `AppError::Io` if the file cannot be read.
-/// Returns `AppError::YamlParsing` if the YAML content is invalid.
-pub fn load_config(path: &Path) -> Result<AppConfig> {
-    let path_str = path.display().to_string();
-
-    // Reading the file content using AppError::Io
-    let contents = fs::read_to_string(path).map_err(|e| {
-        AppError::Io(io::Error::new(
-            e.kind(),
-            format!("Failed to read config file '{}': {}", path_str, e),
-        ))
-    })?;
-
-    // Parsing YAML using AppError::YamlParsing
-    let mut config: AppConfig = serde_yaml::from_str(&contents).map_err(AppError::from)?;
-
-
-    // --- Override API keys from environment variables ---
-    for group in &mut config.groups {
-        let sanitized_group_name = sanitize_group_name_for_env(&group.name);
-        let env_var_name = format!("GEMINI_PROXY_GROUP_{}_API_KEYS", sanitized_group_name);
-
-        match env::var(&env_var_name) {
-            Ok(env_keys_str) => {
-                // Environment variable found, its value dictates the keys for this group.
-                let keys_from_env: Vec<String> = env_keys_str
-                    .trim()
-                    .split(',')
-                    .map(|k| k.trim().to_string())
-                    .filter(|k| !k.is_empty()) // Filter out empty strings resulting from split/trim
-                    .collect();
-
-                if keys_from_env.is_empty() {
-                     warn!(
-                        "Overriding API keys for group '{}' from environment variable '{}', which resulted in an empty list of keys (env var was empty or contained only separators/whitespace).",
-                        group.name, env_var_name
-                    );
-                } else {
-                    info!(
-                        "Overriding API keys for group '{}' from environment variable '{}' ({} keys found).",
-                        group.name, env_var_name, keys_from_env.len()
-                    );
-                }
-                // Replace the keys from the config file unconditionally.
-                group.api_keys = keys_from_env;
-            }
-            Err(env::VarError::NotPresent) => {
-                // Environment variable not found, use keys from the config file (no action needed).
-                debug!("No environment override found ('{}'). Using API keys from config file for group '{}'.", env_var_name, group.name);
-            }
-            Err(e) => {
-                // Error reading the environment variable (e.g., invalid UTF-8).
-                // Log the error but proceed with keys from the config file.
-                warn!(
-                    "Error reading environment variable '{}': {}. Using keys from config file for group '{}'.",
-                    env_var_name, e, group.name
-                );
-            }
-        }
-    }
-    // --- End of environment variable override ---
-
-    // Remove trailing slash from target_url if present, as url::join handles it.
-    for group in &mut config.groups {
-        if group.target_url.ends_with('/') {
-            group.target_url.pop();
-        }
-    }
-
-    Ok(config)
+/// Extracts the potential group name from an environment variable key based on a suffix.
+fn extract_group_name_from_env<'a>(env_key: &'a str, suffix: &str) -> Option<String> {
+    env_key.strip_prefix(ENV_VAR_PREFIX)?.strip_suffix(suffix).map(|s| s.to_string())
 }
 
+/// Loads application configuration primarily from environment variables,
+/// optionally using config.yaml only for default server settings or default target_urls.
+pub fn load_config(path: &Path) -> Result<AppConfig> {
+    let path_str = path.display().to_string();
+    let mut final_config = AppConfig::default();
+    let mut yaml_target_urls: HashMap<String, String> = HashMap::new();
 
-/// Performs validation checks on the loaded and potentially modified `AppConfig`.
-///
-/// This should be called *after* `load_config` to ensure validation runs on the final
-/// configuration, including overrides from environment variables.
-///
-/// Logs errors and warnings for configuration issues.
-///
-/// # Arguments
-///
-/// * `cfg` - A mutable reference to the `AppConfig` to validate.
-/// * `config_path_str` - The string representation of the config file path (for logging).
-///
-/// # Returns
-///
-/// Returns `true` if the configuration is valid, `false` otherwise.
-pub fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
+    // --- 1. Try loading base config from YAML (optional) ---
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            if !contents.trim().is_empty() {
+                match serde_yaml::from_str::<AppConfig>(&contents) {
+                    Ok(yaml_config) => {
+                        info!("Loaded base server config and group target_urls from '{}'.", path_str);
+                        final_config.server = yaml_config.server;
+                        for group in yaml_config.groups {
+                            // Store target URLs keyed by the name defined in YAML (sanitized for potential matching later if needed, though primary key is now from ENV)
+                            yaml_target_urls.insert(sanitize_for_matching(&group.name), group.target_url);
+                        }
+                    }
+                    Err(e) => warn!("Failed to parse YAML config file '{}': {}. Using defaults.", path_str, e),
+                }
+            } else { warn!("Config file '{}' is empty. Using defaults.", path_str); }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+             warn!("Config file '{}' not found. Using defaults.", path_str);
+        }
+        Err(e) => return Err(AppError::Io(io::Error::new(e.kind(), format!("Failed to read config file '{}': {}", path_str, e)))),
+    }
+
+    // --- 2. Discover groups and settings from Environment Variables ---
+    // Map: Group Name (from Env Var) -> (Option<Keys>, Option<Option<ProxyURL>>, Option<TargetURL>)
+    let mut env_group_data: HashMap<String, (Option<Vec<String>>, Option<Option<String>>, Option<String>)> = HashMap::new();
+
+    for (key, value) in env::vars() {
+        if let Some(group_name) = extract_group_name_from_env(&key, API_KEYS_SUFFIX) {
+            let keys = value.trim().split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect::<Vec<String>>();
+            env_group_data.entry(group_name).or_default().0 = Some(keys);
+        } else if let Some(group_name) = extract_group_name_from_env(&key, PROXY_URL_SUFFIX) {
+            let proxy_url = value.trim();
+            env_group_data.entry(group_name).or_default().1 = Some(if proxy_url.is_empty() { None } else { Some(proxy_url.to_string()) });
+        } else if let Some(group_name) = extract_group_name_from_env(&key, TARGET_URL_SUFFIX) {
+            let target_url = value.trim();
+             if !target_url.is_empty() {
+                env_group_data.entry(group_name).or_default().2 = Some(target_url.to_string());
+             } else {
+                 warn!("Environment variable '{}' for group '{}' defining target_url is empty. It will be ignored.", key, group_name);
+             }
+        }
+    }
+
+    // --- 3. Construct Final Groups ---
+    for (group_name, (keys_opt, proxy_opt_opt, target_opt)) in env_group_data {
+        if let Some(api_keys) = keys_opt {
+             if api_keys.is_empty() {
+                 warn!("Group '{}' defined via env vars has no valid API keys. Skipping group.", group_name);
+                 continue;
+             }
+             info!("Processing group '{}' from environment variables.", group_name);
+
+            // Determine Target URL: Env Var > YAML Fallback > Default
+            let target_url = target_opt.or_else(|| yaml_target_urls.get(&group_name).cloned())
+                                      .unwrap_or_else(|| {
+                                          info!("Using default target URL for group '{}'.", group_name);
+                                          default_target_url()
+                                      });
+
+            let proxy_url = match proxy_opt_opt {
+                Some(p_opt) => p_opt,
+                None => None, // Default is no proxy if env var wasn't set
+            };
+
+            final_config.groups.push(KeyGroup {
+                name: group_name.clone(),
+                api_keys,
+                proxy_url,
+                target_url,
+            });
+        } else if proxy_opt_opt.is_some() || target_opt.is_some() {
+             warn!("Proxy or Target URL variables found for group '{}', but no corresponding API key variable ('{}{}{}'). Group not created.", group_name, ENV_VAR_PREFIX, group_name, API_KEYS_SUFFIX);
+        }
+    }
+
+    // Clean up trailing slashes
+    for group in &mut final_config.groups {
+        if group.target_url.ends_with('/') { group.target_url.pop(); }
+    }
+
+    // --- 4. Final Check & Validation ---
+    if final_config.groups.is_empty() || final_config.groups.iter().all(|g| g.api_keys.is_empty()) {
+        error!("Configuration error: No groups with usable API keys found. Define at least one group via environment variables (e.g., GEMINI_PROXY_GROUP_DEFAULT_API_KEYS=...).");
+        return Err(AppError::Config("No groups with usable keys found".to_string()));
+    }
+    if !validate_config(&final_config, &path_str) {
+         return Err(AppError::Config("Validation failed".to_string()));
+    }
+
+    info!("Configuration loaded and validated successfully ({} groups total).", final_config.groups.len());
+    Ok(final_config)
+}
+
+/// Performs validation checks on the AppConfig.
+pub fn validate_config(cfg: &AppConfig, config_source: &str) -> bool {
     let mut has_errors = false;
 
-    if cfg.server.host.trim().is_empty() {
-        error!("Configuration error in {}: Server host cannot be empty.", config_path_str);
-        has_errors = true;
-    }
-    if cfg.server.port == 0 {
-        error!("Configuration error in {}: Server port cannot be 0.", config_path_str);
+    if cfg.server.host.trim().is_empty() || cfg.server.port == 0 {
+        error!("Invalid server configuration: host={}, port={}", cfg.server.host, cfg.server.port);
         has_errors = true;
     }
 
     if cfg.groups.is_empty() {
-        error!("Configuration error in {}: The 'groups' list cannot be empty.", config_path_str);
-        return false;
+        error!("Configuration error: No groups loaded (source: {}).", config_source);
+        return false; // Should be caught earlier in load_config, but check again
     }
 
     let mut group_names = HashSet::new();
-    let mut total_keys_after_override = 0;
+    let mut total_keys = 0;
 
-    for group in &mut cfg.groups {
-        group.name = group.name.trim().to_string();
-        if group.name.is_empty() {
-            error!("Configuration error in {}: Group name cannot be empty.", config_path_str);
-            has_errors = true;
-        } else if !group_names.insert(group.name.clone()) {
-            error!("Configuration error in {}: Duplicate group name found: '{}'.", config_path_str, group.name);
+    for group in &cfg.groups {
+        let group_name_trimmed = group.name.trim();
+        if group_name_trimmed.is_empty() || !group_names.insert(group_name_trimmed.to_string()) {
+            error!("Invalid or duplicate group name found: '{}'", group.name);
             has_errors = true;
         }
-        if group.name.contains('/') || group.name.contains(':') || group.name.contains(' ') {
-            warn!("Configuration warning in {}: Group name '{}' contains potentially problematic characters (/, :, space).", config_path_str, group.name);
-        }
 
-        // Check for empty strings within the final api_keys list for the group
-        if group.api_keys.iter().any(|key| key.trim().is_empty()) {
-             error!("Configuration error in {}: Group '{}' contains one or more empty API key strings AFTER potential environment override. Please check the config file or the corresponding environment variable.", config_path_str, group.name);
-             has_errors = true;
-        } else {
-            // Count keys only after checking they are not empty strings
-             total_keys_after_override += group.api_keys.len();
+        if group.api_keys.is_empty() {
+             // This is only a warning now, the main check is total_keys
+             warn!("Group '{}' has no API keys defined.", group.name);
+        } else if group.api_keys.iter().any(|key| key.trim().is_empty()) {
+            error!("Group '{}' contains empty API key strings.", group.name);
+            has_errors = true;
         }
+        total_keys += group.api_keys.len();
 
-        // Validate target_url is a valid base URL (scheme + host)
         match Url::parse(&group.target_url) {
-            Ok(parsed_url) => {
-                if parsed_url.path() != "/" && parsed_url.path() != "" {
-                     error!("Configuration error in {}: Group '{}' target_url ('{}') should be a base URL (e.g., 'https://host.com') without a path component.", config_path_str, group.name, group.target_url);
-                     has_errors = true;
-                }
-                 if parsed_url.query().is_some() {
-                     error!("Configuration error in {}: Group '{}' target_url ('{}') should not contain a query string.", config_path_str, group.name, group.target_url);
-                     has_errors = true;
-                }
+            Ok(parsed_url) if parsed_url.query().is_none() => {}
+            Ok(_) => {
+                 error!("Group '{}' target_url ('{}') must not contain a query string.", group.name, group.target_url);
+                 has_errors = true;
             }
-            Err(_) => {
-                error!("Configuration error in {}: Group '{}' has an invalid target_url: '{}'.", config_path_str, group.name, group.target_url);
+            Err(e) => {
+                error!("Group '{}' has an invalid target_url ('{}'): {}", group.name, group.target_url, e);
                 has_errors = true;
             }
         }
-
 
         if let Some(proxy_url) = &group.proxy_url {
             match Url::parse(proxy_url) {
                 Ok(parsed_url) => {
                     let scheme = parsed_url.scheme().to_lowercase();
-                    if scheme != "http" && scheme != "https" && scheme != "socks5" {
-                         error!("Configuration error in {}: Group '{}' has an unsupported proxy scheme: '{}' in proxy_url: '{}'. Only http, https, socks5 are supported.", config_path_str, group.name, scheme, proxy_url);
-                         has_errors = true;
+                    if !["http", "https", "socks5"].contains(&scheme.as_str()) {
+                        error!("Group '{}' has unsupported proxy scheme '{}' in url '{}'", group.name, scheme, proxy_url);
+                        has_errors = true;
                     }
                 }
-                Err(_) => {
-                     error!("Configuration error in {}: Group '{}' has an invalid proxy_url: '{}'.", config_path_str, group.name, proxy_url);
+                Err(e) => {
+                    error!("Group '{}' has an invalid proxy_url ('{}'): {}", group.name, proxy_url, e);
                     has_errors = true;
                 }
             }
         }
     }
 
-    // This validation now correctly checks the total number of *usable* keys
-    // after considering overrides and filtering empty strings.
-    if total_keys_after_override == 0 {
-        error!("Configuration error in {}: No usable API keys found across all groups after processing config file and environment variables. At least one valid key is required.", config_path_str);
-        has_errors = true;
+    if total_keys == 0 {
+        error!("Configuration error: No usable API keys found across all defined groups.");
+        has_errors = true; // This should have been caught earlier but validate anyway
     }
 
     !has_errors
@@ -274,319 +269,177 @@ mod tests {
         static ref ENV_MUTEX: Mutex<()> = Mutex::new(());
     }
 
-    fn create_temp_config(dir: &tempfile::TempDir, content: &str) -> PathBuf {
+    fn create_temp_config_file(dir: &tempfile::TempDir, content: &str) -> PathBuf {
         let file_path = dir.path().join("test_config.yaml");
         let mut file = File::create(&file_path).expect("Failed to create temp config file");
         writeln!(file, "{}", content).expect("Failed to write to temp config file");
         file_path
     }
 
-    const TEST_CONFIG_CONTENT_VALID_BASE: &str = r#"
-server:
-  host: "0.0.0.0"
-  port: 8080
-groups:
-  - name: "default"
-    api_keys: ["file_key_1", "file_key_2"]
-    # target_url uses default: https://generativelanguage.googleapis.com
-  - name: "group-two"
-    target_url: "http://example.com" # Specific base URL
-    api_keys: ["file_key_3"]
-  - name: "special_chars!"
-    api_keys: ["file_key_4"]
-    # target_url uses default
-"#;
+     fn delete_file(path: &PathBuf) { let _ = std::fs::remove_file(path); }
+     fn set_env_var(key: &str, value: &str) { std::env::set_var(key, value); }
+     fn remove_env_var(key: &str) { std::env::remove_var(key); }
 
-     const TEST_CONFIG_CONTENT_INVALID_GROUP: &str = r#"
-server:
-  host: "127.0.0.1"
-  port: 8081
-groups:
-  - name: " " # Invalid empty name after trim
-    api_keys: ["key1"]
-  - name: "dup"
-    api_keys: ["key2"]
-  - name: "dup" # Duplicate name
-    api_keys: ["key3"]
-  - name: "bad_base_url"
-    target_url: "::not a url::"
-    api_keys: ["key4"]
-  - name: "bad_proxy"
-    proxy_url: "ftp://invalid.proxy" # Unsupported scheme
-    api_keys: ["key5"]
-  - name: "empty_keys"
-    api_keys: ["key6", " "] # Contains empty key string
-  - name: "base_with_path"
-    target_url: "https://host.com/some/path/" # Invalid: target_url should be base only
-    api_keys: ["key7"]
-"#;
-
-    #[test]
-    fn test_load_basic_config_success() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
-
-        std::env::remove_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS");
-        std::env::remove_var("GEMINI_PROXY_GROUP_GROUP_TWO_API_KEYS");
-        std::env::remove_var("GEMINI_PROXY_GROUP_SPECIAL_CHARS__API_KEYS");
-
-        let config = load_config(&config_path).expect("Failed to load valid config");
-
-        assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.port, 8080);
-        assert_eq!(config.groups.len(), 3);
-        assert_eq!(config.groups[0].name, "default");
-        assert_eq!(config.groups[0].api_keys, vec!["file_key_1", "file_key_2"]);
-        // Check default base URL
-        assert_eq!(config.groups[0].target_url, default_target_url());
-        assert!(config.groups[0].proxy_url.is_none());
-        assert_eq!(config.groups[1].name, "group-two");
-        assert_eq!(config.groups[1].api_keys, vec!["file_key_3"]);
-        assert_eq!(config.groups[1].target_url, "http://example.com"); // Check specific base URL
-        assert!(config.groups[1].proxy_url.is_none());
-        assert_eq!(config.groups[2].name, "special_chars!");
-        assert_eq!(config.groups[2].api_keys, vec!["file_key_4"]);
-        assert_eq!(config.groups[2].target_url, default_target_url());
-        assert!(config.groups[2].proxy_url.is_none());
-    }
-
-    #[test]
-    fn test_override_keys_with_env_var() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
-        let env_var_name_default = "GEMINI_PROXY_GROUP_DEFAULT_API_KEYS";
-        let env_keys_default = "env_key_a, env_key_b ";
-        let env_var_name_special = "GEMINI_PROXY_GROUP_SPECIAL_CHARS__API_KEYS";
-        let env_keys_special = "env_key_c";
-        std::env::remove_var("GEMINI_PROXY_GROUP_GROUP_TWO_API_KEYS");
-
-        std::env::set_var(env_var_name_default, env_keys_default);
-        std::env::set_var(env_var_name_special, env_keys_special);
-
-        let config = load_config(&config_path).expect("Failed to load config");
-
-        std::env::remove_var(env_var_name_default);
-        std::env::remove_var(env_var_name_special);
-
-        assert_eq!(config.groups.len(), 3);
-        assert_eq!(config.groups[0].api_keys, vec!["env_key_a".to_string(), "env_key_b".to_string()]);
-        assert_eq!(config.groups[1].api_keys, vec!["file_key_3".to_string()]);
-        assert_eq!(config.groups[2].api_keys, vec!["env_key_c".to_string()]);
-    }
-
-     #[test]
-    fn test_override_with_empty_env_var_empties_keys() { // Renamed test
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
-        let env_var_name = "GEMINI_PROXY_GROUP_DEFAULT_API_KEYS";
-        std::env::remove_var("GEMINI_PROXY_GROUP_GROUP_TWO_API_KEYS");
-        std::env::remove_var("GEMINI_PROXY_GROUP_SPECIAL_CHARS__API_KEYS");
-
-        // Set env var to empty string
-        std::env::set_var(env_var_name, "  ");
-
-        let config = load_config(&config_path).expect("Failed to load config");
-        std::env::remove_var(env_var_name);
-
-        // Keys for 'default' group should now be empty due to the override
-        assert!(config.groups[0].api_keys.is_empty(), "Keys should be empty when env var override is empty");
-        assert_eq!(config.groups[1].api_keys, vec!["file_key_3"], "Other group keys should be unaffected");
-    }
-
-     #[test]
-    fn test_override_with_comma_only_env_var_empties_keys() { // Renamed test
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
-        let env_var_name = "GEMINI_PROXY_GROUP_DEFAULT_API_KEYS";
-        std::env::remove_var("GEMINI_PROXY_GROUP_GROUP_TWO_API_KEYS");
-        std::env::remove_var("GEMINI_PROXY_GROUP_SPECIAL_CHARS__API_KEYS");
-
-        // Set env var to only commas
-        std::env::set_var(env_var_name, ",,, ,,");
-
-        let config = load_config(&config_path).expect("Failed to load config");
-        std::env::remove_var(env_var_name);
-
-        // Keys for 'default' group should be empty after filtering
-        assert!(config.groups[0].api_keys.is_empty(), "Keys should be empty when env var override contains only commas/whitespace");
-    }
+     // Cleans up *all* potential test env vars
+     fn cleanup_test_env_vars() {
+         remove_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS");
+         remove_env_var("GEMINI_PROXY_GROUP_DEFAULT_PROXY_URL");
+         remove_env_var("GEMINI_PROXY_GROUP_DEFAULT_TARGET_URL");
+         remove_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS");
+         remove_env_var("GEMINI_PROXY_GROUP_GROUP1_PROXY_URL");
+         remove_env_var("GEMINI_PROXY_GROUP_GROUP1_TARGET_URL");
+         remove_env_var("GEMINI_PROXY_GROUP_NO_ENV_GROUP_API_KEYS"); // From override test
+         remove_env_var("GEMINI_PROXY_GROUP_BADPROXY_API_KEYS");
+         remove_env_var("GEMINI_PROXY_GROUP_BADPROXY_PROXY_URL");
+         remove_env_var("GEMINI_PROXY_GROUP_FTPPROXY_API_KEYS");
+         remove_env_var("GEMINI_PROXY_GROUP_FTPPROXY_PROXY_URL");
+         remove_env_var("GEMINI_PROXY_GROUP_BADTARGET_API_KEYS");
+         remove_env_var("GEMINI_PROXY_GROUP_BADTARGET_TARGET_URL");
+     }
 
 
     #[test]
-    fn test_env_vars_not_present() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
+    fn test_load_from_env_only_success() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        cleanup_test_env_vars(); // Explicit cleanup at start
+        let dir = tempdir().unwrap(); let non_existent_path = dir.path().join("ne.yaml"); delete_file(&non_existent_path);
 
-        std::env::remove_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS");
-        std::env::remove_var("GEMINI_PROXY_GROUP_GROUP_TWO_API_KEYS");
-        std::env::remove_var("GEMINI_PROXY_GROUP_SPECIAL_CHARS__API_KEYS");
+        set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", "keyA, keyB");
+        set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "keyC");
+        set_env_var("GEMINI_PROXY_GROUP_GROUP1_PROXY_URL", "socks5://proxy.com:1080");
+        set_env_var("GEMINI_PROXY_GROUP_GROUP1_TARGET_URL", "http://env.target.g1");
 
-        let config = load_config(&config_path).expect("Failed to load config");
+        let config = load_config(&non_existent_path).expect("Load from env only failed");
 
-        assert_eq!(config.groups[0].api_keys, vec!["file_key_1", "file_key_2"]);
-        assert_eq!(config.groups[1].api_keys, vec!["file_key_3"]);
-        assert_eq!(config.groups[2].api_keys, vec!["file_key_4"]);
+        assert_eq!(config.server.host, "0.0.0.0"); assert_eq!(config.server.port, 8080);
+        assert_eq!(config.groups.len(), 2);
+
+        let g_default = config.groups.iter().find(|g| g.name == "DEFAULT").unwrap();
+        assert_eq!(g_default.api_keys, vec!["keyA", "keyB"]); assert!(g_default.proxy_url.is_none());
+        assert_eq!(g_default.target_url, default_target_url());
+
+        let g1 = config.groups.iter().find(|g| g.name == "GROUP1").unwrap();
+        assert_eq!(g1.api_keys, vec!["keyC"]); assert_eq!(g1.proxy_url, Some("socks5://proxy.com:1080".to_string()));
+        assert_eq!(g1.target_url, "http://env.target.g1");
+        cleanup_test_env_vars(); // Explicit cleanup at end
     }
 
     #[test]
-    fn test_sanitize_group_name_for_env_logic() {
-        assert_eq!(sanitize_group_name_for_env("default"), "DEFAULT");
-        assert_eq!(sanitize_group_name_for_env("group-two"), "GROUP_TWO");
-        assert_eq!(sanitize_group_name_for_env("special_chars!"), "SPECIAL_CHARS_");
-        assert_eq!(sanitize_group_name_for_env("UPPER"), "UPPER");
-        assert_eq!(sanitize_group_name_for_env("with space"), "WITH_SPACE");
-        assert_eq!(sanitize_group_name_for_env("a.b/c:d"), "A_B_C_D");
-    }
-
-     #[test]
-    fn test_load_config_file_not_found_error() {
-        let non_existent_path = PathBuf::from("this_file_truly_does_not_exist_123.yaml");
-        let result = load_config(&non_existent_path);
-        assert!(result.is_err());
-        matches!(result, Err(AppError::Io(_)));
-    }
-
-    #[test]
-    fn test_load_config_invalid_yaml_error() {
+    fn test_load_from_yaml_and_env_override() {
+         let _lock = ENV_MUTEX.lock().unwrap();
+         cleanup_test_env_vars();
          let dir = tempdir().unwrap();
-         let invalid_content = "server: { host: \"0.0.0.0\", port: 8080 }\ngroups: [ name: \"bad\" ";
-         let config_path = create_temp_config(&dir, invalid_content);
-         let result = load_config(&config_path);
-         assert!(result.is_err());
-         assert!(matches!(result, Err(AppError::YamlParsing(_))));
-    }
+         let yaml_content = r#"
+ server: { host: "192.168.1.1", port: 9999 }
+ groups:
+   - name: default # Will be matched by sanitized name DEFAULT
+     target_url: "http://yaml.target.default"
+   - name: group1
+     target_url: "http://yaml.target.g1" # Will be overridden
+   - name: no_env_group # No matching env var for keys, won't be created
+     target_url: "http://yaml.target.no_env"
+ "#;
+         let config_path = create_temp_config_file(&dir, yaml_content);
 
-     // --- Tests for validate_config ---
+         set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", "env_keyA");
+         set_env_var("GEMINI_PROXY_GROUP_DEFAULT_PROXY_URL", ""); // Explicitly no proxy
+         set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "env_keyC");
+         set_env_var("GEMINI_PROXY_GROUP_GROUP1_PROXY_URL", "socks5://env.proxy.g1:1080");
+         set_env_var("GEMINI_PROXY_GROUP_GROUP1_TARGET_URL", "http://env.target.override.g1"); // Override target
 
-     #[test]
-    fn test_validate_config_valid_base() {
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_VALID_BASE);
-        let mut config = load_config(&config_path).expect("Load should succeed");
-        let is_valid = validate_config(&mut config, &config_path.display().to_string());
-        assert!(is_valid, "Valid config with base URLs should pass validation");
+         let config = load_config(&config_path).expect("Load with overrides failed");
+
+         assert_eq!(config.server.host, "192.168.1.1"); assert_eq!(config.server.port, 9999);
+         assert_eq!(config.groups.len(), 2); // Only groups with keys from env exist
+
+         let g_default = config.groups.iter().find(|g| g.name == "DEFAULT").unwrap();
+         assert_eq!(g_default.api_keys, vec!["env_keyA"]); assert!(g_default.proxy_url.is_none());
+         assert_eq!(g_default.target_url, "http://yaml.target.default"); // Target from YAML
+
+         let g1 = config.groups.iter().find(|g| g.name == "GROUP1").unwrap();
+         assert_eq!(g1.api_keys, vec!["env_keyC"]); assert_eq!(g1.proxy_url, Some("socks5://env.proxy.g1:1080".to_string()));
+         assert_eq!(g1.target_url, "http://env.target.override.g1"); // Target from ENV override
+
+         assert!(config.groups.iter().find(|g| g.name == "NO_ENV_GROUP").is_none());
+         cleanup_test_env_vars();
     }
 
     #[test]
-    fn test_validate_config_invalid_groups() {
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_config(&dir, TEST_CONFIG_CONTENT_INVALID_GROUP);
-        // load_config might succeed if YAML is parseable, validation should catch issues
-        let mut config = load_config(&config_path).expect("Load should succeed even with invalid content for validation");
-        let is_valid = validate_config(&mut config, &config_path.display().to_string());
-        assert!(!is_valid, "Config with multiple group errors should fail validation");
-    }
+    fn test_validation_fails_if_no_groups_defined() {
+         let _lock = ENV_MUTEX.lock().unwrap();
+         cleanup_test_env_vars(); // Ensure clean state
+         let dir = tempdir().unwrap();
+         let empty_config_path = create_temp_config_file(&dir, "");
+         let non_existent_path = dir.path().join("no_such_config.yaml"); delete_file(&non_existent_path);
 
-    #[test]
-    fn test_validate_config_no_groups() {
-        let dir = tempdir().unwrap();
-        let no_groups_content = r#"
-server:
-  host: "127.0.0.1"
-  port: 8080
-groups: [] # Empty groups list
-"#;
-        let config_path = create_temp_config(&dir, no_groups_content);
-        let mut config = load_config(&config_path).expect("Load should succeed");
-        let is_valid = validate_config(&mut config, &config_path.display().to_string());
-        assert!(!is_valid, "Config with empty groups list should fail validation");
+         let result_empty = load_config(&empty_config_path);
+         assert!(result_empty.is_err(), "Expected Err for empty config, got Ok");
+         assert!(matches!(result_empty.as_ref().err().unwrap(), AppError::Config(msg) if msg == "No groups with usable keys found"));
+
+         let result_nonexist = load_config(&non_existent_path);
+         assert!(result_nonexist.is_err(), "Expected Err for non-existent config, got Ok");
+         assert!(matches!(result_nonexist.as_ref().err().unwrap(), AppError::Config(msg) if msg == "No groups with usable keys found"));
+         cleanup_test_env_vars();
     }
 
      #[test]
-    fn test_validate_config_no_usable_keys_after_override() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let config_content = r#"
-server:
-  host: "127.0.0.1"
-  port: 8080
-groups:
-  - name: "group1"
-    api_keys: ["file_key1"] # Key in file
-    target_url: "https://valid.base"
-  - name: "group2"
-    api_keys: ["file_key2"] # Another key to ensure total keys > 0 initially
-    target_url: "https://valid.base2"
-"#;
-        let config_path = create_temp_config(&dir, config_content);
-        let env_var_name = "GEMINI_PROXY_GROUP_GROUP1_API_KEYS";
+    fn test_validation_fails_if_no_usable_keys_across_all_groups() {
+         let _lock = ENV_MUTEX.lock().unwrap();
+         cleanup_test_env_vars();
+         let dir = tempdir().unwrap(); let non_existent_path = dir.path().join("no_such_config.yaml"); delete_file(&non_existent_path);
 
-        // Override group1 with an empty string
-        std::env::set_var(env_var_name, "   ");
+         set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", ", ,"); // Invalid keys
+         set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "");    // Invalid keys
 
-        // Load config *after* setting env var
-        let mut config = load_config(&config_path).expect("Load should succeed");
-        std::env::remove_var(env_var_name); // Clean up env var
+         let result = load_config(&non_existent_path);
+         assert!(result.is_err(), "Expected Err for groups with no usable keys, got Ok");
+         assert!(matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "No groups with usable keys found"));
+         cleanup_test_env_vars();
+    }
 
-        // Pre-validation check: group1 should have no keys, group2 should have 1
-        assert!(config.groups.iter().find(|g| g.name == "group1").unwrap().api_keys.is_empty());
-        assert_eq!(config.groups.iter().find(|g| g.name == "group2").unwrap().api_keys.len(), 1);
+      #[test]
+     fn test_validation_fails_on_invalid_proxy_url_from_env() {
+         let _lock = ENV_MUTEX.lock().unwrap();
+         cleanup_test_env_vars();
+         let dir = tempdir().unwrap(); let non_existent_path = dir.path().join("no_such_config.yaml"); delete_file(&non_existent_path);
 
-        // Validation should PASS because group2 still has a key, making total > 0
-        let is_valid = validate_config(&mut config, &config_path.display().to_string());
-        assert!(is_valid, "Validation should pass if at least one group has keys after override");
+         set_env_var("GEMINI_PROXY_GROUP_BADPROXY_API_KEYS", "key1");
+         set_env_var("GEMINI_PROXY_GROUP_BADPROXY_PROXY_URL", "::not a valid url::");
 
-        // --- Test case where *all* keys become empty ---
-        let env_var_name_2 = "GEMINI_PROXY_GROUP_GROUP2_API_KEYS";
-        std::env::set_var(env_var_name, "   "); // Override group1 to empty
-        std::env::set_var(env_var_name_2, ",,,"); // Override group2 to empty
+         let result = load_config(&non_existent_path);
+         assert!(result.is_err(), "Expected Err for invalid proxy URL, got Ok");
+         assert!(matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed"));
+         cleanup_test_env_vars();
+     }
 
-        let mut config_all_empty = load_config(&config_path).expect("Load should succeed");
-        std::env::remove_var(env_var_name);
-        std::env::remove_var(env_var_name_2);
+      #[test]
+     fn test_validation_fails_on_unsupported_proxy_scheme_from_env() {
+           let _lock = ENV_MUTEX.lock().unwrap();
+           cleanup_test_env_vars();
+           let dir = tempdir().unwrap(); let non_existent_path = dir.path().join("no_such_config.yaml"); delete_file(&non_existent_path);
 
-         // Pre-validation check: both groups should have empty keys
-        assert!(config_all_empty.groups.iter().find(|g| g.name == "group1").unwrap().api_keys.is_empty());
-        assert!(config_all_empty.groups.iter().find(|g| g.name == "group2").unwrap().api_keys.is_empty());
+           set_env_var("GEMINI_PROXY_GROUP_FTPPROXY_API_KEYS", "key1");
+           set_env_var("GEMINI_PROXY_GROUP_FTPPROXY_PROXY_URL", "ftp://myproxy.com");
 
-        // Validation should FAIL because total usable keys is now 0
-        let is_valid_all_empty = validate_config(&mut config_all_empty, &config_path.display().to_string());
-        assert!(!is_valid_all_empty, "Config with no usable keys across all groups after override should fail validation");
+           let result = load_config(&non_existent_path);
+           assert!(result.is_err(), "Expected Err for unsupported proxy scheme, got Ok");
+           assert!(matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed"));
+           cleanup_test_env_vars();
      }
 
      #[test]
-    fn test_validate_config_invalid_server() {
-        let dir = tempdir().unwrap();
-        let invalid_server_content = r#"
-server:
-  host: " " # Empty host
-  port: 0 # Invalid port
-groups:
-  - name: "default"
-    api_keys: ["key1"]
-    target_url: "https://valid.base"
-"#;
-        let config_path = create_temp_config(&dir, invalid_server_content);
-        let mut config = load_config(&config_path).expect("Load should succeed");
-        let is_valid = validate_config(&mut config, &config_path.display().to_string());
-        assert!(!is_valid, "Config with invalid server settings should fail validation");
-    }
+     fn test_validation_fails_on_invalid_target_url_from_env() {
+          let _lock = ENV_MUTEX.lock().unwrap();
+          cleanup_test_env_vars();
+          let dir = tempdir().unwrap(); let non_existent_path = dir.path().join("no_such_config.yaml"); delete_file(&non_existent_path);
 
-     #[test]
-     fn test_load_config_removes_trailing_slash_from_target_url() {
-        let dir = tempdir().unwrap();
-        let content = r#"
-server:
-  host: "127.0.0.1"
-  port: 8080
-groups:
-  - name: "trailing"
-    api_keys: ["key1"]
-    target_url: "https://example.com/trailing/" # Base URL with trailing slash
-  - name: "no-trailing"
-    api_keys: ["key2"]
-    target_url: "http://anotherexample.com" # Base URL without trailing slash
-"#;
-        let config_path = create_temp_config(&dir, content);
-        let config = load_config(&config_path).expect("Load should succeed");
+          set_env_var("GEMINI_PROXY_GROUP_BADTARGET_API_KEYS", "key1");
+          set_env_var("GEMINI_PROXY_GROUP_BADTARGET_TARGET_URL", "http://invalid?query=bad"); // Target with query
 
-        assert_eq!(config.groups[0].target_url, "https://example.com/trailing", "Trailing slash should be removed by load_config");
-        assert_eq!(config.groups[1].target_url, "http://anotherexample.com", "URL without trailing slash should remain unchanged");
-
+          let result = load_config(&non_existent_path);
+          assert!(result.is_err(), "Expected Err for invalid target URL, got Ok");
+          assert!(matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed"));
+          cleanup_test_env_vars();
      }
-}
+
+} // end tests module
