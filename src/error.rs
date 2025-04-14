@@ -14,7 +14,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Configuration error: {0}")]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Keep for now, as it might be used indirectly or planned
     Config(String),
 
     #[error("Reqwest HTTP client error: {0}")]
@@ -32,18 +32,18 @@ pub enum AppError {
     #[error("No available API keys")]
     NoAvailableKeys,
 
-    #[allow(dead_code)] // Temporarily allow unused variant
+    #[allow(dead_code)] // Keep for now, as it might be used indirectly or planned
     #[error("Upstream service error: {status} - {body}")]
     UpstreamServiceError { status: StatusCode, body: String },
 
-    #[allow(dead_code)] // Temporarily allow unused variant
+    // Removed #[allow(dead_code)] as this variant is used in handler.rs
     #[error("Request body processing error: {0}")]
     RequestBodyError(String), // More specific than generic Reqwest error
 
     #[error("Response body processing error: {0}")]
     ResponseBodyError(String), // More specific than generic Reqwest error
 
-    #[allow(dead_code)] // Temporarily allow unused variant
+    #[allow(dead_code)] // Keep for now, as it might be used indirectly or planned
     #[error("Invalid API key provided by client")]
     InvalidClientApiKey, // If you add client-side key validation
 

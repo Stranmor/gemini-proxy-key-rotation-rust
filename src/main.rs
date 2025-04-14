@@ -6,12 +6,13 @@ use gemini_proxy_key_rotation_rust::*;
 use axum::{routing::{any, get}, serve, Router};
 use clap::Parser;
 // AppConfig, AppState etc. are now brought into scope via the library use statement
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf, process, sync::Arc};
+// Removed HashSet import as it's no longer used here
+use std::{net::SocketAddr, path::PathBuf, process, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{error, info, warn}; // Keep tracing imports
+use tracing::{error, info}; // Keep tracing imports (removed warn)
 use tracing_subscriber::{EnvFilter, FmtSubscriber}; // Keep subscriber imports
-use url::Url; // Keep Url import needed for validation
+// Removed Url import as it's no longer used here
 
 /// Defines command-line arguments for the application using `clap`.
 #[derive(Parser, Debug)]
@@ -57,15 +58,15 @@ async fn main() {
     };
 
     let config_path_str = config_path.display().to_string();
-    // validate_config needs to be accessible, let's assume it's made pub in config module or moved/re-exported
-    // For now, let's keep it here, but ideally it belongs in the library.
-    if !validate_config(&mut app_config, &config_path_str) {
+    // Call the validate_config function from the config module
+    if !config::validate_config(&mut app_config, &config_path_str) {
         error!(
             "Configuration validation failed. Please check the errors above in {}.",
             config_path_str
         );
         process::exit(1);
     } else {
+        // Calculate total keys *after* validation (which happens after loading/overrides)
         let total_keys: usize = app_config
             .groups
             .iter()
@@ -133,120 +134,7 @@ async fn main() {
     info!("Server shut down gracefully.");
 }
 
-/// Performs validation checks on the loaded `AppConfig`.
-/// NOTE: Ideally, this function should be part of the library (e.g., in the config module)
-/// and made public if needed by the binary directly, or called internally during AppState::new.
-/// Keeping it here for simplicity in this refactoring step.
-fn validate_config(cfg: &mut AppConfig, config_path_str: &str) -> bool {
-    let mut has_errors = false;
-
-    // Basic server config validation
-    if cfg.server.host.trim().is_empty() {
-        error!(
-            "Configuration error in {}: Server host cannot be empty.",
-            config_path_str
-        );
-        has_errors = true;
-    }
-    if cfg.server.port == 0 {
-        error!(
-            "Configuration error in {}: Server port cannot be 0.",
-            config_path_str
-        );
-        has_errors = true;
-    }
-
-    // Groups validation
-    if cfg.groups.is_empty() {
-        error!(
-            "Configuration error in {}: The 'groups' list cannot be empty.",
-            config_path_str
-        );
-        // Return early if no groups, as further checks depend on them
-        return false; // Indicate failure directly
-    }
-
-    let mut group_names = HashSet::new();
-
-    for group in &mut cfg.groups {
-        // Validate group name
-        group.name = group.name.trim().to_string(); // Trim whitespace
-        if group.name.is_empty() {
-            error!(
-                "Configuration error in {}: Group name cannot be empty.",
-                config_path_str
-            );
-            has_errors = true;
-        } else if !group_names.insert(group.name.clone()) {
-            error!(
-                "Configuration error in {}: Duplicate group name found: '{}'.",
-                config_path_str, group.name
-            );
-            has_errors = true;
-        }
-        // Basic check for invalid characters in group name
-        if group.name.contains('/') || group.name.contains(':') || group.name.contains(' ') {
-            warn!("Configuration warning in {}: Group name '{}' contains potentially problematic characters (/, :, space).", config_path_str, group.name);
-        }
-
-        // Validate API keys within the group
-        // Allow empty api_keys list here if env var override is intended
-        if group.api_keys.iter().any(|key| key.trim().is_empty()) {
-             error!("Configuration error in {}: Group '{}' contains one or more empty API key strings.", config_path_str, group.name);
-             has_errors = true;
-        }
-
-
-        // Validate target_url
-        if Url::parse(&group.target_url).is_err() {
-            error!(
-                "Configuration error in {}: Group '{}' has an invalid target_url: '{}'.",
-                config_path_str, group.name, group.target_url
-            );
-            has_errors = true;
-        }
-
-        // Validate proxy_url if present
-        if let Some(proxy_url) = &group.proxy_url {
-            match Url::parse(proxy_url) {
-                Ok(parsed_url) => {
-                    // Check scheme
-                    let scheme = parsed_url.scheme().to_lowercase();
-                    if scheme != "http" && scheme != "https" && scheme != "socks5" {
-                         error!("Configuration error in {}: Group '{}' has an unsupported proxy scheme: '{}' in proxy_url: '{}'. Only http, https, socks5 are supported.", config_path_str, group.name, scheme, proxy_url);
-                         has_errors = true;
-                    }
-                }
-                Err(_) => {
-                     error!(
-                        "Configuration error in {}: Group '{}' has an invalid proxy_url: '{}'.",
-                        config_path_str, group.name, proxy_url
-                    );
-                    has_errors = true;
-                }
-            }
-        }
-    } // End loop through groups
-
-    // This validation is tricky because keys can come from env vars.
-    // load_config handles the override. A better validation might happen *after* loading.
-    // For now, we keep a basic check that *something* must be potentially available.
-    // A truly robust validation would need to check env vars too or happen post-load.
-    // Let's comment out the strict total_keys check for now as it might fail if relying solely on env vars.
-    /*
-    if total_keys == 0 && !cfg.groups.is_empty() { // Check only if groups exist
-        error!(
-            "Configuration error in {}: No valid (non-empty) API keys found in the config file across all groups (check environment variables if intended).",
-            config_path_str
-        );
-        has_errors = true;
-    }
-    */
-
-
-    !has_errors // Return true if no errors were found
-}
-
+// validate_config function removed from here. It's now in src/config.rs
 
 async fn shutdown_signal() {
     let ctrl_c = async {
