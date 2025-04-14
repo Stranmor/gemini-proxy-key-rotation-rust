@@ -263,7 +263,7 @@
          upstream_headers.insert("x-upstream-specific", HeaderValue::from_static("value2"));
          upstream_headers.insert("transfer-encoding", HeaderValue::from_static("chunked")); // Hop-by-hop
          upstream_headers.insert("connection", HeaderValue::from_static("close")); // Hop-by-hop
-         upstream_headers.insert(HeaderName::from_static("keep-alive"), HeaderValue::from_static("timeout=5")); // Hop-by-hop (case insensitive check needed)
+         upstream_headers.insert(HeaderName::from_static("keep-alive"), HeaderValue::from_static("timeout=15")); // Hop-by-hop (case insensitive check needed)
 
          let result_headers = build_response_headers(&upstream_headers);
 
