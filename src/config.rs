@@ -23,7 +23,7 @@ pub struct KeyGroup {
     #[serde(default)]
     pub proxy_url: Option<String>,
     /// Target API endpoint URL, populated from `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL` env var,
-    /// or from `config.yaml` as a fallback, or the hardcoded default.
+    /// or the hardcoded default if the environment variable is not set.
     #[serde(default = "default_target_url")]
     pub target_url: String,
 }
@@ -112,13 +112,12 @@ fn extract_group_name_from_env<'a>(env_key: &'a str, suffix: &str) -> Option<Str
 
 // --- Configuration Loading Logic ---
 
-/// Loads server config defaults and target URLs from the YAML file.
-/// Returns the ServerConfig and a map of group names to their target URLs from YAML.
+/// Loads server config defaults from the YAML file.
+/// Returns only the ServerConfig. Target URLs are handled solely by environment variables.
 #[tracing::instrument(level = "debug", skip(path), fields(config.path = %path.display()))]
-fn load_yaml_defaults(path: &Path) -> Result<(ServerConfig, HashMap<String, String>)> {
+fn load_yaml_defaults(path: &Path) -> Result<ServerConfig> {
     let path_str = path.display().to_string(); // Keep for context in errors
     let mut server_config = ServerConfig::default();
-    let mut yaml_target_urls: HashMap<String, String> = HashMap::new();
 
     match fs::read_to_string(path) {
         Ok(contents) => {
@@ -126,25 +125,9 @@ fn load_yaml_defaults(path: &Path) -> Result<(ServerConfig, HashMap<String, Stri
                 match serde_yaml::from_str::<AppConfig>(&contents) {
                     Ok(yaml_config) => {
                         // Structured log for successful load
-                        info!(
-                            source = "yaml",
-                            "Loaded base server config and group target_urls"
-                        );
+                        info!(source = "yaml", "Loaded base server config");
                         server_config = yaml_config.server;
-                        for group in yaml_config.groups {
-                            // Use uppercase name from env var as the canonical key
-                            let group_name_upper = group.name.to_uppercase();
-                            if !group.target_url.is_empty() {
-                                yaml_target_urls.insert(group_name_upper, group.target_url);
-                            } else {
-                                // Structured warning for empty target_url
-                                warn!(
-                                    source = "yaml",
-                                    group.name = %group.name,
-                                    "Ignoring empty target_url for group in YAML file"
-                                );
-                            }
-                        }
+                        // Removed loop processing yaml_config.groups for target URLs
                     }
                     // Structured warning for parse failure
                     Err(e) => {
@@ -169,7 +152,7 @@ fn load_yaml_defaults(path: &Path) -> Result<(ServerConfig, HashMap<String, Stri
             )));
         }
     }
-    Ok((server_config, yaml_target_urls))
+    Ok(server_config) // Return only ServerConfig
 }
 
 /// Discovers group settings (API keys, proxy URL, target URL) from environment variables.
@@ -219,14 +202,15 @@ fn discover_env_groups(
     env_group_data
 }
 
-/// Builds the final list of KeyGroups using data from environment variables and YAML defaults.
-#[tracing::instrument(level = "debug", skip(env_group_data, yaml_target_urls))]
+/// Builds the final list of KeyGroups using data from environment variables.
+/// Target URLs are determined solely by environment variables or the hardcoded default.
+#[tracing::instrument(level = "debug", skip(env_group_data))] // Removed yaml_target_urls from skip
 fn build_final_groups(
     env_group_data: HashMap<String, (Option<Vec<String>>, Option<Option<String>>, Option<String>)>,
-    yaml_target_urls: &HashMap<String, String>,
+    // Removed yaml_target_urls parameter
 ) -> Vec<KeyGroup> {
     let mut final_groups: Vec<KeyGroup> = Vec::new();
-    debug!("Building final key groups from environment data and YAML defaults...");
+    debug!("Building final key groups from environment data...");
 
     for (group_name, (keys_opt, proxy_opt_opt, target_opt)) in env_group_data {
         if let Some(api_keys) = keys_opt {
@@ -238,30 +222,20 @@ fn build_final_groups(
             // Structured info log for processing a group
             info!(group.name = %group_name, source = "environment", key.count = api_keys.len(), "Processing group");
 
-            // Determine Target URL: Env Var > YAML Fallback > Default
-            let target_url_from_env = target_opt;
-            let target_url_from_yaml = yaml_target_urls.get(&group_name).cloned(); // Lookup uses uppercase name derived from env var
-
+            // Determine Target URL: Env Var > Default (Removed YAML fallback)
             let final_target_url_source; // Track source for logging
-            let mut final_target_url = match target_url_from_env {
+            let mut final_target_url = match target_opt { // Changed target_url_from_env to target_opt
                 Some(env_url) => {
                     final_target_url_source = "environment";
                     debug!(group.name = %group_name, source = final_target_url_source, target.url = %env_url, "Using target URL from environment variable");
                     env_url
                 }
-                None => match target_url_from_yaml {
-                    Some(yaml_url) => {
-                        final_target_url_source = "yaml";
-                        debug!(group.name = %group_name, source = final_target_url_source, target.url = %yaml_url, "Using target URL from YAML fallback");
-                        yaml_url
-                    }
-                    None => {
-                        final_target_url_source = "default";
-                        let default_url = default_target_url();
-                        info!(group.name = %group_name, source = final_target_url_source, target.url = %default_url, "Using default target URL");
-                        default_url
-                    }
-                },
+                None => {
+                    final_target_url_source = "default";
+                    let default_url = default_target_url();
+                    info!(group.name = %group_name, source = final_target_url_source, target.url = %default_url, "Using default target URL");
+                    default_url
+                }
             };
 
             // Clean up trailing slash
@@ -307,19 +281,15 @@ fn build_final_groups(
 }
 
 /// Loads application configuration primarily from environment variables,
-/// optionally using config.yaml only for default server settings or default target_urls.
+/// optionally using config.yaml only for default server settings.
 #[tracing::instrument(level = "info", skip(path), fields(config.path = %path.display()))]
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     info!("Loading application configuration...");
     let path_str = path.display().to_string(); // Keep for validation context
 
-    // --- 1. Load defaults from YAML (Server config, target URLs) ---
-    let (server_config, yaml_target_urls) = load_yaml_defaults(path)?;
-    debug!(
-        ?server_config,
-        yaml_target_urls_count = yaml_target_urls.len(),
-        "Loaded defaults from YAML"
-    );
+    // --- 1. Load defaults from YAML (Server config) ---
+    let server_config = load_yaml_defaults(path)?; // Corrected assignment
+    debug!(?server_config, "Loaded server defaults from YAML"); // Corrected log message
 
     // --- 2. Discover groups and settings from Environment Variables ---
     let env_group_data = discover_env_groups();
@@ -329,7 +299,7 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
     );
 
     // --- 3. Construct Final Groups ---
-    let final_groups = build_final_groups(env_group_data, &yaml_target_urls);
+    let final_groups = build_final_groups(env_group_data); // Corrected call (removed &yaml_target_urls)
     debug!(
         final_group_count = final_groups.len(),
         "Constructed final groups list"
@@ -606,18 +576,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let yaml_content = r#"
  server: { host: "192.168.1.1", port: 9999 }
- groups:
-   - name: default # YAML name case doesn't matter for target lookup, matches DEFAULT env var
-     target_url: "http://yaml.target.default" # No trailing slash
+ groups: # Groups in YAML are now ignored for target_url fallback
+   - name: default
+     target_url: "http://yaml.target.default/should_be_ignored"
    - name: group1
-     target_url: "http://yaml.target.g1" # Will be overridden by env
-   - name: no_env_group # No matching env var for keys, target_url ignored
-     target_url: "http://yaml.target.no_env"
+     target_url: "http://yaml.target.g1/should_be_ignored"
+   - name: no_env_group
+     target_url: "http://yaml.target.no_env/should_be_ignored"
  "#;
         let config_path = create_temp_config_file(&dir, yaml_content);
 
         set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", "env_keyA");
         set_env_var("GEMINI_PROXY_GROUP_DEFAULT_PROXY_URL", ""); // Explicitly no proxy
+        // DEFAULT_TARGET_URL is not set, so it should use the default
         set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "env_keyC");
         set_env_var(
             "GEMINI_PROXY_GROUP_GROUP1_PROXY_URL",
@@ -630,7 +601,7 @@ mod tests {
 
         let config = load_config(&config_path).expect("Load with overrides failed");
 
-        assert_eq!(config.server.host, "192.168.1.1");
+        assert_eq!(config.server.host, "192.168.1.1"); // Server config from YAML is used
         assert_eq!(config.server.port, 9999);
         assert_eq!(config.groups.len(), 2); // Only groups with keys from env exist
 
@@ -641,7 +612,7 @@ mod tests {
             .expect("DEFAULT group not found");
         assert_eq!(g_default.api_keys, vec!["env_keyA"]);
         assert!(g_default.proxy_url.is_none());
-        assert_eq!(g_default.target_url, "http://yaml.target.default"); // Target from YAML fallback
+        assert_eq!(g_default.target_url, default_target_url()); // Target from default (YAML fallback removed)
 
         let g1 = config
             .groups
@@ -844,11 +815,12 @@ mod tests {
         // Target URL with trailing slash from yaml (requires matching env keys)
         let yaml_content = r#"
 groups:
-  - name: group1
-    target_url: "http://another.com/v1/"
+  - name: group1 # This target_url is ignored now
+    target_url: "http://another.com/v1/ignored"
 "#;
         let config_path = create_temp_config_file(&dir, yaml_content);
         set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "keyB");
+        // GROUP1_TARGET_URL is not set, so it should use default
 
         let config_env = load_config(&non_existent_path).expect("Load failed for env slash test");
         let g_default_env = config_env
@@ -858,13 +830,14 @@ groups:
             .unwrap();
         assert_eq!(g_default_env.target_url, "http://example.com/api"); // Slash removed
 
+        // YAML target_url is no longer used as fallback, so this group will get the default.
         let config_yaml = load_config(&config_path).expect("Load failed for yaml slash test");
         let g1_yaml = config_yaml
             .groups
             .iter()
             .find(|g| g.name == "GROUP1")
             .unwrap();
-        assert_eq!(g1_yaml.target_url, "http://another.com/v1"); // Slash removed
+        assert_eq!(g1_yaml.target_url, default_target_url()); // Now uses default
 
         cleanup_test_env_vars();
     }

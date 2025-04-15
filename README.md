@@ -16,7 +16,7 @@ This proxy acts as a middleman between your OpenAI-compatible application (like 
 
 *   **Avoid Rate Limits:** Distributes requests across many Gemini keys.
 *   **Increased Availability:** If one key hits its limit, the proxy automatically switches to another.
-*   **Flexible Configuration:** Supports providing API keys and group-specific upstream proxies via environment variables (most secure and standard for Docker). `config.yaml` is optional, mainly for local runs or specific fallbacks. Environment variables related to groups always define the configuration when present.
+*   **Flexible Configuration:** Supports providing API keys and group-specific upstream proxies via environment variables (most secure and standard for Docker). `config.yaml` is optional and used *only* for `server` settings (`host`, `port`). Environment variables related to groups always define the configuration when present.
 *   **Simplified Client Configuration:** Point your OpenAI client's base URL to this proxy; no need to manage Gemini keys in the client.
 *   **Group-Specific Routing:** Use different upstream proxies (`http`, `https`, `socks5`) for different sets of keys, configurable via environment variables.
 *   **State Persistence:** Remembers rate-limited keys between restarts, avoiding checks on known limited keys until their reset time (daily midnight Pacific Time by default).
@@ -30,7 +30,7 @@ This proxy acts as a middleman between your OpenAI-compatible application (like 
 *   **Rate Limit Reset:** Limited keys are automatically considered available again after the next **daily midnight in the Pacific Time zone (America/Los_Angeles)** by default.
 *   **Persists Rate Limit State:** Saves the limited status and UTC reset time of keys to `key_states.json` (located in the current working directory, or `/app/` in Docker), allowing the proxy to skip known limited keys on startup.
 *   Configurable primarily via environment variables (using `.env` with Docker Compose). `config.yaml` is optional and has a limited role in this setup.
-*   **API Keys & Proxies:** Defined via environment variables following the `GEMINI_PROXY_GROUP_*` pattern. `config.yaml` can provide fallbacks for `target_url` only.
+*   **API Keys & Proxies:** Defined via environment variables following the `GEMINI_PROXY_GROUP_*` pattern. `config.yaml` is *only* for `server` settings (`host`, `port`).
 *   Correctly adds the required `x-goog-api-key` and `Authorization: Bearer <key>` headers, replacing any client-sent `Authorization` headers.
 *   High performance asynchronous request handling using Axum and Tokio.
 *   Graceful shutdown handling (`SIGINT`, `SIGTERM`).
@@ -79,8 +79,8 @@ This method uses Docker Compose and a `.env` file to manage configuration secure
 
 4.  **(Optional) Using `config.yaml` with Docker Compose:**
     *   For Docker Compose setups using a `.env` file, `config.yaml` is **generally not needed**. All group configurations (API keys, proxy URLs, target URLs) **must** be defined using environment variables in your `.env` file.
-    *   You might *only* consider mounting `config.yaml` (uncomment the volume line in `docker-compose.yml`) if you need to set a specific fallback `target_url` for a group *that is not set via the corresponding environment variable* or to override the default `server` settings (host/port) hardcoded in the application (though ports are usually best managed via `.env` and Docker Compose port mappings).
-    *   **Important:** API keys, proxy URLs, and target URLs defined in `.env` **always define** the group configuration. `config.yaml` only provides potential fallbacks for `target_url` and server defaults if environment variables are missing.
+    *   You might *only* consider mounting `config.yaml` (uncomment the volume line in `docker-compose.yml`) if you need to override the default `server` settings (`host`, `port`) hardcoded in the application. Ports are usually best managed via `.env` and Docker Compose port mappings.
+    *   **Important:** API keys, proxy URLs, and target URLs defined in `.env` **always define** the group configuration. `config.yaml` *only* provides overrides for `server` settings (`host`, `port`). Environment variables define all group configurations.
 
 5.  **Run with Docker Compose:**
     *   This single command builds the image (if necessary) and starts the service in the background.
@@ -194,7 +194,7 @@ This file is **optional for Docker Compose** runs that use a `.env` file, but **
 **Behavior:**
 
 *   **Environment variables define groups and settings:** The application **exclusively** discovers groups and their settings (API keys, proxy URLs, target URLs) based on environment variables matching the `GEMINI_PROXY_GROUP_{NAME}_*` pattern. The presence of `GEMINI_PROXY_GROUP_{NAME}_API_KEYS` is mandatory to define a group.
-*   **YAML for fallbacks only:** `config.yaml` is used *only* as a fallback for a group's `target_url` (if the `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL` environment variable is *not* set) and for default `server` settings (host/port). If `config.yaml` is missing or empty when running locally, hardcoded defaults are used.
+*   **YAML for Server Settings Only:** `config.yaml` is used *only* to define `server` settings (`host`, `port`). All group settings (API keys, proxy URLs, target URLs) MUST be defined via environment variables. If `config.yaml` is missing or empty when running locally, hardcoded defaults are used.
 *   **Environment variables for server/log settings:** `SERVER_PORT_CONTAINER` and `RUST_LOG` (typically set in `.env` for Docker Compose) control the container's internal port and logging level, overriding any `server.port` in `config.yaml`.
 
 **Recommendation:**
@@ -203,23 +203,20 @@ This file is **optional for Docker Compose** runs that use a `.env` file, but **
 *   **For Local:** Use `config.yaml` if you prefer file-based configuration for groups (don't set env vars), or use environment variables and a minimal `config.yaml` for server settings if needed.
 
 ```yaml
-# config.yaml (Example: Only useful as a fallback target_url for GROUP1 if env var is missing)
+# config.yaml (Example: Only used for `server` settings)
 server: # Optional: Defaults to host: 0.0.0.0, port: 8080 if omitted
   host: "0.0.0.0"
   port: 8080
-groups:
-  # Group definition and primary settings for GROUP1 MUST come from env vars:
-  # GEMINI_PROXY_GROUP_GROUP1_API_KEYS=...
-  # GEMINI_PROXY_GROUP_GROUP1_PROXY_URL=... (Optional)
-  # GEMINI_PROXY_GROUP_GROUP1_TARGET_URL=... (Optional)
-  # This entry in YAML is ONLY relevant if GEMINI_PROXY_GROUP_GROUP1_TARGET_URL is NOT set.
-  - name: "GROUP1" # Must match the {NAME} used in env vars if you want this fallback to apply
-    target_url: "https://fallback-target-if-env-missing.com" # Fallback target only
-
-  # Other groups like 'DEFAULT' will be created solely from env vars.
-  # Their target_url will be the default Google API unless GEMINI_PROXY_GROUP_DEFAULT_TARGET_URL is set.
+# Groups are configured *exclusively* via environment variables.
+  # The `groups` section below is **ignored** by the application.
+  # It is kept here only as a historical reference.
+  # groups:
+  #   - name: "EXAMPLE_GROUP"
+  #     # api_keys: ["key1", "key2"] # Defined via GEMINI_PROXY_GROUP_EXAMPLE_GROUP_API_KEYS env var
+  #     # proxy_url: "socks5://user:pass@host:port" # Defined via GEMINI_PROXY_GROUP_EXAMPLE_GROUP_PROXY_URL env var
+  #     # target_url: "https://example.com" # Defined via GEMINI_PROXY_GROUP_EXAMPLE_GROUP_TARGET_URL env var
 ```
-*   **Priority:** Environment variables defined in `.env` (or the shell) are the **sole source** for defining groups and their API keys, proxy URLs, and target URLs when using Docker Compose or if set for local runs. `config.yaml` *only* provides potential fallbacks for `target_url` and server settings if the corresponding environment variables are absent.
+*   **Priority:** Environment variables defined in `.env` (or the shell) are the **sole source** for defining groups and their API keys, proxy URLs, and target URLs when using Docker Compose or if set for local runs. Environment variables are the **sole source** for defining groups and their API keys, proxy URLs, and target URLs. `config.yaml` is *only* used for `server` settings (`host`, `port`).
 
 ## Environment Variable Configuration
 
@@ -238,7 +235,7 @@ This is the **primary configuration method** when running with Docker Compose an
 ### Target URL (Per Group)
 *   **Purpose:** (Optional) Define a non-default base URL for the target API for a specific group.
 *   **Variable:** `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL`
-*   **Value:** The base URL (e.g., `"https://alternative.api.endpoint.com"`). If omitted, uses the value from `config.yaml` (if defined for that group name as a fallback) or the default Google API endpoint.
+*   **Value:** The base URL (e.g., `"https://alternative.api.endpoint.com"`). If omitted or empty, the hardcoded default Google API endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/`) is used for that group.
 
 ### Server Port (Inside Container)
 *   **Purpose:** Set the port the application listens on inside the container.
