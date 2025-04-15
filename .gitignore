@@ -10,6 +10,7 @@ key_states.json
 config.yaml
 # Environment variables file (contains secrets!)
 .env
+
 # IDE files (optional, adjust as needed)
 .idea/
 .vscode/
@@ -18,3 +19,6 @@ config.yaml
 .DS_Store
 *.swp
 *~
+
+# Local development context
+/memory-bank/

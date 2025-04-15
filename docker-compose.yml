@@ -27,27 +27,9 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
 
       # --- Group Configurations ---
-      # Add variables for ALL groups defined in your .env file
-
-      # Group: gemini-alt-8
-      GEMINI_PROXY_GROUP_GEMINI_ALT_8_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_8_API_KEYS}
-      GEMINI_PROXY_GROUP_GEMINI_ALT_8_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_8_PROXY_URL}
-
-      # Group: main
-      GEMINI_PROXY_GROUP_MAIN_API_KEYS: ${GEMINI_PROXY_GROUP_MAIN_API_KEYS}
-      # GEMINI_PROXY_GROUP_MAIN_PROXY_URL: ${GEMINI_PROXY_GROUP_MAIN_PROXY_URL:-} # Optional: Provide default empty if not set
-
-      # Group: gemini-alt-9
-      GEMINI_PROXY_GROUP_GEMINI_ALT_9_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_9_API_KEYS}
-      GEMINI_PROXY_GROUP_GEMINI_ALT_9_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_9_PROXY_URL}
-
-      # Group: gemini-alt-10
-      GEMINI_PROXY_GROUP_GEMINI_ALT_10_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_10_API_KEYS}
-      GEMINI_PROXY_GROUP_GEMINI_ALT_10_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_10_PROXY_URL}
-
-      # Group: gemini-alt-11
-      GEMINI_PROXY_GROUP_GEMINI_ALT_11_API_KEYS: ${GEMINI_PROXY_GROUP_GEMINI_ALT_11_API_KEYS}
-      GEMINI_PROXY_GROUP_GEMINI_ALT_11_PROXY_URL: ${GEMINI_PROXY_GROUP_GEMINI_ALT_11_PROXY_URL}
+      # Group configurations (API keys, proxy, target URLs) are loaded automatically
+      # from environment variables defined in the .env file following the pattern
+      # GEMINI_PROXY_GROUP_<NAME>_API_KEYS, GEMINI_PROXY_GROUP_<NAME>_PROXY_URL, etc.
     restart: unless-stopped
     # Optional: Add healthcheck based on the /health endpoint
     healthcheck:

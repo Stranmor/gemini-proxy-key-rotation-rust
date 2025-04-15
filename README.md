@@ -10,27 +10,27 @@
 
 ## Overview
 
-This proxy acts as a middleman between your OpenAI-compatible application (like clients using OpenAI libraries or tools like Roo Code/Cline) and the Google Gemini API's OpenAI compatibility endpoint. You provide it with multiple Gemini API keys, either via **environment variables (recommended)** or directly in the **`config.yaml` file**. The proxy automatically rotates through them for outgoing requests, handling authentication and rate limits.
+This proxy acts as a middleman between your OpenAI-compatible application (like clients using OpenAI libraries or tools like Roo Code/Cline) and the Google Gemini API's OpenAI compatibility endpoint. You provide it with multiple Gemini API keys, primarily via **environment variables using a `.env` file (recommended for Docker)** or optionally via a **`config.yaml` file (mainly for local runs)**. The proxy automatically rotates through them for outgoing requests, handling authentication and rate limits.
 
 **Key Benefits:**
 
 *   **Avoid Rate Limits:** Distributes requests across many Gemini keys.
 *   **Increased Availability:** If one key hits its limit, the proxy automatically switches to another.
-*   **Flexible Configuration:** Supports providing API keys and group-specific upstream proxies via environment variables (most secure for Docker) or directly in `config.yaml` (useful for local runs). Environment variables always override the config file.
+*   **Flexible Configuration:** Supports providing API keys and group-specific upstream proxies via environment variables (most secure and standard for Docker). `config.yaml` is optional, mainly for local runs or specific fallbacks. Environment variables related to groups always define the configuration when present.
 *   **Simplified Client Configuration:** Point your OpenAI client's base URL to this proxy; no need to manage Gemini keys in the client.
-*   **Group-Specific Routing:** Use different upstream proxies (`http`, `https`, `socks5`) for different sets of keys, configurable via environment variables or `config.yaml`.
+*   **Group-Specific Routing:** Use different upstream proxies (`http`, `https`, `socks5`) for different sets of keys, configurable via environment variables.
 *   **State Persistence:** Remembers rate-limited keys between restarts, avoiding checks on known limited keys until their reset time (daily midnight Pacific Time by default).
 
 ## Features
 
 *   Proxies requests specifically to Google's OpenAI compatibility endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/` by default).
-*   Supports multiple **groups** of Gemini API keys with optional upstream proxies (`http`, `https`, `socks5`) per group. Groups and their settings are primarily discovered and configured via environment variables.
+*   Supports multiple **groups** of Gemini API keys with optional upstream proxies (`http`, `https`, `socks5`) per group. Groups and their settings are **discovered and configured exclusively via environment variables** when using Docker Compose + `.env`.
 *   Automatic round-robin key rotation across **all** configured keys (from all groups combined).
 *   Handles `429 Too Many Requests` responses from the target API by temporarily disabling the rate-limited key.
 *   **Rate Limit Reset:** Limited keys are automatically considered available again after the next **daily midnight in the Pacific Time zone (America/Los_Angeles)** by default.
 *   **Persists Rate Limit State:** Saves the limited status and UTC reset time of keys to `key_states.json` (located in the current working directory, or `/app/` in Docker), allowing the proxy to skip known limited keys on startup.
-*   Configurable primarily via environment variables (using `.env` with Docker Compose). `config.yaml` is optional, mainly for setting non-default `target_url`s per group or server defaults.
-*   **API Keys & Proxies:** Defined via environment variables (recommended). `config.yaml` can provide fallbacks or structure but is overridden by environment variables.
+*   Configurable primarily via environment variables (using `.env` with Docker Compose). `config.yaml` is optional and has a limited role in this setup.
+*   **API Keys & Proxies:** Defined via environment variables following the `GEMINI_PROXY_GROUP_*` pattern. `config.yaml` can provide fallbacks for `target_url` only.
 *   Correctly adds the required `x-goog-api-key` and `Authorization: Bearer <key>` headers, replacing any client-sent `Authorization` headers.
 *   High performance asynchronous request handling using Axum and Tokio.
 *   Graceful shutdown handling (`SIGINT`, `SIGTERM`).
@@ -47,7 +47,7 @@ This proxy acts as a middleman between your OpenAI-compatible application (like 
 
 ### Option 1: Running with Docker Compose (Recommended)
 
-This method uses Docker Compose and a `.env` file to manage configuration, allowing you to securely pass API keys and configure upstream proxies via environment variables. Using `config.yaml` is **optional** with this method.
+This method uses Docker Compose and a `.env` file to manage configuration securely. API keys and group-specific settings (proxies, target URLs) **must** be configured via environment variables in the `.env` file.
 
 1.  **Clone the Repository:**
     ```bash
@@ -60,14 +60,15 @@ This method uses Docker Compose and a `.env` file to manage configuration, allow
         ```bash
         cp .env.example .env
         ```
-    *   Edit the `.env` file:
+    *   **Edit the `.env` file:** This is the **crucial step** for configuring the proxy.
         *   Set `SERVER_PORT_HOST` to the desired port on your host machine (e.g., `8081`). The proxy will be accessible at `http://localhost:<SERVER_PORT_HOST>`.
-        *   Set `SERVER_PORT_CONTAINER` to the port the proxy listens on *inside* the container (usually `8080`). This value is also used by the `healthcheck`.
+        *   Set `SERVER_PORT_CONTAINER` to the port the proxy listens on *inside* the container (usually `8080`). This value is also used by the `healthcheck` and should match the `SERVER_PORT` variable in `docker-compose.yml`.
         *   Set `RUST_LOG` to the desired log level (e.g., `info`, `debug`).
-        *   **Add Gemini API Keys:** Fill in the `GEMINI_PROXY_GROUP_{NAME}_API_KEYS` variables for each group you want to use (e.g., `GEMINI_PROXY_GROUP_DEFAULT_API_KEYS=key1,key2`). **This is required.**
-        *   **(Optional) Add Upstream Proxies:** Set `GEMINI_PROXY_GROUP_{NAME}_PROXY_URL` variables for groups that require an upstream proxy (e.g., `GEMINI_PROXY_GROUP_MY_SOCKS_GROUP_PROXY_URL=socks5://user:pass@host:port`).
-        *   See `.env.example` for details on variable naming conventions (`{NAME}` should be uppercase with underscores).
-        *   **Make sure the `.env` file is NOT committed to Git.** (It should be included in `.gitignore`).
+        *   **Define API Key Groups:** Configure one or more groups by setting `GEMINI_PROXY_GROUP_{NAME}_API_KEYS` variables (e.g., `GEMINI_PROXY_GROUP_DEFAULT_API_KEYS=key1,key2`). **This is the primary and required method for defining groups when using Docker Compose.** `{NAME}` should be uppercase with underscores (e.g., `DEFAULT`, `TEAM_X`).
+        *   **(Optional) Add Upstream Proxies:** Set `GEMINI_PROXY_GROUP_{NAME}_PROXY_URL` variables for groups that require an upstream proxy (e.g., `GEMINI_PROXY_GROUP_MY_SOCKS_GROUP_PROXY_URL=socks5://user:pass@host:port`). If omitted, no proxy is used for that group.
+        *   **(Optional) Add Custom Target URLs:** Set `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL` variables for groups that need to target a different base API endpoint than the default Google one. If omitted, the default is used.
+        *   **Refer to `.env.example`** for detailed examples and the exact variable naming format.
+        *   **Security:** Ensure the `.env` file is **NOT** committed to Git. (It should be included in `.gitignore`).
 
 3.  **Prepare State File (Optional but Recommended):**
     *   For persistence of rate-limited key states across restarts, create an empty file:
@@ -77,11 +78,9 @@ This method uses Docker Compose and a `.env` file to manage configuration, allow
     *   *Docker Compose will automatically mount this file into the container based on the `volumes` section in `docker-compose.yml`.*
 
 4.  **(Optional) Using `config.yaml` with Docker Compose:**
-    *   For most Docker Compose use cases, `config.yaml` is **not needed**. Configure everything via `.env`.
-    *   You *might* mount `config.yaml` (uncomment the volume line in `docker-compose.yml`) only if you need to:
-        *   Define a different default `target_url` for a specific group **and** you don't want to use the `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL` environment variable.
-        *   Define different default server settings (`host`/`port`) than the hardcoded ones, although these are usually handled by Docker Compose itself.
-    *   **Important:** API keys, proxy URLs, and target URLs defined in `.env` **always override** any values in `config.yaml`.
+    *   For Docker Compose setups using a `.env` file, `config.yaml` is **generally not needed**. All group configurations (API keys, proxy URLs, target URLs) **must** be defined using environment variables in your `.env` file.
+    *   You might *only* consider mounting `config.yaml` (uncomment the volume line in `docker-compose.yml`) if you need to set a specific fallback `target_url` for a group *that is not set via the corresponding environment variable* or to override the default `server` settings (host/port) hardcoded in the application (though ports are usually best managed via `.env` and Docker Compose port mappings).
+    *   **Important:** API keys, proxy URLs, and target URLs defined in `.env` **always define** the group configuration. `config.yaml` only provides potential fallbacks for `target_url` and server defaults if environment variables are missing.
 
 5.  **Run with Docker Compose:**
     *   This single command builds the image (if necessary) and starts the service in the background.
@@ -91,31 +90,31 @@ This method uses Docker Compose and a `.env` file to manage configuration, allow
     ```
 
 6.  **Verify:**
-    *   Check logs: `docker compose logs -f`
+    *   Check logs: `docker compose logs -f` (You should see output indicating discovered groups based on your `.env` file).
     *   Check health: `curl http://localhost:<SERVER_PORT_HOST>/health` (use the host port you set in `.env`, e.g., `8081`)
     *   Test with an OpenAI client pointed to `http://localhost:<SERVER_PORT_HOST>`.
     *   Check if `key_states.json` was created/updated in your local directory.
 
 7.  **Applying `.env` Changes:**
-   *   If you modify the `.env` file after the container is running, you **must restart** the container for the changes to take effect. Docker Compose reads the `.env` file only when the container starts.
-   *   Use one of the following commands:
-       ```bash
-       # Option A: Restart the specific service (faster)
-       docker compose restart gemini-proxy
+    *   If you modify the `.env` file after the container is running, you **must restart** the container for the changes to take effect. Docker Compose reads the `.env` file only when the container starts.
+    *   Use one of the following commands:
+        ```bash
+        # Option A: Restart the specific service (faster)
+        docker compose restart gemini-proxy
 
-       # Option B: Stop and restart all services defined in the compose file
-       docker compose down && docker compose up -d
-       ```
+        # Option B: Stop and restart all services defined in the compose file
+        docker compose down && docker compose up -d
+        ```
 
 8.  **Stopping:**
-   ```bash
-   docker compose down
-   ```
-   *(Use `docker compose down -v` to also remove the anonymous volume if you used named volumes instead of bind mounts for `key_states.json`)*.
+    ```bash
+    docker compose down
+    ```
+    *(Use `docker compose down -v` to also remove the anonymous volume if you used named volumes instead of bind mounts for `key_states.json`)*.
 
 ### Option 2: Building and Running Locally
 
-Use this primarily for development. Configuration relies heavily on `config.yaml`.
+Use this primarily for development. Configuration can rely on environment variables or `config.yaml`.
 
 1.  **Clone Repository:** (If needed)
     ```bash
@@ -123,9 +122,8 @@ Use this primarily for development. Configuration relies heavily on `config.yaml
     cd gemini-proxy-key-rotation-rust
     ```
 2.  **Prepare Configuration:** Choose **one** primary method:
-    *   **Method A (Environment Variables):** Set `GEMINI_PROXY_GROUP_{NAME}_API_KEYS`, optionally `..._PROXY_URL`, and optionally `..._TARGET_URL` variables in your shell. You still need a minimal `config.yaml` (e.g., just `server: {host: 127.0.0.1, port: 8080}`) to pass to the `--config` flag.
-    *   **Method B (`config.yaml` only):** Copy `config.example.yaml` to `config.yaml`. Edit it to define your `server` settings and `groups` including `name`, `api_keys`, `proxy_url`, and `target_url`. **Do not** set corresponding environment variables, as they would override the file.
-
+    *   **Method A (Environment Variables):** Set `GEMINI_PROXY_GROUP_{NAME}_API_KEYS`, optionally `..._PROXY_URL`, and optionally `..._TARGET_URL` variables in your shell. You may still need a minimal `config.yaml` (e.g., just defining `server:`) if you want to override default server settings and pass it via the `--config` flag.
+    *   **Method B (`config.yaml` only):** Copy `config.example.yaml` to `config.yaml`. Edit it to define your `server` settings and `groups` including `name`, `api_keys`, `proxy_url`, and `target_url`. **Do not** set corresponding `GEMINI_PROXY_GROUP_*` environment variables, as they would override the file settings.
 3.  **Build:**
     ```bash
     cargo build --release
@@ -137,14 +135,14 @@ Use this primarily for development. Configuration relies heavily on `config.yaml
     # export GEMINI_PROXY_GROUP_DEFAULT_API_KEYS="key1,key2"
     # ... other env vars ...
 
-    # Run using the relative path to your config file
+    # Run using the relative path to your config file (even if minimal or empty)
     ./target/release/gemini-proxy-key-rotation-rust --config config.yaml
     ```
-    *   *(The `key_states.json` file will be created/updated in the same directory as `config.yaml`)*
+    *   *(The `key_states.json` file will be created/updated in the current working directory)*
 
 5.  **Verify:**
     *   Check terminal logs.
-    *   Check health: `curl http://<HOST>:<PORT>/health`
+    *   Check health: `curl http://<HOST>:<PORT>/health` (use address from config or defaults)
     *   Test with an OpenAI client pointed to `http://<HOST>:<PORT>`.
 
 ## Usage with OpenAI Clients
@@ -191,42 +189,41 @@ curl http://localhost:8081/v1/chat/completions \
 
 ## Configuration (`config.yaml`)
 
-This file is **optional for Docker Compose** (if using `.env` for everything) but **required for local runs** via `cargo run -- --config config.yaml`.
+This file is **optional for Docker Compose** runs that use a `.env` file, but **required for local runs** via `cargo run -- --config config.yaml` (even if the file is minimal).
 
 **Behavior:**
-*   **Environment variables define groups and settings:** The application discovers groups based on `GEMINI_PROXY_GROUP_{NAME}_API_KEYS` variables. It uses `{NAME}` as the group name. API keys, proxy URLs, and target URLs are taken from the corresponding `..._API_KEYS`, `..._PROXY_URL`, and `..._TARGET_URL` environment variables.
-*   **YAML for defaults:** `config.yaml` is used *only* as a fallback for `target_url` (if the `..._TARGET_URL` environment variable is not set) and for default `server` settings. If `config.yaml` is missing or empty, hardcoded defaults are used.
-*   **Environment variables for server/log settings:** `SERVER_PORT_CONTAINER` and `RUST_LOG` in `.env` (used by Docker Compose) control the container's internal port and logging.
+
+*   **Environment variables define groups and settings:** The application **exclusively** discovers groups and their settings (API keys, proxy URLs, target URLs) based on environment variables matching the `GEMINI_PROXY_GROUP_{NAME}_*` pattern. The presence of `GEMINI_PROXY_GROUP_{NAME}_API_KEYS` is mandatory to define a group.
+*   **YAML for fallbacks only:** `config.yaml` is used *only* as a fallback for a group's `target_url` (if the `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL` environment variable is *not* set) and for default `server` settings (host/port). If `config.yaml` is missing or empty when running locally, hardcoded defaults are used.
+*   **Environment variables for server/log settings:** `SERVER_PORT_CONTAINER` and `RUST_LOG` (typically set in `.env` for Docker Compose) control the container's internal port and logging level, overriding any `server.port` in `config.yaml`.
 
 **Recommendation:**
+
 *   **For Docker:** Use `.env` for everything (API keys, proxy URLs, target URLs, ports, log level). You usually **do not need** `config.yaml` at all.
-*   **For Local:** Use `config.yaml` for convenience, or set environment variables directly.
+*   **For Local:** Use `config.yaml` if you prefer file-based configuration for groups (don't set env vars), or use environment variables and a minimal `config.yaml` for server settings if needed.
 
 ```yaml
-# config.yaml (Example: Only used to set a custom target_url for GROUP1)
+# config.yaml (Example: Only useful as a fallback target_url for GROUP1 if env var is missing)
 server: # Optional: Defaults to host: 0.0.0.0, port: 8080 if omitted
   host: "0.0.0.0"
   port: 8080
 groups:
-  # Keys, proxy, and target_url for GROUP1 come from env vars:
+  # Group definition and primary settings for GROUP1 MUST come from env vars:
   # GEMINI_PROXY_GROUP_GROUP1_API_KEYS=...
-  # GEMINI_PROXY_GROUP_GROUP1_PROXY_URL=...
-  # GEMINI_PROXY_GROUP_GROUP1_TARGET_URL=...
-  # This entry in YAML is only needed if you want to provide a fallback target_url
-  # in case the environment variable is not set.
-  - name: "GROUP1" # Must match the {NAME} used in env vars
-    target_url: "https://fallback-target-if-env-missing.com" # Fallback target
+  # GEMINI_PROXY_GROUP_GROUP1_PROXY_URL=... (Optional)
+  # GEMINI_PROXY_GROUP_GROUP1_TARGET_URL=... (Optional)
+  # This entry in YAML is ONLY relevant if GEMINI_PROXY_GROUP_GROUP1_TARGET_URL is NOT set.
+  - name: "GROUP1" # Must match the {NAME} used in env vars if you want this fallback to apply
+    target_url: "https://fallback-target-if-env-missing.com" # Fallback target only
 
-  # Other groups like 'DEFAULT' will be created from env vars
-  # and use the default target_url unless specified here.
-  - name: "DEFAULT"
-    # No target_url specified, uses default
+  # Other groups like 'DEFAULT' will be created solely from env vars.
+  # Their target_url will be the default Google API unless GEMINI_PROXY_GROUP_DEFAULT_TARGET_URL is set.
 ```
-*   **Priority:** Environment variables (`..._API_KEYS`, `..._PROXY_URL`, `..._TARGET_URL`) define the groups and their settings. `config.yaml` only provides fallbacks for `target_url` and server settings.
+*   **Priority:** Environment variables defined in `.env` (or the shell) are the **sole source** for defining groups and their API keys, proxy URLs, and target URLs when using Docker Compose or if set for local runs. `config.yaml` *only* provides potential fallbacks for `target_url` and server settings if the corresponding environment variables are absent.
 
 ## Environment Variable Configuration
 
-Environment variables provide the primary way to configure the proxy, especially for Docker deployments using a `.env` file.
+This is the **primary configuration method** when running with Docker Compose and a `.env` file. It can also be used for local runs.
 
 ### API Keys
 *   **Purpose:** Defines a group and provides its API keys. **This is mandatory for each group you want to use.**
@@ -241,13 +238,12 @@ Environment variables provide the primary way to configure the proxy, especially
 ### Target URL (Per Group)
 *   **Purpose:** (Optional) Define a non-default base URL for the target API for a specific group.
 *   **Variable:** `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL`
-*   **Value:** The base URL (e.g., `"https://alternative.api.endpoint.com"`). If omitted, uses the value from `config.yaml` (if defined for that group) or the default Google API endpoint.
-*   **Override:** Replaces the `target_url` from `config.yaml` for the matching group.
+*   **Value:** The base URL (e.g., `"https://alternative.api.endpoint.com"`). If omitted, uses the value from `config.yaml` (if defined for that group name as a fallback) or the default Google API endpoint.
 
 ### Server Port (Inside Container)
 *   **Purpose:** Set the port the application listens on inside the container.
-*   **Variable:** `SERVER_PORT_CONTAINER` (Used by `docker-compose.yml`)
-*   **Value:** Port number (e.g., `8080`). Must match the container port in the `ports` mapping.
+*   **Variable:** `SERVER_PORT_CONTAINER` (Used by `docker-compose.yml` and `.env`)
+*   **Value:** Port number (e.g., `8080`). Must match the container port in the `ports` mapping and the `SERVER_PORT` env var in `docker-compose.yml`.
 
 ### Log Level
 *   **Purpose:** Control the logging verbosity.
@@ -271,10 +267,10 @@ Environment variables provide the primary way to configure the proxy, especially
 (Sections on Logging, Health Check, Key State Persistence, Error Handling, Docker Commands remain largely the same but reviewed for clarity)
 
 ### Logging
-*   Use `RUST_LOG` env var (e.g., `info`, `debug`, `trace`). Default: `info`.
+*   Use `RUST_LOG` env var (e.g., `info`, `debug`, `trace`). Default: `info`. Set in `.env` for Docker Compose.
 
 ### Health Check
-*   `GET /health` returns `200 OK`. Use for basic monitoring.
+*   `GET /health` returns `200 OK`. Use for basic monitoring. Access via the host port mapped in Docker Compose (e.g., `http://localhost:8081/health`).
 
 ### Key State Persistence (`key_states.json`)
 *   **Purpose:** Remembers rate-limited keys to avoid checking them immediately after restarts.
@@ -290,7 +286,7 @@ Environment variables provide the primary way to configure the proxy, especially
 *   **503 (from Proxy):** All keys currently marked as rate-limited.
 *   **502 (from Proxy):** Network error connecting to Google/upstream proxy.
 *   **500 (from Proxy):** Internal proxy error. Check proxy logs.
-*   **Config Errors:** Logged on startup, proxy exits.
+*   **Config Errors:** Logged on startup, proxy exits. Check `.env` file format and values.
 
 ### Common Docker Compose Commands
 *   **Start/Run (background):** `docker compose up -d` (Builds if needed)
@@ -298,13 +294,13 @@ Environment variables provide the primary way to configure the proxy, especially
 *   **Stop:** `docker compose stop`
 *   **Stop and Remove Containers/Networks:** `docker compose down`
 *   **Stop and Remove Containers/Networks/Volumes:** `docker compose down -v` (Use cautiously!)
-*   **Restart:** `docker compose restart`
+*   **Restart:** `docker compose restart gemini-proxy` (Applies `.env` changes)
 *   **Rebuild Image:** `docker compose build` (or `docker compose up -d --build`)
 *   **Check Status:** `docker compose ps`
 
 ## Security Considerations
 
-*   **API Keys:** Use environment variables (`.env` file) for API keys. Avoid storing them directly in `config.yaml`, especially if the file is committed to version control.
+*   **API Keys:** Use the `.env` file for API keys when using Docker Compose. Do not commit `.env` to version control. Avoid storing keys directly in `config.yaml`.
 *   **Files:** Do not commit `config.yaml` (if it contains secrets) or `key_states.json` to Git. (`.gitignore` includes these by default).
 *   **Network:** Expose the proxy only to trusted networks. Consider a reverse proxy (Nginx/Caddy) for TLS and advanced access control if needed.
 
