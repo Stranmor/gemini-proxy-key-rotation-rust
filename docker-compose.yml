@@ -15,8 +15,8 @@ services:
     ports:
       - "${SERVER_PORT_HOST:-8081}:${SERVER_PORT_CONTAINER:-8080}" # Maps host port (default 8081) to container port (default 8080)
     volumes:
-      # Mount key_states.json for persistence. Create an empty file if it doesn't exist first.
-      - ./key_states.json:/app/key_states.json
+      # Use a named volume for key state persistence to avoid host filesystem issues.
+      - key_state_data:/app/key_states.json
       # Optional: Mount config.yaml if you still need some settings from it that are NOT overridden by env vars.
       # Generally, prefer env vars for Docker deployments when using compose + .env
       # - ./config.yaml:/app/config.yaml # Mount config.yaml if needed for specific group target_urls or server settings
@@ -25,6 +25,8 @@ services:
       # Server settings
       SERVER_PORT: ${SERVER_PORT_CONTAINER:-8080} # Port inside the container
       RUST_LOG: ${RUST_LOG:-info}
+      # Explicitly pass default group vars for testing
+      GEMINI_PROXY_GROUP_DEFAULT_API_KEYS: "${GEMINI_PROXY_GROUP_DEFAULT_API_KEYS:-}"
 
       # --- Group Configurations ---
       # Group configurations (API keys, proxy, target URLs) are loaded automatically
@@ -40,7 +42,7 @@ services:
       start_period: 10s # Give the container time to start
 
 volumes:
-  # Define the volume if you prefer named volumes over bind mounts, though bind mount is simpler here.
+  # Define the volume for key state persistence
   key_state_data:
 
 # Note: Ensure you have a .env file based on .env.example with your actual API keys.

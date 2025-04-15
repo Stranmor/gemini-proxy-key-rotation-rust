@@ -3,7 +3,7 @@
 use axum::{
     // body::Bytes as _, // Removed unused import placeholder
     extract::{Request, State},
-    http::{header, Method, StatusCode, Uri}, // Removed unused HeaderMap
+    http::{/* header, */ Method, StatusCode, Uri}, // Removed unused header
     response::Response,
 };
 use gemini_proxy_key_rotation_rust::{
@@ -16,7 +16,7 @@ use gemini_proxy_key_rotation_rust::{
 use std::{fs::File, path::PathBuf, sync::Arc};
 use tempfile::tempdir;
 use wiremock::{
-    matchers::{header, method, path}, // Grouped matchers
+    matchers::{method, path, query_param}, // Use path and query_param
     Mock,
     MockServer,
     ResponseTemplate,
@@ -49,7 +49,7 @@ async fn call_proxy_handler(state: Arc<AppState>, method: Method, path: &str) ->
     let request = Request::builder()
         .method(method)
         .uri(uri)
-        .body(axum::body::Body::empty()) // Use empty body for GET tests
+        .body(axum::body::Body::empty()) // Use empty body for GET/POST tests for simplicity
         .unwrap();
 
     // Call the actual handler function
@@ -68,15 +68,12 @@ async fn test_forward_request_openai_compat_success_no_proxy() {
     let server = MockServer::start().await;
     let test_api_key = "test-key-123";
     let test_path = "/v1/models";
-    let expected_bearer = format!("Bearer {}", test_api_key);
+    // let _expected_bearer = format!("Bearer {}", test_api_key); // Unused now
 
     Mock::given(method("GET"))
-        .and(path(test_path)) // Adjusted path previously
-        .and(header("x-goog-api-key", test_api_key))
-        .and(header(
-            header::AUTHORIZATION.as_str(),
-            expected_bearer.as_str(),
-        ))
+        .and(path(test_path))
+        .and(query_param("key", test_api_key)) // Match key in query param
+        // Removed header matchers
         .respond_with(
             ResponseTemplate::new(200).set_body_string("{\"object\": \"list\", \"data\": []}"),
         )
@@ -126,7 +123,8 @@ async fn test_handler_retries_on_429_and_succeeds() {
     // Mock for the first key (key1) - returns 429
     Mock::given(method("POST")) // Assuming POST for generateContent
         .and(path(test_path))
-        .and(header("x-goog-api-key", key1))
+        .and(query_param("key", key1)) // Match key in query param
+        // Removed header matcher
         .respond_with(ResponseTemplate::new(429).set_body_string("Rate limit exceeded"))
         .mount(&server)
         .await;
@@ -134,7 +132,8 @@ async fn test_handler_retries_on_429_and_succeeds() {
     // Mock for the second key (key2) - returns 200
     Mock::given(method("POST"))
         .and(path(test_path))
-        .and(header("x-goog-api-key", key2))
+        .and(query_param("key", key2)) // Match key in query param
+        // Removed header matcher
         .respond_with(ResponseTemplate::new(200).set_body_string("{\"candidates\": []}")) // Example success response
         .mount(&server)
         .await;
@@ -190,7 +189,8 @@ async fn test_handler_returns_last_429_on_exhaustion() {
     // Mock for the first key (key1) - returns 429
     Mock::given(method("GET"))
         .and(path(test_path))
-        .and(header("x-goog-api-key", key1))
+        .and(query_param("key", key1)) // Match key in query param
+        // Removed header matcher
         .respond_with(ResponseTemplate::new(429).set_body_string("Rate limit 1"))
         .mount(&server)
         .await;
@@ -198,7 +198,8 @@ async fn test_handler_returns_last_429_on_exhaustion() {
     // Mock for the second key (key2) - also returns 429
     Mock::given(method("GET"))
         .and(path(test_path))
-        .and(header("x-goog-api-key", key2))
+        .and(query_param("key", key2)) // Match key in query param
+        // Removed header matcher
         .respond_with(ResponseTemplate::new(429).set_body_string("Rate limit 2")) // Different body to check which 429 is returned
         .mount(&server)
         .await;

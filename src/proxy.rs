@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{header, HeaderMap, HeaderValue, Method, Uri}, // Removed unused StatusCode
+    http::{HeaderMap, Method, Uri}, // Removed unused StatusCode
     response::Response,
 };
 use futures_util::TryStreamExt;
@@ -65,7 +65,7 @@ pub async fn forward_request(
     let original_path_and_query = uri.path_and_query().map_or("", |pq| pq.as_str());
     let relative_path_and_query = original_path_and_query.trim_start_matches('/');
 
-    let final_target_url = base_url.join(relative_path_and_query).map_err(|e| {
+    let mut final_target_url = base_url.join(relative_path_and_query).map_err(|e| {
         error!(
            target.base_url = %base_url,
            request.path_and_query = %relative_path_and_query,
@@ -76,10 +76,12 @@ pub async fn forward_request(
     })?;
     // --- End URL Construction ---
 
-    debug!(target.url = %final_target_url, "Constructed final target URL for request");
+    // Append API Key after initial construction
+    final_target_url.query_pairs_mut().append_pair("key", api_key);
+    debug!(target.url = %final_target_url, "Constructed final target URL with key for request");
 
     let outgoing_method = method;
-    let outgoing_headers = build_forward_headers(&headers, api_key)?; // Error handled within
+    let outgoing_headers = build_forward_headers(&headers)?; // Removed api_key argument
     let outgoing_reqwest_body = reqwest::Body::from(body_bytes);
 
     // --- Get Client ---
@@ -196,11 +198,11 @@ pub async fn forward_request(
 
 /// Creates the `HeaderMap` for the outgoing request to the target service.
 /// Now returns a Result to handle potential errors from add_auth_headers.
-#[tracing::instrument(level="debug", skip(original_headers, api_key), fields(header_count = original_headers.len()))]
-fn build_forward_headers(original_headers: &HeaderMap, api_key: &str) -> Result<HeaderMap> {
+#[tracing::instrument(level="debug", skip(original_headers), fields(header_count = original_headers.len()))] // Removed api_key
+fn build_forward_headers(original_headers: &HeaderMap) -> Result<HeaderMap> { // Removed api_key parameter
     let mut filtered = HeaderMap::with_capacity(original_headers.len() + 3); // +3 for potential additions
     copy_non_hop_by_hop_headers(original_headers, &mut filtered, true);
-    add_auth_headers(&mut filtered, api_key)?; // Error propagated
+    add_auth_headers(&mut filtered)?; // Error propagated
     Ok(filtered)
 }
 
@@ -228,36 +230,19 @@ fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_requ
 
 /// Adds the necessary authentication headers (`x-goog-api-key` and `Authorization: Bearer`).
 /// Returns a Result to indicate potential failures.
-#[tracing::instrument(level="debug", skip(headers, api_key), fields(api_key.preview = %format!("{}...", api_key.chars().take(4).collect::<String>()))) ]
-fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
-    let key_value = HeaderValue::from_str(api_key).map_err(|e| {
-          // Structured error
-          error!(error = %e, "Failed to create HeaderValue for x-goog-api-key (invalid characters in key?)");
-          AppError::Internal(format!("Invalid API key format for header: {}", e))
-      })?;
-
-    // Use insert to potentially overwrite existing headers if present after filtering logic refinement
-    headers.insert("x-goog-api-key", key_value.clone());
-    trace!("Added/updated x-goog-api-key header"); // Use trace for successful internal steps
-
-    let bearer_value_str = format!("Bearer {}", api_key);
-    let bearer_value = HeaderValue::from_str(&bearer_value_str).map_err(|e| {
-        // Structured error
-        error!(error = %e, "Failed to create HeaderValue for Authorization: Bearer header");
-        AppError::Internal(format!("Failed to create Bearer token header: {}", e))
-    })?;
-
-    headers.insert(header::AUTHORIZATION, bearer_value);
-    trace!("Added/updated Authorization: Bearer header"); // Use trace
-
-    Ok(())
+#[tracing::instrument(level="debug")] // Removed skip attribute
+// Removed API key parameter as it's now in the URL
+fn add_auth_headers(_headers: &mut HeaderMap) -> Result<()> { // Renamed headers to _headers
+    // Authentication headers (x-goog-api-key, Authorization) are no longer added here.
+    // The API key is now expected to be included in the URL query parameters.
+    Ok(()) // Function now always succeeds
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::{header, HeaderName, HeaderValue}; // Correct imports
-    use std::error::Error; // Import Error trait for source()
+     // Import Error trait for source()
 
     #[test]
     fn test_build_forward_headers_basic() {
@@ -272,8 +257,8 @@ mod tests {
         ); // Auth, should be removed
         original_headers.insert("x-goog-api-key", HeaderValue::from_static("old_key")); // Auth, should be removed
 
-        let api_key = "new_test_key";
-        let result_headers = build_forward_headers(&original_headers, api_key).unwrap();
+        // api_key is no longer passed as it's handled in URL construction
+        let result_headers = build_forward_headers(&original_headers).unwrap();
 
         // Check standard headers are present
         assert_eq!(
@@ -286,38 +271,12 @@ mod tests {
         assert!(result_headers.get("host").is_none());
         assert!(result_headers.get("connection").is_none());
 
-        // Check auth headers are added/overwritten
-        assert_eq!(result_headers.get("x-goog-api-key").unwrap(), api_key);
-        assert_eq!(
-            result_headers
-                .get(header::AUTHORIZATION)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            format!("Bearer {}", api_key)
-        );
-
-        // Check original auth headers are absent
-        assert!(result_headers
-            .iter()
-            .all(|(k, v)| v != "Bearer old_token" || k == header::AUTHORIZATION));
-        assert!(result_headers
-            .iter()
-            .all(|(k, v)| v != "old_key" || k == "x-goog-api-key"));
+        // Check that auth headers are NOT present (removed as key is in URL)
+        assert!(result_headers.get("x-goog-api-key").is_none());
+        assert!(result_headers.get(header::AUTHORIZATION).is_none());
     }
 
-    #[test]
-    fn test_build_forward_headers_invalid_key_chars() {
-        let original_headers = HeaderMap::new();
-        let api_key_with_newline = "key\nwith\ninvalid\nchars";
-
-        let result = build_forward_headers(&original_headers, api_key_with_newline);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(AppError::Internal(_))));
-        if let Err(AppError::Internal(msg)) = result {
-            assert!(msg.contains("Invalid API key format for header"));
-        }
-    }
+    // Removed test: test_build_forward_headers_invalid_key_chars
 
     #[test]
     fn test_build_response_headers_filters_hop_by_hop() {
