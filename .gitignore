@@ -20,5 +20,3 @@ config.yaml
 *.swp
 *~
 
-# Local development context
-/memory-bank/

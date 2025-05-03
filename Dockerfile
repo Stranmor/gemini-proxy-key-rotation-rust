@@ -26,7 +26,7 @@ RUN cargo build --release --target x86_64-unknown-linux-musl --features reqwest/
 FROM alpine:latest
 
 # Install ca-certificates needed for making HTTPS requests at runtime
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates curl
 
 # Set the working directory
 WORKDIR /app

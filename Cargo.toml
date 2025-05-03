@@ -65,3 +65,4 @@ wiremock = "0.6" # Mocking HTTP server
 tempfile = "3.10" # For creating temporary files/dirs in tests
 lazy_static = "1.5" # For static mutex in tests
 http-body-util = { version = "0.1", features = ["full"] } # For working with bodies in tests
+serial_test = "3.0" # For serializing tests modifying std::env

@@ -13,10 +13,10 @@ services:
     # Ensure values are set in the .env file
     # Expose ports. Reads SERVER_PORT from .env, defaults to 8080 if not set.
     ports:
-      - "${SERVER_PORT_HOST:-8081}:${SERVER_PORT_CONTAINER:-8080}" # Maps host port (default 8081) to container port (default 8080)
+      - "${SERVER_PORT_HOST:-8082}:${SERVER_PORT_CONTAINER:-8080}" # Maps host port (default 8082) to container port (default 8080)
     volumes:
       # Use a named volume for key state persistence to avoid host filesystem issues.
-      - key_state_data:/app/key_states.json
+      - key_state_data:/app # Mount the volume to the app directory
       # Optional: Mount config.yaml if you still need some settings from it that are NOT overridden by env vars.
       # Generally, prefer env vars for Docker deployments when using compose + .env
       # - ./config.yaml:/app/config.yaml # Mount config.yaml if needed for specific group target_urls or server settings
@@ -39,7 +39,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s # Give the container time to start
+      start_period: 30s # Give the container time to start
 
 volumes:
   # Define the volume for key state persistence

@@ -37,14 +37,22 @@ pub struct FlattenedKeyInfo {
     pub proxy_url: Option<String>,
     pub target_url: String,
     pub group_name: String,
+    // Add original index within the group for state lookup if needed later
+    // pub original_group_index: usize,
 }
 
 // --- KeyManager ---
 
 #[derive(Debug)]
 pub struct KeyManager {
-    all_keys: Vec<FlattenedKeyInfo>,
-    key_index: AtomicUsize,
+    // Store keys grouped by their original group name.
+    // The outer Vec represents groups, the tuple holds (group_name, keys_in_group).
+    // Order of groups is preserved based on config processing order.
+    grouped_keys: Vec<(String, Vec<FlattenedKeyInfo>)>,
+    // Index of the group to try next.
+    current_group_index: AtomicUsize,
+    // Index of the key to try next *within each group*. The order matches `grouped_keys`.
+    key_indices_per_group: Vec<AtomicUsize>,
     key_states: Arc<RwLock<HashMap<String, KeyState>>>,
     state_file_path: PathBuf,
     save_mutex: Arc<Mutex<()>>,
@@ -62,11 +70,12 @@ impl KeyManager {
         info!(key_state.path = %state_file_path_display, "Key state persistence file");
 
         let persisted_states = load_key_states_from_file(&state_file_path).await;
-        let mut all_keys = Vec::new();
+        let mut grouped_keys_map: HashMap<String, Vec<FlattenedKeyInfo>> = HashMap::new();
         let mut initial_key_states = HashMap::new();
         let mut processed_keys_count = 0;
         let now = Utc::now();
 
+        // First pass: Collect keys into a map grouped by name to preserve group structure
         for group in &config.groups {
             if group.api_keys.is_empty() {
                 warn!(group.name = %group.name, "Skipping group with no API keys.");
@@ -79,6 +88,7 @@ impl KeyManager {
                group.target_url = %group.target_url,
                "Processing group for KeyManager"
             );
+            let group_entry = grouped_keys_map.entry(group.name.clone()).or_default();
             for key in &group.api_keys {
                 if key.trim().is_empty() {
                     warn!(group.name = %group.name, "Skipping empty API key string in group.");
@@ -90,8 +100,9 @@ impl KeyManager {
                     target_url: group.target_url.clone(),
                     group_name: group.name.clone(),
                 };
-                all_keys.push(key_info);
+                group_entry.push(key_info); // Add key to its group in the map
 
+                // Process state (this part remains largely the same)
                 let state_to_insert = if let Some(persisted) = persisted_states.get(key) {
                     if persisted.is_limited && persisted.reset_time.map_or(false, |rt| now >= rt) {
                         info!(api_key.preview = %Self::preview(key), group.name = %group.name, "Persisted limit for key has expired. Initializing as available.");
@@ -112,23 +123,50 @@ impl KeyManager {
             }
         }
 
-        // Clean up states for keys no longer in config
-        initial_key_states.retain(|key, _| {
-             let key_in_config = all_keys.iter().any(|ki| ki.key == *key);
-             if !key_in_config {
-                 warn!(api_key.preview = %Self::preview(key), "Removing state for key no longer present in configuration.");
-             }
-             key_in_config
-         });
+        // Convert map to Vec to maintain a specific order for round-robin
+        // Sort by group name to ensure consistent ordering across restarts, if desired.
+        // Alternatively, could retain the order from config.groups if the map insertion order isn't guaranteed.
+        // Let's use the order from config.groups for predictability.
+        let mut grouped_keys: Vec<(String, Vec<FlattenedKeyInfo>)> = Vec::with_capacity(config.groups.len());
+        let mut key_indices_per_group: Vec<AtomicUsize> = Vec::with_capacity(config.groups.len());
 
-        if all_keys.is_empty() {
+        // Iterate through config.groups again to maintain the original order
+        let mut active_group_count = 0;
+        for group_config in &config.groups {
+             if let Some(keys) = grouped_keys_map.remove(&group_config.name) {
+                 if !keys.is_empty() {
+                     grouped_keys.push((group_config.name.clone(), keys));
+                     key_indices_per_group.push(AtomicUsize::new(0));
+                     active_group_count += 1;
+                 }
+             }
+         }
+
+        // Clean up states for keys no longer in config (needs adaptation)
+        let all_keys_in_config: std::collections::HashSet<String> = grouped_keys
+            .iter()
+            .flat_map(|(_, keys)| keys.iter().map(|ki| ki.key.clone()))
+            .collect();
+
+        initial_key_states.retain(|key, _| {
+            let key_in_config = all_keys_in_config.contains(key);
+            if !key_in_config {
+                warn!(api_key.preview = %Self::preview(key), "Removing state for key no longer present in configuration.");
+            }
+            key_in_config
+        });
+
+
+        if processed_keys_count == 0 { // Check processed keys, not grouped_keys.is_empty() which might be true if all groups had empty keys
             error!("KeyManager Initialization Error: No usable API keys found after processing configuration. Application might not function correctly.");
+        } else if active_group_count == 0 {
+             error!("KeyManager Initialization Error: Keys were processed, but no active groups were formed. Check group definitions.");
         }
 
         info!(
             key_manager.total_keys = processed_keys_count,
-            key_manager.total_groups = config.groups.len(),
-            "KeyManager: Flattened keys into rotation list."
+            key_manager.total_groups = active_group_count, // Log active groups
+            "KeyManager: Grouped keys into rotation list."
         );
         info!(
             key_manager.state_count = initial_key_states.len(),
@@ -137,8 +175,9 @@ impl KeyManager {
         );
 
         let manager = Self {
-            all_keys,
-            key_index: AtomicUsize::new(0),
+            grouped_keys,
+            current_group_index: AtomicUsize::new(0),
+            key_indices_per_group,
             key_states: Arc::new(RwLock::new(initial_key_states)),
             state_file_path: state_file_path.clone(), // Use cloned path
             save_mutex: Arc::new(Mutex::new(())),
@@ -155,71 +194,121 @@ impl KeyManager {
 
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn get_next_available_key_info(&self) -> Option<FlattenedKeyInfo> {
-        if self.all_keys.is_empty() {
+        if self.grouped_keys.is_empty() {
             warn!(
                 key_manager.status = "empty",
-                "No API keys available in the flattened list. Cannot provide a key."
+                "No key groups configured or available. Cannot provide a key."
             );
             return None;
         }
-        let key_states_guard = self.key_states.read().await;
-        let start_index = self.key_index.load(Ordering::Relaxed);
-        let num_keys = self.all_keys.len();
-        debug!(start_index, num_keys, "Searching for next available key");
 
-        for i in 0..num_keys {
-            let current_index = (start_index + i) % num_keys;
-            let key_info = self.all_keys.get(current_index)?;
-            let key_preview = Self::preview(&key_info.key);
-            let group_name = &key_info.group_name;
+        let num_groups = self.grouped_keys.len();
+        // Relaxed ordering should be sufficient for these counters
+        let initial_group_index = self.current_group_index.load(Ordering::Relaxed);
 
-            let key_state = match key_states_guard.get(&key_info.key) {
-                Some(state) => state,
-                None => {
-                    // Internal inconsistency - should not happen if init is correct
-                    error!(api_key.preview = %key_preview, group.name = %group_name, "Internal inconsistency: Key found in rotation list but missing from state map! Skipping.");
-                    continue;
-                }
-            };
+        let key_states_guard = self.key_states.read().await; // Lock state map for reading
 
-            let now = Utc::now();
-            let is_available = if key_state.is_limited {
-                key_state.reset_time.map_or(false, |rt| now >= rt)
-            } else {
-                true
-            };
+        for group_offset in 0..num_groups {
+            let current_group_idx = (initial_group_index + group_offset) % num_groups;
+            let (group_name, keys_in_group) = match self.grouped_keys.get(current_group_idx) {
+                 Some(group_data) => group_data,
+                 None => {
+                     error!(group.index = current_group_idx, "Internal inconsistency: Group index out of bounds. Skipping.");
+                     continue; // Should not happen
+                 }
+             };
 
-            if is_available {
-                if key_state.is_limited {
-                    debug!(api_key.preview = %key_preview, group.name = %group_name, "Limit previously set but now expired");
-                }
-                // Found an available key
-                self.key_index
-                    .store((current_index + 1) % num_keys, Ordering::Relaxed);
-                debug!(
-                   api_key.preview = %key_preview,
-                   group.name = %group_name,
-                   key.index = current_index,
-                   next_index = (current_index + 1) % num_keys,
-                   "Selected available API key"
-                );
-                return Some(key_info.clone());
-            } else {
-                // Key is limited, log why it was skipped
-                debug!(
-                   api_key.preview = %key_preview,
-                   group.name = %group_name,
-                   key.index = current_index,
-                   reason = "limited",
-                   key.reset_time = ?key_state.reset_time,
-                   "Skipped key"
-                );
+            if keys_in_group.is_empty() {
+                debug!(group.index = current_group_idx, group.name = %group_name, "Skipping empty group");
+                continue; // Skip empty groups
             }
-        }
+
+            let num_keys_in_group = keys_in_group.len();
+            let group_key_index_atomic = match self.key_indices_per_group.get(current_group_idx) {
+                Some(atomic_idx) => atomic_idx,
+                None => {
+                    error!(group.index = current_group_idx, group.name=%group_name, "Internal inconsistency: Missing key index for group. Skipping.");
+                    continue; // Should not happen
+                }
+            };
+            let initial_key_index_in_group = group_key_index_atomic.load(Ordering::Relaxed);
+
+             debug!(group.index = current_group_idx, group.name = %group_name, group.key_count = num_keys_in_group, group.start_key_index = initial_key_index_in_group, "Searching within group");
+
+            for key_offset in 0..num_keys_in_group {
+                let current_key_idx_in_group = (initial_key_index_in_group + key_offset) % num_keys_in_group;
+                let key_info = match keys_in_group.get(current_key_idx_in_group) {
+                     Some(ki) => ki,
+                     None => {
+                         error!(group.index = current_group_idx, group.name=%group_name, key.index=current_key_idx_in_group, "Internal inconsistency: Key index out of bounds within group. Skipping key.");
+                         continue; // Should not happen
+                     }
+                 };
+
+                let key_preview = Self::preview(&key_info.key);
+
+                let key_state = match key_states_guard.get(&key_info.key) {
+                    Some(state) => state,
+                    None => {
+                        error!(api_key.preview = %key_preview, group.name = %group_name, "Internal inconsistency: Key found in group but missing from state map! Skipping.");
+                        continue;
+                    }
+                };
+
+                let now = Utc::now();
+                let is_available = if key_state.is_limited {
+                    key_state.reset_time.map_or(false, |rt| now >= rt)
+                } else {
+                    true
+                };
+
+                if is_available {
+                    if key_state.is_limited {
+                        debug!(api_key.preview = %key_preview, group.name = %group_name, "Limit previously set but now expired");
+                        // State will be reset in mark_key_as_limited if it's called again for this key.
+                        // If another key gets limited first, the reset happens during the next load/initialization.
+                    }
+
+                    // --- Found an available key ---
+                    let next_key_idx_in_group = (current_key_idx_in_group + 1) % num_keys_in_group;
+                    let next_group_idx = (current_group_idx + 1) % num_groups;
+
+                    // Update indices atomically
+                    group_key_index_atomic.store(next_key_idx_in_group, Ordering::Relaxed);
+                    self.current_group_index.store(next_group_idx, Ordering::Relaxed);
+
+                    debug!(
+                       api_key.preview = %key_preview,
+                       group.name = %group_name,
+                       group.index = current_group_idx,
+                       key.index_in_group = current_key_idx_in_group,
+                       group.next_key_index = next_key_idx_in_group,
+                       manager.next_group_index = next_group_idx,
+                       "Selected available API key using group round-robin"
+                    );
+                    // Release read lock before returning
+                    drop(key_states_guard);
+                    return Some(key_info.clone());
+                } else {
+                    // Key is limited, log why it was skipped
+                    debug!(
+                       api_key.preview = %key_preview,
+                       group.name = %group_name,
+                       key.index_in_group = current_key_idx_in_group,
+                       reason = "limited",
+                       key.reset_time = ?key_state.reset_time,
+                       "Skipped key in group"
+                    );
+                }
+            } // End inner loop (keys in group)
+             debug!(group.index = current_group_idx, group.name = %group_name, "No available key found in this group during this pass.");
+        } // End outer loop (groups)
+
+        // If we exit the loop, no available key was found in any group
         drop(key_states_guard); // Release read lock
         warn!(
             key_manager.status = "all_limited",
-            "All API keys are currently rate-limited or unavailable."
+            "All API keys checked across all groups are currently rate-limited or unavailable."
         );
         None
     }
@@ -234,22 +323,28 @@ impl KeyManager {
             // Scope for RwLockWriteGuard
             let mut key_states_guard = self.key_states.write().await;
             if let Some(key_state) = key_states_guard.get_mut(api_key) {
-                // Find group name for context (best effort)
-                if let Some(ki) = self.all_keys.iter().find(|k| k.key == api_key) {
-                    group_name_for_log = ki.group_name.clone();
-                }
+                // Find group name for context (best effort - search grouped_keys)
+                 if let Some(found_key_info) = self.grouped_keys.iter()
+                     .flat_map(|(_, keys)| keys.iter())
+                     .find(|k| k.key == api_key) {
+                    group_name_for_log = found_key_info.group_name.clone();
+                 }
 
                 let now_utc = Utc::now();
                 let mut state_changed = false;
 
                 // Check if the limit had actually expired before we got the write lock
-                if key_state.is_limited && key_state.reset_time.map_or(false, |rt| now_utc >= rt) {
+                let had_expired = key_state.is_limited && key_state.reset_time.map_or(false, |rt| now_utc >= rt);
+                if had_expired {
                     info!(group.name=%group_name_for_log, "Resetting previously expired limit before marking again.");
-                    state_changed = true; // Treat as change even if marking again
+                    // Explicitly reset the state if it had expired
+                    key_state.is_limited = false;
+                    key_state.reset_time = None;
+                    state_changed = true; // Mark as changed so save is triggered if needed
                 }
 
-                // Mark as limited only if not already limited with a future reset time
-                if !key_state.is_limited || state_changed {
+                // Mark as limited only if not already limited OR if it just expired and needs re-limiting
+                if !key_state.is_limited || had_expired {
                     warn!(group.name=%group_name_for_log, "Marking key as rate-limited");
                     let target_tz: Tz = Los_Angeles;
                     let now_in_target_tz = now_utc.with_timezone(&target_tz);
@@ -651,12 +746,19 @@ mod tests {
  server:
    host: "0.0.0.0"
    port: 8080
- groups: []
+ # No groups needed here, KeyManager uses AppConfig directly
  "#;
         let mut file = File::create(&file_path).unwrap();
         writeln!(file, "{}", content).unwrap();
         file_path
     }
+
+    // Helper to get the internal state for verification
+    async fn get_manager_indices(manager: &KeyManager) -> (usize, Vec<usize>) {
+       let group_idx = manager.current_group_index.load(Ordering::Relaxed);
+       let key_indices = manager.key_indices_per_group.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+       (group_idx, key_indices)
+   }
 
     #[tokio::test]
     async fn test_key_manager_initialization_loads_persisted_state() {
@@ -883,34 +985,149 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_next_key_round_robin_with_persistence() {
+    async fn test_get_next_key_group_round_robin() {
         let dir = tempdir().unwrap();
         let config_path = create_temp_yaml_config(&dir);
-        let groups = vec![KeyGroup {
-            name: "g1".to_string(),
-            api_keys: vec!["k1".to_string(), "k2".to_string(), "k3".to_string()],
-            proxy_url: None,
-            target_url: "t1".to_string(),
-        }];
+        let groups = vec![
+             KeyGroup { // Group 0
+                 name: "g1".to_string(),
+                 api_keys: vec!["g1k1".to_string(), "g1k2".to_string()],
+                 proxy_url: None, target_url: "t1".to_string(),
+             },
+             KeyGroup { // Group 1
+                 name: "g2".to_string(),
+                 api_keys: vec!["g2k1".to_string()],
+                 proxy_url: None, target_url: "t2".to_string(),
+             },
+             KeyGroup { // Group 2
+                 name: "g3".to_string(),
+                 api_keys: vec!["g3k1".to_string(), "g3k2".to_string(), "g3k3".to_string()],
+                 proxy_url: None, target_url: "t3".to_string(),
+            },
+         ];
         let config = create_test_config(groups);
         let manager = KeyManager::new(&config, &config_path).await;
-        assert_eq!(
-            manager.get_next_available_key_info().await.unwrap().key,
-            "k1"
-        );
-        assert_eq!(
-            manager.get_next_available_key_info().await.unwrap().key,
-            "k2"
-        );
-        assert_eq!(
-            manager.get_next_available_key_info().await.unwrap().key,
-            "k3"
-        );
-        assert_eq!(
-            manager.get_next_available_key_info().await.unwrap().key,
-            "k1"
-        ); // Loops back
+
+        assert_eq!(manager.grouped_keys.len(), 3);
+        assert_eq!(manager.key_indices_per_group.len(), 3);
+
+        // Expected sequence: g1k1, g2k1, g3k1, g1k2, g2k1, g3k2, g1k1, g2k1, g3k3, ...
+        let key1 = manager.get_next_available_key_info().await.unwrap(); // g1k1
+        assert_eq!(key1.key, "g1k1");
+        assert_eq!(get_manager_indices(&manager).await, (1, vec![1, 0, 0])); // Next group 1, g1 index 1
+
+        let key2 = manager.get_next_available_key_info().await.unwrap(); // g2k1
+        assert_eq!(key2.key, "g2k1");
+        // Group g2 has only one key, so its index should wrap back to 0 after selection.
+        assert_eq!(get_manager_indices(&manager).await, (2, vec![1, 0, 0])); // Next group 2, g2 index 0
+
+        let key3 = manager.get_next_available_key_info().await.unwrap(); // g3k1
+        assert_eq!(key3.key, "g3k1");
+        // Corrected assertion: Group g2 index should be 0.
+        assert_eq!(get_manager_indices(&manager).await, (0, vec![1, 0, 1])); // Next group 0, g3 index 1
+
+        let key4 = manager.get_next_available_key_info().await.unwrap(); // g1k2
+        assert_eq!(key4.key, "g1k2");
+        // Corrected assertion: Group g2 index should remain 0 as we selected from g1.
+        assert_eq!(get_manager_indices(&manager).await, (1, vec![0, 0, 1])); // Next group 1, g1 index 0
+
+        let key5 = manager.get_next_available_key_info().await.unwrap(); // g2k1 (again)
+        assert_eq!(key5.key, "g2k1");
+        // Group g2 index wraps to 0 again.
+        assert_eq!(get_manager_indices(&manager).await, (2, vec![0, 0, 1])); // Next group 2, g2 index 0
+
+        let key6 = manager.get_next_available_key_info().await.unwrap(); // g3k2
+        assert_eq!(key6.key, "g3k2");
+        assert_eq!(get_manager_indices(&manager).await, (0, vec![0, 0, 2])); // Next group 0, g3 index 2
+
+        let key7 = manager.get_next_available_key_info().await.unwrap(); // g1k1 (again)
+        assert_eq!(key7.key, "g1k1");
+        assert_eq!(get_manager_indices(&manager).await, (1, vec![1, 0, 2])); // Next group 1, g1 index 1
+
+        let key8 = manager.get_next_available_key_info().await.unwrap(); // g2k1 (again)
+        assert_eq!(key8.key, "g2k1");
+        // Group g2 index wraps to 0 again.
+        assert_eq!(get_manager_indices(&manager).await, (2, vec![1, 0, 2])); // Next group 2, g2 index 0
+
+        let key9 = manager.get_next_available_key_info().await.unwrap(); // g3k3
+        assert_eq!(key9.key, "g3k3");
+        // Corrected assertion: g2 index should be 0. g3 index wraps to 0.
+        assert_eq!(get_manager_indices(&manager).await, (0, vec![1, 0, 0])); // Next group 0, g3 index 0
     }
+
+     #[tokio::test]
+     async fn test_get_next_key_skips_limited_keys_and_groups() {
+         let dir = tempdir().unwrap();
+         let config_path = create_temp_yaml_config(&dir);
+         let groups = vec![
+             KeyGroup { // Group 0
+                 name: "g1".to_string(),
+                 api_keys: vec!["g1k1".to_string(), "g1k2".to_string()],
+                 proxy_url: None, target_url: "t1".to_string(),
+             },
+             KeyGroup { // Group 1 - All keys will be limited
+                 name: "g2".to_string(),
+                 api_keys: vec!["g2k1_lim".to_string(), "g2k2_lim".to_string()],
+                 proxy_url: None, target_url: "t2".to_string(),
+             },
+             KeyGroup { // Group 2
+                 name: "g3".to_string(),
+                 api_keys: vec!["g3k1".to_string()],
+                 proxy_url: None, target_url: "t3".to_string(),
+             },
+         ];
+         let config = create_test_config(groups);
+         let manager = KeyManager::new(&config, &config_path).await;
+
+         // Limit all keys in g2
+         manager.mark_key_as_limited("g2k1_lim").await;
+         manager.mark_key_as_limited("g2k2_lim").await;
+         sleep(Duration::from_millis(250)).await; // Wait for save state tasks if needed
+
+         // Expected sequence: g1k1, g3k1, g1k2, g3k1, g1k1, g3k1 ... (skipping g2)
+         let key1 = manager.get_next_available_key_info().await.unwrap(); // g1k1 (starts at group 0)
+         assert_eq!(key1.key, "g1k1");
+         assert_eq!(get_manager_indices(&manager).await, (1, vec![1, 0, 0])); // Next group 1 (g2), g1 index 1
+
+         let key2 = manager.get_next_available_key_info().await.unwrap(); // g3k1 (skips g2)
+         assert_eq!(key2.key, "g3k1");
+         // Group g3 has only one key, its index should wrap to 0.
+         assert_eq!(get_manager_indices(&manager).await, (0, vec![1, 0, 0])); // Next group 0 (g1), g3 index 0
+ 
+         let key3 = manager.get_next_available_key_info().await.unwrap(); // g1k2
+         assert_eq!(key3.key, "g1k2");
+         // Corrected assertion: Group g3 index should be 0.
+         assert_eq!(get_manager_indices(&manager).await, (1, vec![0, 0, 0])); // Next group 1 (g2), g1 index 0
+ 
+         let key4 = manager.get_next_available_key_info().await.unwrap(); // g3k1 (again, skips g2)
+         assert_eq!(key4.key, "g3k1");
+         // Group g3 index wraps to 0 again.
+         assert_eq!(get_manager_indices(&manager).await, (0, vec![0, 0, 0])); // Next group 0 (g1), g3 index 0
+ 
+         let key5 = manager.get_next_available_key_info().await.unwrap(); // g1k1 (again)
+         assert_eq!(key5.key, "g1k1");
+         assert_eq!(get_manager_indices(&manager).await, (1, vec![1, 0, 0])); // Next group 1 (g2), g1 index 1
+     }
+
+     #[tokio::test]
+     async fn test_get_next_key_returns_none_when_all_limited() {
+         let dir = tempdir().unwrap();
+         let config_path = create_temp_yaml_config(&dir);
+         let groups = vec![
+             KeyGroup { name: "g1".to_string(), api_keys: vec!["g1k1".to_string()], proxy_url: None, target_url: "t1".to_string(), },
+             KeyGroup { name: "g2".to_string(), api_keys: vec!["g2k1".to_string()], proxy_url: None, target_url: "t2".to_string(), },
+         ];
+         let config = create_test_config(groups);
+         let manager = KeyManager::new(&config, &config_path).await;
+
+         manager.mark_key_as_limited("g1k1").await;
+         manager.mark_key_as_limited("g2k1").await;
+         sleep(Duration::from_millis(250)).await;
+
+         let result = manager.get_next_available_key_info().await;
+         assert!(result.is_none());
+     }
+
 
     #[tokio::test]
     async fn test_load_recovers_from_temp_file() {

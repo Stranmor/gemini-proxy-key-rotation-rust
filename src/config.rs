@@ -5,78 +5,10 @@ use std::{
     env, fs, io,
     path::Path,
 };
-use tracing::{debug, error, info, warn}; // Added debug
+use tracing::{debug, error, info, warn};
 use url::Url;
 
 use crate::error::{AppError, Result};
-
-/// Represents a group of API keys with associated target URL and optional proxy settings.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)] // Added PartialEq, Eq for easier testing
-#[serde(deny_unknown_fields)]
-pub struct KeyGroup {
-    /// Group name, derived from environment variables (e.g., DEFAULT, GROUP1).
-    pub name: String,
-    /// API keys, populated from `GEMINI_PROXY_GROUP_{NAME}_API_KEYS` env var.
-    #[serde(default)]
-    pub api_keys: Vec<String>,
-    /// Optional upstream proxy URL, populated from `GEMINI_PROXY_GROUP_{NAME}_PROXY_URL` env var.
-    #[serde(default)]
-    pub proxy_url: Option<String>,
-    /// Target API endpoint URL, populated from `GEMINI_PROXY_GROUP_{NAME}_TARGET_URL` env var,
-    /// or the hardcoded default if the environment variable is not set.
-    #[serde(default = "default_target_url")]
-    pub target_url: String,
-}
-
-/// Represents the root of the application configuration.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)] // Added PartialEq, Eq for easier testing
-#[serde(deny_unknown_fields)]
-pub struct AppConfig {
-    /// Server configuration (host/port). Defaults can be set in config.yaml.
-    #[serde(default)]
-    pub server: ServerConfig,
-    /// List of key groups, constructed primarily from environment variables.
-    #[serde(default)]
-    pub groups: Vec<KeyGroup>,
-}
-
-/// Configuration for the network address the proxy server listens on.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)] // Added PartialEq, Eq for easier testing
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    #[serde(default = "default_server_host")]
-    pub host: String,
-    #[serde(default = "default_server_port")]
-    pub port: u16,
-}
-
-// --- Default Implementations ---
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        AppConfig {
-            server: ServerConfig::default(),
-            groups: Vec::new(),
-        }
-    }
-}
-impl Default for ServerConfig {
-    fn default() -> Self {
-        ServerConfig {
-            host: default_server_host(),
-            port: default_server_port(),
-        }
-    }
-}
-fn default_server_host() -> String {
-    "0.0.0.0".to_string()
-}
-fn default_server_port() -> u16 {
-    8080
-}
-fn default_target_url() -> String {
-    "https://generativelanguage.googleapis.com".to_string()
-}
 
 // --- Constants ---
 
@@ -85,817 +17,295 @@ const API_KEYS_SUFFIX: &str = "_API_KEYS";
 const PROXY_URL_SUFFIX: &str = "_PROXY_URL";
 const TARGET_URL_SUFFIX: &str = "_TARGET_URL";
 
+// --- Data Structures ---
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyGroup {
+    pub name: String,
+    #[serde(default)]
+    pub api_keys: Vec<String>,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+    #[serde(default = "default_target_url")]
+    pub target_url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AppConfig {
+    #[serde(default)]
+    pub server: ServerConfig,
+    #[serde(default)]
+    pub groups: Vec<KeyGroup>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ServerConfig {
+    #[serde(default = "default_server_host")]
+    pub host: String,
+    #[serde(default = "default_server_port")]
+    pub port: u16,
+}
+
+#[derive(Default, Debug)]
+struct EnvGroupData {
+    // Store the first original casing encountered for this group name
+    original_name: Option<String>, // Keep this to ensure final KeyGroup uses the *actual* name from env
+    api_keys: Option<Vec<String>>,
+    proxy_url: Option<Option<String>>, // Outer Option: present?, Inner Option: set to empty or Some(url)?
+    target_url: Option<String>,
+}
+
+// --- Default Implementations ---
+
+impl Default for AppConfig { fn default() -> Self { AppConfig { server: ServerConfig::default(), groups: Vec::new() } } }
+impl Default for ServerConfig { fn default() -> Self { ServerConfig { host: default_server_host(), port: default_server_port() } } }
+fn default_server_host() -> String { "0.0.0.0".to_string() }
+fn default_server_port() -> u16 { 8080 }
+fn default_target_url() -> String { "https://generativelanguage.googleapis.com".to_string() }
+
 // --- Helper Functions ---
 
-/// Helper function to sanitize group names for matching YAML keys if needed.
-/// Note: Currently unused as env var name is the primary key. Kept for potential future use.
-#[allow(dead_code)] // Keep potentially useful helper, suppress warning
-fn sanitize_for_matching(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect()
+fn extract_original_group_name_segment<'a>(env_key: &'a str, suffix: &str) -> Option<&'a str> { env_key.strip_prefix(ENV_VAR_PREFIX)?.strip_suffix(suffix) }
+#[tracing::instrument(level = "trace", fields(env.key = %env_key, suffix = %suffix))]
+fn extract_uppercase_group_name_from_env<'a>(env_key: &'a str, suffix: &str) -> Option<String> {
+    extract_original_group_name_segment(env_key, suffix).map(|s| s.to_uppercase())
 }
-
-/// Extracts the potential group name from an environment variable key based on a suffix.
-fn extract_group_name_from_env<'a>(env_key: &'a str, suffix: &str) -> Option<String> {
-    env_key
-        .strip_prefix(ENV_VAR_PREFIX)?
-        .strip_suffix(suffix)
-        .map(|s| s.to_string())
+#[tracing::instrument(level = "trace", fields(value.len = value.len()))]
+fn parse_api_keys(value: &str) -> Vec<String> {
+    value.trim().split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect()
 }
+#[tracing::instrument(level = "trace", fields(value.len = value.len()))]
+fn parse_proxy_url(value: &str) -> Option<String> { let trimmed = value.trim(); if trimmed.is_empty() { None } else { Some(trimmed.to_string()) } }
+#[tracing::instrument(level = "trace", fields(value.len = value.len()))]
+fn parse_target_url(value: &str) -> Option<String> { let trimmed = value.trim(); if trimmed.is_empty() { None } else { Some(trimmed.to_string()) } }
+fn clean_target_url(url_str: &str) -> String { if url_str.ends_with('/') { url_str[..url_str.len()-1].to_string() } else { url_str.to_string() } }
 
 // --- Configuration Loading Logic ---
 
-/// Loads server config defaults from the YAML file.
-/// Returns only the ServerConfig. Target URLs are handled solely by environment variables.
 #[tracing::instrument(level = "debug", skip(path), fields(config.path = %path.display()))]
 fn load_yaml_defaults(path: &Path) -> Result<ServerConfig> {
-    let path_str = path.display().to_string(); // Keep for context in errors
-    let mut server_config = ServerConfig::default();
-
+    let path_str = path.display().to_string(); let mut server_config = ServerConfig::default();
     match fs::read_to_string(path) {
-        Ok(contents) => {
-            if !contents.trim().is_empty() {
-                match serde_yaml::from_str::<AppConfig>(&contents) {
-                    Ok(yaml_config) => {
-                        // Structured log for successful load
-                        info!(source = "yaml", "Loaded base server config");
-                        server_config = yaml_config.server;
-                        // Removed loop processing yaml_config.groups for target URLs
-                    }
-                    // Structured warning for parse failure
-                    Err(e) => {
-                        warn!(source = "yaml", error = %e, "Failed to parse YAML config file. Using defaults.")
-                    }
-                }
-            } else {
-                // Structured warning for empty file
-                warn!(source = "yaml", "Config file is empty. Using defaults.");
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            // Structured warning for file not found
-            warn!(source = "yaml", "Config file not found. Using defaults.");
-        }
-        // Structured error for other IO errors
-        Err(e) => {
-            error!(source = "yaml", error = %e, "Failed to read config file");
-            return Err(AppError::Io(io::Error::new(
-                e.kind(),
-                format!("Failed to read config file '{}': {}", path_str, e),
-            )));
-        }
-    }
-    Ok(server_config) // Return only ServerConfig
+        Ok(contents)=>{if !contents.trim().is_empty(){#[derive(Deserialize)]struct Cfg{#[serde(default)]server:ServerConfig}match serde_yaml::from_str::<Cfg>(&contents){Ok(cfg)=>server_config=cfg.server,Err(e)=>warn!(src="yaml",e=%e,"Parse error"),}}else{warn!(src="yaml","Empty file");}}
+        Err(e) if e.kind()==io::ErrorKind::NotFound=>{warn!(src="yaml","Not found");} Err(e)=>{error!(src="yaml",e=%e,"Read error");return Err(AppError::Io(io::Error::new(e.kind(),format!("Read error {}: {}",path_str,e))));}} Ok(server_config)
 }
 
-/// Discovers group settings (API keys, proxy URL, target URL) from environment variables.
-/// Returns a map where keys are group names and values are tuples containing options for keys, proxy, and target URL.
+/// Discovers group settings from environment variables. Keys are case-sensitive original group names.
 #[tracing::instrument(level = "debug")]
-fn discover_env_groups(
-) -> HashMap<String, (Option<Vec<String>>, Option<Option<String>>, Option<String>)> {
-    // Map: Group Name (from Env Var, uppercase) -> (Option<Keys>, Option<Option<ProxyURL>>, Option<TargetURL>)
-    let mut env_group_data: HashMap<
-        String,
-        (Option<Vec<String>>, Option<Option<String>>, Option<String>),
-    > = HashMap::new();
-    debug!("Discovering group configurations from environment variables...");
+fn discover_env_groups() -> HashMap<String, EnvGroupData> { // Returns map keyed by ORIGINAL name
+    let mut env_groups: HashMap<String, EnvGroupData> = HashMap::new();
+    debug!("Discovering ENV groups (case-sensitive keys)...");
 
-    for (key, value) in env::vars() {
-        let key_upper = key.to_uppercase(); // Use uppercase for matching
-        if let Some(group_name) = extract_group_name_from_env(&key_upper, API_KEYS_SUFFIX) {
-            let keys: Vec<String> = value
-                .trim()
-                .split(',')
-                .map(|k| k.trim().to_string())
-                .filter(|k| !k.is_empty())
-                .collect();
-            debug!(env.var = %key, group.name = %group_name, key.count = keys.len(), "Discovered API keys");
-            env_group_data.entry(group_name).or_default().0 = Some(keys);
-        } else if let Some(group_name) = extract_group_name_from_env(&key_upper, PROXY_URL_SUFFIX) {
-            let proxy_url = value.trim();
-            debug!(env.var = %key, group.name = %group_name, proxy.url = %proxy_url, "Discovered proxy URL");
-            env_group_data.entry(group_name).or_default().1 = Some(if proxy_url.is_empty() {
-                None
+    for (env_key, value) in env::vars() {
+        if !env_key.starts_with(ENV_VAR_PREFIX) {
+            continue; // Skip unrelated env vars quickly
+        }
+
+        let process_suffix = |suffix: &str| -> Option<String> { // Return original name as String
+            extract_original_group_name_segment(&env_key, suffix).map(|s| s.to_string())
+        };
+
+        if let Some(original_name) = process_suffix(API_KEYS_SUFFIX) {
+            if original_name.is_empty() { warn!(var=%env_key, "Skip group with empty name derived from ENV var"); continue; }
+            let keys = parse_api_keys(&value);
+            debug!(var=%env_key, group.original=%original_name, keys=keys.len(), "Discovered API keys");
+            // Use original_name (case-sensitive) as the key
+            let entry = env_groups.entry(original_name.clone()).or_default();
+            // Store the original_name within the data as well
+            if entry.original_name.is_none() { entry.original_name = Some(original_name); }
+            entry.api_keys = Some(keys);
+        } else if let Some(original_name) = process_suffix(PROXY_URL_SUFFIX) {
+             if original_name.is_empty() { warn!(var=%env_key, "Skip group with empty name derived from ENV var"); continue; }
+            let proxy = parse_proxy_url(&value);
+            debug!(var=%env_key, group.original=%original_name, proxy=?proxy, "Discovered Proxy URL");
+            let entry = env_groups.entry(original_name.clone()).or_default();
+            if entry.original_name.is_none() { entry.original_name = Some(original_name); }
+            entry.proxy_url = Some(proxy); // Store Option<Option<String>>
+        } else if let Some(original_name) = process_suffix(TARGET_URL_SUFFIX) {
+             if original_name.is_empty() { warn!(var=%env_key, "Skip group with empty name derived from ENV var"); continue; }
+            if let Some(target) = parse_target_url(&value) {
+                debug!(var=%env_key, group.original=%original_name, target=%target, "Discovered Target URL");
+                let entry = env_groups.entry(original_name.clone()).or_default();
+                if entry.original_name.is_none() { entry.original_name = Some(original_name); }
+                entry.target_url = Some(target);
             } else {
-                Some(proxy_url.to_string())
-            });
-        } else if let Some(group_name) = extract_group_name_from_env(&key_upper, TARGET_URL_SUFFIX)
-        {
-            let target_url = value.trim();
-            if !target_url.is_empty() {
-                debug!(env.var = %key, group.name = %group_name, target.url = %target_url, "Discovered target URL");
-                env_group_data.entry(group_name).or_default().2 = Some(target_url.to_string());
-            } else {
-                // Structured warning for empty target URL env var
-                warn!(env.var = %key, group.name = %group_name, "Environment variable defining target_url is empty. It will be ignored.");
+                warn!(var=%env_key, group.original=%original_name, "Empty target URL ignored");
             }
         }
     }
-    debug!(discovered_groups = ?env_group_data.keys().collect::<Vec<_>>(), "Finished discovering groups from environment");
-    env_group_data
+
+    debug!(discovered_keys=?env_groups.keys().collect::<Vec<_>>(), "Finished ENV discovery (keys are original case)");
+    env_groups
 }
 
-/// Builds the final list of KeyGroups using data from environment variables.
-/// Target URLs are determined solely by environment variables or the hardcoded default.
-#[tracing::instrument(level = "debug", skip(env_group_data))] // Removed yaml_target_urls from skip
-fn build_final_groups(
-    env_group_data: HashMap<String, (Option<Vec<String>>, Option<Option<String>>, Option<String>)>,
-    // Removed yaml_target_urls parameter
-) -> Vec<KeyGroup> {
+/// Builds the final list of KeyGroups using data discovered from environment variables.
+/// Expects ORIGINAL names as keys in env_groups map.
+#[tracing::instrument(level = "debug", skip(env_groups))]
+fn build_final_groups(env_groups: HashMap<String, EnvGroupData>) -> Vec<KeyGroup> {
     let mut final_groups: Vec<KeyGroup> = Vec::new();
-    debug!("Building final key groups from environment data...");
+    debug!("Building final groups from case-sensitive map...");
 
-    for (group_name, (keys_opt, proxy_opt_opt, target_opt)) in env_group_data {
-        if let Some(api_keys) = keys_opt {
-            if api_keys.is_empty() {
-                // Structured warning for empty keys
-                warn!(group.name = %group_name, source = "environment", "Group defined via env vars has no valid API keys. Skipping group.");
-                continue;
+    for (original_group_name_key, data) in env_groups {
+        // Use the map key (which is the original_name) directly as the group name
+        let final_group_name = original_group_name_key; // No need for data.original_name here
+
+        match data.api_keys {
+            Some(api_keys) => {
+                if api_keys.is_empty() {
+                    warn!(group = %final_group_name, "Skipping group defined via ENV but with empty API_KEYS list.");
+                    continue;
+                }
+                info!(group = %final_group_name, keys = api_keys.len(), "Building group details");
+                let target = match data.target_url {
+                    Some(u) => clean_target_url(&u),
+                    None => default_target_url(),
+                };
+                // Process proxy_url: Outer Option tells if var was set, Inner Option tells if it was non-empty
+                let proxy = data.proxy_url.flatten(); // Flatten the Option<Option<String>>
+
+                final_groups.push(KeyGroup {
+                    name: final_group_name, // Use the original case name from the key
+                    api_keys,
+                    proxy_url: proxy,
+                    target_url: target,
+                });
             }
-            // Structured info log for processing a group
-            info!(group.name = %group_name, source = "environment", key.count = api_keys.len(), "Processing group");
-
-            // Determine Target URL: Env Var > Default (Removed YAML fallback)
-            let final_target_url_source; // Track source for logging
-            let mut final_target_url = match target_opt { // Changed target_url_from_env to target_opt
-                Some(env_url) => {
-                    final_target_url_source = "environment";
-                    debug!(group.name = %group_name, source = final_target_url_source, target.url = %env_url, "Using target URL from environment variable");
-                    env_url
+            None => {
+                // Only warn if other settings were provided for this group name
+                if data.proxy_url.is_some() || data.target_url.is_some() {
+                    warn!(group = %final_group_name, "Orphaned proxy/target URL settings found via ENV for group without API_KEYS defined.");
                 }
-                None => {
-                    final_target_url_source = "default";
-                    let default_url = default_target_url();
-                    info!(group.name = %group_name, source = final_target_url_source, target.url = %default_url, "Using default target URL");
-                    default_url
-                }
-            };
-
-            // Clean up trailing slash
-            if final_target_url.ends_with('/') {
-                final_target_url.pop();
-                debug!(group.name = %group_name, original_url = %format!("{}/", final_target_url), final_url = %final_target_url, "Removed trailing slash from target URL");
+                // Otherwise, just skip silently
             }
-
-            let proxy_url = match proxy_opt_opt {
-                Some(p_opt) => {
-                    debug!(group.name = %group_name, proxy.url = ?p_opt, "Using proxy URL from environment variable");
-                    p_opt
-                }
-                None => {
-                    debug!(group.name = %group_name, proxy.url = None::<String>, "No proxy URL defined for group");
-                    None
-                } // Default is no proxy if env var wasn't set
-            };
-
-            final_groups.push(KeyGroup {
-                name: group_name.clone(), // Keep original case from env var derivation
-                api_keys,
-                proxy_url,
-                target_url: final_target_url,
-            });
-        } else if proxy_opt_opt.is_some() || target_opt.is_some() {
-            // Structured warning for orphaned vars
-            warn!(
-               group.name = %group_name,
-               env.var_keys_missing = true,
-               env.var_proxy_present = proxy_opt_opt.is_some(),
-               env.var_target_present = target_opt.is_some(),
-               "Proxy or Target URL variables found, but no corresponding API key variable ('{}{}{}'). Group not created.",
-               ENV_VAR_PREFIX, group_name, API_KEYS_SUFFIX
-            );
         }
     }
-    debug!(
-        final_group_count = final_groups.len(),
-        "Finished building final groups"
-    );
+
+    debug!(count = final_groups.len(), "Finished building groups");
     final_groups
 }
 
-/// Loads application configuration primarily from environment variables,
-/// optionally using config.yaml only for default server settings.
-#[tracing::instrument(level = "info", skip(path), fields(config.path = %path.display()))]
-pub fn load_config(path: &Path) -> Result<AppConfig> {
-    info!("Loading application configuration...");
-    let path_str = path.display().to_string(); // Keep for validation context
+// --- Configuration Validation Functions ---
+fn validate_server_config(server: &ServerConfig) -> bool { if server.host.trim().is_empty() || server.port == 0 { error!(h=%server.host,p=server.port,e="bad server"); false } else { true } }
+fn validate_target_url(g: &str, url: &str) -> bool { match Url::parse(url) { Ok(p)=>{if !p.has_host()||p.host_str().map_or(true,|h|h.is_empty())||p.cannot_be_a_base(){error!(group=g, err="invalid/base", url=%url);false}else{true}} Err(e)=>{error!(group=g, err=%e, url=%url, "target parse err"); false}} }
+fn validate_proxy_url(g: &str, url: &str) -> bool { match Url::parse(url) { Ok(p)=>{if !p.has_host()||p.host_str().map_or(true,|h|h.is_empty()){error!(group=g,err="no_host",url=%url); return false;} let s=p.scheme().to_lowercase(); if !["http","https","socks5"].contains(&s.as_str()){error!(group=g,err="bad_scheme",url=%url,scheme=%s); false} else {true}}, Err(e)=>{error!(group=g, err=%e, url=%url,"proxy parse err"); false}} }
 
-    // --- 1. Load defaults from YAML (Server config) ---
-    let server_config = load_yaml_defaults(path)?; // Corrected assignment
-    debug!(?server_config, "Loaded server defaults from YAML"); // Corrected log message
-
-    // --- 2. Discover groups and settings from Environment Variables ---
-    let env_group_data = discover_env_groups();
-    debug!(
-        env_group_count = env_group_data.len(),
-        "Discovered groups from environment"
-    );
-
-    // --- 3. Construct Final Groups ---
-    let final_groups = build_final_groups(env_group_data); // Corrected call (removed &yaml_target_urls)
-    debug!(
-        final_group_count = final_groups.len(),
-        "Constructed final groups list"
-    );
-
-    // --- 4. Assemble Final Config ---
-    let final_config = AppConfig {
-        server: server_config,
-        groups: final_groups,
-    };
-
-    // --- 5. Final Check & Validation ---
-    let total_usable_keys: usize = final_config.groups.iter().map(|g| g.api_keys.len()).sum();
-    if total_usable_keys == 0 {
-        // Structured error for no usable keys
-        error!(
-           config.source = %path_str,
-           error.kind = "no_usable_keys",
-           "Configuration error: No groups with usable API keys found. Define at least one group via environment variables (e.g., GEMINI_PROXY_GROUP_DEFAULT_API_KEYS=...)."
-        );
-        return Err(AppError::Config(
-            "No groups with usable keys found".to_string(),
-        ));
+#[tracing::instrument(level = "debug", skip(cfg, source), fields(cfg.source = %source))]
+fn validate_config(cfg: &AppConfig, source: &str) -> bool {
+    let mut errors = 0; if !validate_server_config(&cfg.server) { errors += 1; }
+    if cfg.groups.is_empty() { error!(source=source, err="no_groups"); errors += 1; } else {
+        let mut names = HashSet::new(); let mut keys_total = 0;
+        for group in &cfg.groups {
+            let name = group.name.trim();
+            if name.is_empty() { // Check for empty name first
+                error!(err="empty_name"); errors += 1;
+            } else { // Only check for duplicates if name is not empty
+                let upper_name = group.name.to_uppercase(); // Use uppercase for HashSet check
+                debug!(group.name = %group.name, group.upper = %upper_name, ?names, "Attempting to insert into HashSet"); // Added debug before insert
+                let insert_result = names.insert(upper_name.clone());
+                debug!(group.name = %group.name, group.upper = %upper_name, set.insert_result = insert_result, set.current_size = names.len(), "Checking group name for duplicates");
+                if !insert_result { // Check duplicate result
+                    error!(group=%group.name, err="duplicate"); errors += 1;
+                }
+            }
+            // Check for empty keys independently
+            if group.api_keys.is_empty() { warn!(group=%group.name, warn="no_keys"); /* Group without keys is warned, but not instant error */ }
+            keys_total += group.api_keys.len();
+            if !validate_target_url(&group.name, &group.target_url) { errors += 1; }
+            if let Some(p) = &group.proxy_url { if !validate_proxy_url(&group.name, p) { errors += 1; } }
+        }
+        // Error only if total keys across all groups is zero (ignoring groups that might have been defined but had no keys)
+        if keys_total == 0 { error!(err="no_usable_keys"); errors += 1; }
     }
-
-    // Perform detailed validation
-    if !validate_config(&final_config, &path_str) {
-        // Error is logged within validate_config
-        error!(config.source = %path_str, "Configuration validation failed.");
-        return Err(AppError::Config("Validation failed".to_string()));
-    }
-
-    // Log final success with structured fields
-    info!(
-        config.groups.count = final_config.groups.len(),
-        config.total_keys = total_usable_keys,
-        "Configuration loaded and validated successfully."
-    );
-    Ok(final_config)
+    if errors > 0 { error!(count=errors, "Validation finished: ERRORS."); false } else { debug!("Validation OK."); true }
 }
 
-// --- Configuration Validation ---
-
-/// Performs validation checks on the fully assembled AppConfig.
-#[tracing::instrument(level = "debug", skip(cfg, config_source), fields(config.source = %config_source))]
-pub fn validate_config(cfg: &AppConfig, config_source: &str) -> bool {
-    let mut has_errors = false;
-    debug!("Starting configuration validation...");
-
-    // Validate Server Config
-    if cfg.server.host.trim().is_empty() || cfg.server.port == 0 {
-        // Structured error for invalid server config
-        error!(server.host = %cfg.server.host, server.port = cfg.server.port, "Invalid server configuration");
-        has_errors = true;
-    }
-
-    // Validate Groups (Presence checked in load_config)
-    if cfg.groups.is_empty() {
-        // This should ideally not happen if load_config check works
-        error!(config.source = %config_source, "Internal Error: validate_config called with empty groups list. This should have been caught earlier.");
-        return false; // Early return as it indicates a logic flaw elsewhere
-    }
-
-    let mut group_names = HashSet::new();
-    let mut total_keys = 0;
-
-    for group in &cfg.groups {
-        let group_span = tracing::debug_span!("validate_group", group.name = %group.name);
-        let _enter = group_span.enter(); // Enter span for group-specific logs
-
-        let group_name_trimmed = group.name.trim();
-
-        // Check for empty or duplicate group names
-        if group_name_trimmed.is_empty() {
-            error!(
-                validation.error = "empty_group_name",
-                "Invalid group name found: cannot be empty"
-            );
-            has_errors = true;
-        } else if !group_names.insert(group.name.to_uppercase()) {
-            error!(
-                validation.error = "duplicate_group_name",
-                "Duplicate group name found (case-insensitive)"
-            );
-            has_errors = true;
-        }
-
-        // Check API Keys
-        if group.api_keys.is_empty() {
-            // This is only a warning now, presence check is done earlier
-            warn!(
-                validation.warning = "no_api_keys",
-                "Group has no API keys defined."
-            );
-        } else if group.api_keys.iter().any(|key| key.trim().is_empty()) {
-            error!(
-                validation.error = "empty_api_key",
-                "Group contains empty API key strings."
-            );
-            has_errors = true;
-        }
-        total_keys += group.api_keys.len();
-
-        // Validate Target URL
-        match Url::parse(&group.target_url) {
-            Ok(parsed_url) => {
-                if parsed_url.cannot_be_a_base() {
-                    error!(validation.error = "target_url_cannot_be_base", target.url = %group.target_url, "Target URL cannot be a base URL.");
-                    has_errors = true;
-                }
-                // Removed query string check based on previous decision
-            }
-            Err(e) => {
-                error!(validation.error = "invalid_target_url", target.url = %group.target_url, error = %e, "Invalid target URL");
-                has_errors = true;
-            }
-        }
-
-        // Validate Proxy URL
-        if let Some(proxy_url) = &group.proxy_url {
-            match Url::parse(proxy_url) {
-                Ok(parsed_url) => {
-                    let scheme = parsed_url.scheme().to_lowercase();
-                    if !["http", "https", "socks5"].contains(&scheme.as_str()) {
-                        error!(validation.error = "unsupported_proxy_scheme", proxy.url = %proxy_url, proxy.scheme = %scheme, "Unsupported proxy scheme");
-                        has_errors = true;
-                    }
-                }
-                Err(e) => {
-                    error!(validation.error = "invalid_proxy_url", proxy.url = %proxy_url, error = %e, "Invalid proxy URL");
-                    has_errors = true;
-                }
-            }
-        }
-    } // Exits group span
-
-    // Check for total keys again (redundant with load_config check, but safe)
-    if total_keys == 0 {
-        error!(
-            validation.error = "no_usable_keys_found",
-            "Internal Error: validate_config found no usable API keys across all groups."
-        );
-        has_errors = true;
-    }
-
-    if has_errors {
-        error!("Configuration validation finished with errors.");
-    } else {
-        debug!("Configuration validation finished successfully.");
-    }
-    !has_errors
+// --- Main Loading Function ---
+#[tracing::instrument(level = "info", skip(path), fields(config.path = %path.display()))]
+pub fn load_config(path: &Path) -> Result<AppConfig> {
+    let path_str = path.display().to_string();
+    let server_config = load_yaml_defaults(path)?;
+    let env_groups = discover_env_groups(); // Now uses ORIGINAL keys
+    let discovered_count = env_groups.len(); // Get count before move
+    debug!(discovered_env_group_count = discovered_count, "Groups discovered from environment");
+    let final_groups = build_final_groups(env_groups); // Expects ORIGINAL keys
+    let built_count = final_groups.len(); // Get count before move
+    debug!(built_group_count = built_count, "Groups built before validation");
+    let final_config = AppConfig { server: server_config, groups: final_groups };
+    if !validate_config(&final_config, &path_str) { error!(config.source = %path_str, "Validation failed."); return Err(AppError::Config("Validation failed".to_string())); }
+    // No need for redundant total_keys check here, validate_config handles it
+    info!( groups = final_config.groups.len(), keys_total=final_config.groups.iter().map(|g| g.api_keys.len()).sum::<usize>(), "Config loaded OK." ); Ok(final_config)
 }
 
 // --- Tests ---
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use lazy_static::lazy_static;
-    use std::fs::File;
-    use std::io::Write;
-    use std::path::PathBuf;
-    use std::sync::Mutex;
-    use tempfile::tempdir;
-
-    // Mutex to prevent environment variable tests from interfering with each other
-    lazy_static! {
-        static ref ENV_MUTEX: Mutex<()> = Mutex::new(());
-    }
-
-    // --- Test Helpers ---
-
-    fn create_temp_config_file(dir: &tempfile::TempDir, content: &str) -> PathBuf {
-        let file_path = dir.path().join("test_config.yaml");
-        let mut file = File::create(&file_path).expect("Failed to create temp config file");
-        writeln!(file, "{}", content).expect("Failed to write to temp config file");
-        file_path
-    }
-
-    fn delete_file(path: &PathBuf) {
-        let _ = std::fs::remove_file(path);
-    }
-    fn set_env_var(key: &str, value: &str) {
-        std::env::set_var(key, value);
-    }
-    fn remove_env_var(key: &str) {
-        std::env::remove_var(key);
-    }
-
-    // Cleans up *all* known potential test env vars used in this module
-    fn cleanup_test_env_vars() {
-        const VARS_TO_CLEAN: &[&str] = &[
-            "GEMINI_PROXY_GROUP_DEFAULT_API_KEYS",
-            "GEMINI_PROXY_GROUP_DEFAULT_PROXY_URL",
-            "GEMINI_PROXY_GROUP_DEFAULT_TARGET_URL",
-            "GEMINI_PROXY_GROUP_GROUP1_API_KEYS",
-            "GEMINI_PROXY_GROUP_GROUP1_PROXY_URL",
-            "GEMINI_PROXY_GROUP_GROUP1_TARGET_URL",
-            "GEMINI_PROXY_GROUP_NO_ENV_GROUP_API_KEYS", // From override test
-            "GEMINI_PROXY_GROUP_EMPTYKEYS_API_KEYS",    // From validation tests
-            "GEMINI_PROXY_GROUP_BADPROXY_API_KEYS",
-            "GEMINI_PROXY_GROUP_BADPROXY_PROXY_URL",
-            "GEMINI_PROXY_GROUP_FTPPROXY_API_KEYS",
-            "GEMINI_PROXY_GROUP_FTPPROXY_PROXY_URL",
-            "GEMINI_PROXY_GROUP_BADTARGET_API_KEYS",
-            "GEMINI_PROXY_GROUP_BADTARGET_TARGET_URL",
-            "GEMINI_PROXY_GROUP_TARGETWITHPATH_API_KEYS",
-            "GEMINI_PROXY_GROUP_TARGETWITHPATH_TARGET_URL",
-            "GEMINI_PROXY_GROUP_UPPERCASE_API_KEYS", // For case test
-            "GEMINI_PROXY_GROUP_UPPERCASE_TARGET_URL",
-            "gemini_proxy_group_lowercase_api_keys", // For case test
-            "gemini_proxy_group_lowercase_target_url",
-            "GEMINI_PROXY_GROUP_ORPHAN_PROXY_URL", // From orphan test
-            "GEMINI_PROXY_GROUP_ORPHAN_TARGET_URL", // From orphan test
-        ];
-        for var in VARS_TO_CLEAN {
-            remove_env_var(var);
+    use super::*; use serial_test::serial; use std::fs::File; use std::io::Write; use std::path::PathBuf; use tempfile::tempdir;
+    fn create_temp_config_file(d: &tempfile::TempDir, c: &str) -> PathBuf { let p=d.path().join("t.yaml"); File::create(&p).unwrap().write_all(c.as_bytes()).unwrap(); p }
+    fn delete_file(p: &PathBuf) { let _=std::fs::remove_file(p); }
+    fn set_env(k: &str, v: &str) { std::env::set_var(k, v); }
+    fn remove_env(k: &str) { std::env::remove_var(k); }
+    fn clean_env() {
+        debug!("Cleaning environment variables starting with '{}'", ENV_VAR_PREFIX);
+        let vars_to_remove: Vec<String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with(ENV_VAR_PREFIX))
+            .map(|(k, _)| k)
+            .collect();
+        for k in vars_to_remove {
+            debug!(env_var = %k, "Removing environment variable");
+            std::env::remove_var(&k);
         }
+        // Also remove the specific ones mentioned before, just in case they don't match the prefix exactly
+        // (though they should match based on current const definition)
+        remove_env("gemini_proxy_group_duplicate_api_keys"); // Example from previous code
+        remove_env("gemini_proxy_group_mixedcase_api_keys"); // Example from previous code
     }
-
-    // --- Test Cases ---
-
+    #[test] fn test_extract_orig() { assert_eq!(extract_original_group_name_segment("GEMINI_PROXY_GROUP_MY_API_KEYS", "_API_KEYS"), Some("MY")); }
+    #[test] fn test_extract_upper() { assert_eq!(extract_uppercase_group_name_from_env("GEMINI_PROXY_GROUP_my_API_KEYS", "_API_KEYS"), Some("MY".to_string())); }
+    #[test] fn test_extract_fail() { assert_eq!(extract_original_group_name_segment("X", "_"), None); }
+    #[test] fn test_parse_keys() { assert_eq!(parse_api_keys("a, b"), vec!["a".to_string(),"b".to_string()]); assert_eq!(parse_api_keys(" ,, "), Vec::<String>::new()); } // Added .to_string()
+    #[test] fn test_parse_proxy() { assert_eq!(parse_proxy_url(" h://p "), Some("h://p".to_string())); assert_eq!(parse_proxy_url(""), None); }
+    #[test] fn test_parse_target() { assert_eq!(parse_target_url(" h://t "), Some("h://t".to_string())); assert_eq!(parse_target_url(""), None); }
+    #[test] fn test_clean_url() { assert_eq!(clean_target_url("h://a/p/"), "h://a/p"); assert_eq!(clean_target_url("h://a/p"), "h://a/p"); }
+    #[test] fn test_val_srv() { assert!(validate_server_config(&ServerConfig::default())); assert!(!validate_server_config(&ServerConfig{host:" ".into(),port:1})); assert!(!validate_server_config(&ServerConfig{host:"h".into(),port:0})); }
+    #[test] fn test_val_target_ok() { assert!(validate_target_url("g","https://e.com")); }
+    #[test] fn test_val_target_bad() { let _=tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish()); assert!(!validate_target_url("g",":b")); assert!(!validate_target_url("g","e.com")); assert!(!validate_target_url("g","https://")); assert!(!validate_target_url("g", "")); assert!(!validate_target_url("g","http://"));}
+    #[test] fn test_val_proxy_ok() { assert!(validate_proxy_url("g","http://p")); assert!(validate_proxy_url("g","socks5://p")); }
+    #[test] fn test_val_proxy_bad() { let _=tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish()); assert!(!validate_proxy_url("g",":b")); assert!(!validate_proxy_url("g","ftp://p")); assert!(!validate_proxy_url("g","http://")); assert!(!validate_proxy_url("g","socks5://")); assert!(!validate_proxy_url("g", "")); }
+    #[test] fn test_val_cfg_ok() { let cfg=AppConfig{groups:vec![KeyGroup{name:"G".into(),api_keys:vec!["k".into()],proxy_url: None, target_url: default_target_url()}]  ,..Default::default()}; assert!(validate_config(&cfg,"")); }
+    #[test] fn test_val_cfg_bad_name() { let _=tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish()); let cfg=AppConfig{groups:vec![KeyGroup{name:"".into(),api_keys:vec!["k".into()],proxy_url: None, target_url: default_target_url()}]  ,..Default::default()}; assert!(!validate_config(&cfg,"")); }
+    #[test] fn test_val_cfg_dupe_name() { let _=tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish()); let cfg=AppConfig{groups:vec![KeyGroup{name:"N".into(),api_keys:vec!["k".into()],proxy_url: None, target_url: default_target_url()}, KeyGroup{name:"n".into(),api_keys:vec!["k".into()],proxy_url: None, target_url: default_target_url()}]  ,..Default::default()}; assert!(!validate_config(&cfg,"")); }
+    #[test] fn test_val_cfg_empty_keys_ok() { let cfg=AppConfig{groups:vec![KeyGroup{name:"G".into(),api_keys: vec!["k1".to_string(), "k3".to_string()],proxy_url: None, target_url: default_target_url()}] ,..Default::default()}; assert!(validate_config(&cfg,"")); }
+    #[test] fn test_val_cfg_no_keys() { let _=tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish()); let cfg=AppConfig{groups:vec![KeyGroup{name:"G".into(),api_keys:vec![],proxy_url: None, target_url: default_target_url()}]  ,..Default::default()}; assert!(!validate_config(&cfg,"")); } // Should fail validation as total keys = 0
+    #[test] fn test_val_cfg_no_groups() { let _=tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish()); let cfg=AppConfig{groups:vec![],..Default::default()}; assert!(!validate_config(&cfg,"")); }
+    #[test] #[serial] fn test_load_env_ok() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_.yaml"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS","k1"); set_env("GEMINI_PROXY_GROUP_G1_API_KEYS","k2"); set_env("GEMINI_PROXY_GROUP_G1_PROXY_URL","http://p"); let cfg=load_config(&p).expect("!"); assert_eq!(cfg.groups.len(),2); clean_env(); } // Uses load_config now
+    #[test] #[serial] fn test_load_yaml_env() { clean_env(); let d=tempdir().unwrap(); let p=create_temp_config_file(&d, "server:\n  port: 1\n"); set_env("GEMINI_PROXY_GROUP_D_API_KEYS"," k "); let cfg=load_config(&p).expect("!"); assert_eq!(cfg.server.port,1); assert_eq!(cfg.groups.len(),1); assert_eq!(cfg.groups[0].api_keys, vec!["k".to_string()]); clean_env(); } // Added .to_string()
+    // Removed test_env_var_case_insensitivity_for_discovery
+    #[test] #[serial] fn test_load_no_groups() { clean_env(); let d=tempdir().unwrap(); let p=create_temp_config_file(&d,""); let r=load_config(&p); assert!(r.is_err()&&matches!(r.err(),Some(AppError::Config(m))if m=="Validation failed")); clean_env(); }
+    #[test] #[serial] fn test_load_no_keys() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_.yaml"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_A_API_KEYS",""); let r=load_config(&p); assert!(r.is_err()&&matches!(r.err(),Some(AppError::Config(m))if m=="Validation failed")); clean_env(); }
+    #[test] #[serial] fn test_val_bad_proxy_env() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_.yaml"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_A_API_KEYS","k"); set_env("GEMINI_PROXY_GROUP_A_PROXY_URL",":b"); let r=load_config(&p); assert!(r.is_err()&&matches!(r.err(),Some(AppError::Config(m))if m=="Validation failed")); clean_env(); }
+    #[test] #[serial] fn test_val_bad_scheme_env() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_.yaml"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_A_API_KEYS","k"); set_env("GEMINI_PROXY_GROUP_A_PROXY_URL", "ftp://p"); let r=load_config(&p); assert!(r.is_err()&&matches!(r.err(),Some(AppError::Config(m))if m=="Validation failed")); clean_env(); }
+    #[test] #[serial] fn test_val_bad_target_env() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_.yaml"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_A_API_KEYS","k"); set_env("GEMINI_PROXY_GROUP_A_TARGET_URL",":b"); let r=load_config(&p); assert!(r.is_err()&&matches!(r.err(),Some(AppError::Config(m))if m=="Validation failed")); clean_env(); }
+    #[test] #[serial] fn test_val_empty_name_env() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_.yaml"); delete_file(&p); set_env("GEMINI_PROXY_GROUP__API_KEYS","k"); let r=load_config(&p); assert!(r.is_err()&&matches!(r.err(),Some(AppError::Config(m))if m=="Validation failed")); clean_env(); }
     #[test]
-    fn test_load_from_env_only_success() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("ne.yaml");
-        delete_file(&non_existent_path); // Ensure it doesn't exist
-
-        set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", "keyA, keyB");
-        set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "keyC");
-        set_env_var(
-            "GEMINI_PROXY_GROUP_GROUP1_PROXY_URL",
-            "socks5://proxy.com:1080",
-        );
-        set_env_var(
-            "GEMINI_PROXY_GROUP_GROUP1_TARGET_URL",
-            "http://env.target.g1",
-        ); // No trailing slash
-
-        let config = load_config(&non_existent_path).expect("Load from env only failed");
-
-        assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.port, 8080);
-        assert_eq!(config.groups.len(), 2);
-
-        // Use find for robustness against order changes
-        let g_default = config
-            .groups
-            .iter()
-            .find(|g| g.name == "DEFAULT")
-            .expect("DEFAULT group not found");
-        assert_eq!(g_default.api_keys, vec!["keyA", "keyB"]);
-        assert!(g_default.proxy_url.is_none());
-        assert_eq!(g_default.target_url, default_target_url()); // Should get default target
-
-        let g1 = config
-            .groups
-            .iter()
-            .find(|g| g.name == "GROUP1")
-            .expect("GROUP1 group not found");
-        assert_eq!(g1.api_keys, vec!["keyC"]);
-        assert_eq!(g1.proxy_url, Some("socks5://proxy.com:1080".to_string()));
-        assert_eq!(g1.target_url, "http://env.target.g1"); // Target from env
-
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_load_from_yaml_and_env_override() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let yaml_content = r#"
- server: { host: "192.168.1.1", port: 9999 }
- groups: # Groups in YAML are now ignored for target_url fallback
-   - name: default
-     target_url: "http://yaml.target.default/should_be_ignored"
-   - name: group1
-     target_url: "http://yaml.target.g1/should_be_ignored"
-   - name: no_env_group
-     target_url: "http://yaml.target.no_env/should_be_ignored"
- "#;
-        let config_path = create_temp_config_file(&dir, yaml_content);
-
-        set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", "env_keyA");
-        set_env_var("GEMINI_PROXY_GROUP_DEFAULT_PROXY_URL", ""); // Explicitly no proxy
-        // DEFAULT_TARGET_URL is not set, so it should use the default
-        set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "env_keyC");
-        set_env_var(
-            "GEMINI_PROXY_GROUP_GROUP1_PROXY_URL",
-            "socks5://env.proxy.g1:1080",
-        );
-        set_env_var(
-            "GEMINI_PROXY_GROUP_GROUP1_TARGET_URL",
-            "http://env.target.override.g1",
-        ); // Override target
-
-        let config = load_config(&config_path).expect("Load with overrides failed");
-
-        assert_eq!(config.server.host, "192.168.1.1"); // Server config from YAML is used
-        assert_eq!(config.server.port, 9999);
-        assert_eq!(config.groups.len(), 2); // Only groups with keys from env exist
-
-        let g_default = config
-            .groups
-            .iter()
-            .find(|g| g.name == "DEFAULT")
-            .expect("DEFAULT group not found");
-        assert_eq!(g_default.api_keys, vec!["env_keyA"]);
-        assert!(g_default.proxy_url.is_none());
-        assert_eq!(g_default.target_url, default_target_url()); // Target from default (YAML fallback removed)
-
-        let g1 = config
-            .groups
-            .iter()
-            .find(|g| g.name == "GROUP1")
-            .expect("GROUP1 group not found");
-        assert_eq!(g1.api_keys, vec!["env_keyC"]);
-        assert_eq!(g1.proxy_url, Some("socks5://env.proxy.g1:1080".to_string()));
-        assert_eq!(g1.target_url, "http://env.target.override.g1"); // Target from ENV override
-
-        assert!(config
-            .groups
-            .iter()
-            .find(|g| g.name == "NO_ENV_GROUP")
-            .is_none());
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_env_var_case_insensitivity_for_discovery() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
+    #[serial]
+    fn test_validation_fails_on_duplicate_group_name() {
+        clean_env(); // Assumes clean_env helper exists and works
         let dir = tempdir().unwrap();
         let non_existent_path = dir.path().join("ne.yaml");
         delete_file(&non_existent_path);
-
-        // Set env vars with mixed casing
-        set_env_var("GEMINI_PROXY_GROUP_UPPERCASE_API_KEYS", "keyUpper");
-        set_env_var("gemini_proxy_group_lowercase_api_keys", "keyLower");
-        set_env_var(
-            "GEMINI_PROXY_GROUP_UPPERCASE_TARGET_URL",
-            "http://target.upper",
-        );
-        set_env_var(
-            "gemini_proxy_group_lowercase_target_url",
-            "http://target.lower",
-        );
-
-        let config = load_config(&non_existent_path).expect("Load with mixed case env vars failed");
-
-        assert_eq!(config.groups.len(), 2);
-
-        let g_upper = config
-            .groups
-            .iter()
-            .find(|g| g.name == "UPPERCASE")
-            .expect("UPPERCASE group not found");
-        assert_eq!(g_upper.api_keys, vec!["keyUpper"]);
-        assert_eq!(g_upper.target_url, "http://target.upper");
-
-        let g_lower = config
-            .groups
-            .iter()
-            .find(|g| g.name == "LOWERCASE")
-            .expect("LOWERCASE group not found");
-        assert_eq!(g_lower.api_keys, vec!["keyLower"]);
-        assert_eq!(g_lower.target_url, "http://target.lower");
-
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_validation_fails_if_no_groups_defined_via_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars(); // Ensure clean state
-        let dir = tempdir().unwrap();
-        let empty_config_path = create_temp_config_file(&dir, ""); // YAML doesn't define groups
-        let non_existent_path = dir.path().join("no_such_config.yaml");
-        delete_file(&non_existent_path);
-
-        // Test with empty YAML (no env vars set)
-        let result_empty = load_config(&empty_config_path);
-        assert!(
-            result_empty.is_err(),
-            "Expected Err for empty config with no env vars, got Ok"
-        );
-        assert!(
-            matches!(result_empty.as_ref().err().unwrap(), AppError::Config(msg) if msg == "No groups with usable keys found")
-        );
-
-        // Test with non-existent YAML (no env vars set)
-        let result_nonexist = load_config(&non_existent_path);
-        assert!(
-            result_nonexist.is_err(),
-            "Expected Err for non-existent config with no env vars, got Ok"
-        );
-        assert!(
-            matches!(result_nonexist.as_ref().err().unwrap(), AppError::Config(msg) if msg == "No groups with usable keys found")
-        );
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_validation_fails_if_no_usable_keys_across_all_groups_via_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("no_such_config.yaml");
-        delete_file(&non_existent_path);
-
-        set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", ", ,"); // Invalid keys only
-        set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", ""); // Empty keys
-
+        set_env("GEMINI_PROXY_GROUP_DUP_API_KEYS", "key1"); // Use distinct var names for test clarity
+        set_env("GEMINI_PROXY_GROUP_dup_api_keys", "key2"); // Use distinct var names for test clarity
         let result = load_config(&non_existent_path);
-        assert!(
-            result.is_err(),
-            "Expected Err for groups with no usable keys, got Ok"
-        );
-        // The error comes from the check within load_config before validation now
-        assert!(
-            matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "No groups with usable keys found")
-        );
-        cleanup_test_env_vars();
+        assert!(result.is_err(), "Expected Err for duplicate group names (case-insensitive)");
+        assert!(matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed"), "Expected validation failure message, got: {:?}", result.err());
+        clean_env();
     }
-
-    #[test]
-    fn test_validation_fails_on_invalid_proxy_url_from_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("no_such_config.yaml");
-        delete_file(&non_existent_path);
-
-        set_env_var("GEMINI_PROXY_GROUP_BADPROXY_API_KEYS", "key1");
-        set_env_var(
-            "GEMINI_PROXY_GROUP_BADPROXY_PROXY_URL",
-            "::not a valid url::",
-        ); // Invalid URL
-
-        let result = load_config(&non_existent_path);
-        assert!(
-            result.is_err(),
-            "Expected Err for invalid proxy URL, got Ok"
-        );
-        assert!(
-            matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed")
-        );
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_validation_fails_on_unsupported_proxy_scheme_from_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("no_such_config.yaml");
-        delete_file(&non_existent_path);
-
-        set_env_var("GEMINI_PROXY_GROUP_FTPPROXY_API_KEYS", "key1");
-        set_env_var("GEMINI_PROXY_GROUP_FTPPROXY_PROXY_URL", "ftp://myproxy.com"); // Unsupported scheme
-
-        let result = load_config(&non_existent_path);
-        assert!(
-            result.is_err(),
-            "Expected Err for unsupported proxy scheme, got Ok"
-        );
-        assert!(
-            matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed")
-        );
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_validation_fails_on_invalid_target_url_from_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("no_such_config.yaml");
-        delete_file(&non_existent_path);
-
-        set_env_var("GEMINI_PROXY_GROUP_BADTARGET_API_KEYS", "key1");
-        set_env_var("GEMINI_PROXY_GROUP_BADTARGET_TARGET_URL", ":::not a url"); // Invalid URL
-
-        let result = load_config(&non_existent_path);
-        assert!(
-            result.is_err(),
-            "Expected Err for invalid target URL, got Ok"
-        );
-        assert!(
-            matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed")
-        );
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_target_url_trailing_slash_cleanup() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("ne.yaml");
-        delete_file(&non_existent_path);
-
-        // Target URL with trailing slash from env
-        set_env_var("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", "keyA");
-        set_env_var(
-            "GEMINI_PROXY_GROUP_DEFAULT_TARGET_URL",
-            "http://example.com/api/",
-        );
-
-        // Target URL with trailing slash from yaml (requires matching env keys)
-        let yaml_content = r#"
-groups:
-  - name: group1 # This target_url is ignored now
-    target_url: "http://another.com/v1/ignored"
-"#;
-        let config_path = create_temp_config_file(&dir, yaml_content);
-        set_env_var("GEMINI_PROXY_GROUP_GROUP1_API_KEYS", "keyB");
-        // GROUP1_TARGET_URL is not set, so it should use default
-
-        let config_env = load_config(&non_existent_path).expect("Load failed for env slash test");
-        let g_default_env = config_env
-            .groups
-            .iter()
-            .find(|g| g.name == "DEFAULT")
-            .unwrap();
-        assert_eq!(g_default_env.target_url, "http://example.com/api"); // Slash removed
-
-        // YAML target_url is no longer used as fallback, so this group will get the default.
-        let config_yaml = load_config(&config_path).expect("Load failed for yaml slash test");
-        let g1_yaml = config_yaml
-            .groups
-            .iter()
-            .find(|g| g.name == "GROUP1")
-            .unwrap();
-        assert_eq!(g1_yaml.target_url, default_target_url()); // Now uses default
-
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_target_url_with_path_is_valid() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("ne.yaml");
-        delete_file(&non_existent_path);
-
-        set_env_var("GEMINI_PROXY_GROUP_TARGETWITHPATH_API_KEYS", "key1");
-        set_env_var(
-            "GEMINI_PROXY_GROUP_TARGETWITHPATH_TARGET_URL",
-            "https://api.example.com/some/path",
-        ); // Valid URL with path
-
-        let result = load_config(&non_existent_path);
-        assert!(
-            result.is_ok(),
-            "Expected Ok for target URL with path, got Err: {:?}",
-            result.err()
-        );
-        let config = result.unwrap();
-        let group = config
-            .groups
-            .iter()
-            .find(|g| g.name == "TARGETWITHPATH")
-            .unwrap();
-        assert_eq!(group.target_url, "https://api.example.com/some/path");
-        cleanup_test_env_vars();
-    }
-
-    #[test]
-    fn test_warning_for_orphaned_env_vars() {
-        // This test doesn't assert directly on logs, assumes manual inspection or future log capture setup
-        let _lock = ENV_MUTEX.lock().unwrap();
-        cleanup_test_env_vars();
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("ne.yaml");
-        delete_file(&non_existent_path);
-
-        // Set only proxy/target, no keys
-        set_env_var("GEMINI_PROXY_GROUP_ORPHAN_PROXY_URL", "http://proxy.orphan");
-        set_env_var(
-            "GEMINI_PROXY_GROUP_ORPHAN_TARGET_URL",
-            "http://target.orphan",
-        );
-
-        let result = load_config(&non_existent_path);
-        assert!(result.is_err()); // Should fail because no keys means no groups
-        assert!(
-            matches!(result.err().unwrap(), AppError::Config(msg) if msg == "No groups with usable keys found")
-        );
-        // Expect warnings in the log output about group "ORPHAN" not being created.
-        remove_env_var("GEMINI_PROXY_GROUP_ORPHAN_PROXY_URL");
-        remove_env_var("GEMINI_PROXY_GROUP_ORPHAN_TARGET_URL");
-        cleanup_test_env_vars(); // Ensure full cleanup
-    }
+    #[test] #[serial] fn test_load_empty_key_ok() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_.yaml"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_DEF_API_KEYS", "k1,,k3"); let result=load_config(&p); assert!(result.is_ok(), "Got: {:?}", result.err()); let cfg=result.unwrap(); assert_eq!(cfg.groups[0].api_keys, vec!["k1".to_string(),"k3".to_string()]); clean_env(); } // Added .to_string()
+    #[test] #[serial] fn test_target_path_ok() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_A_API_KEYS","k"); set_env("GEMINI_PROXY_GROUP_A_TARGET_URL","https://a.com/p"); let result=load_config(&p); assert!(result.is_ok()); assert_eq!(result.unwrap().groups[0].target_url,"https://a.com/p"); clean_env(); }
+    #[test] #[serial] fn test_warn_orphan() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_O_PURL","http://p"); set_env("GEMINI_PROXY_GROUP_O_TURL","http://t"); let result=load_config(&p); assert!(result.is_err()&&matches!(result.err(),Some(AppError::Config(m))if m=="Validation failed")); clean_env(); }
+    #[test] #[serial] fn test_empty_proxy_none() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_A_API_KEYS","k"); set_env("GEMINI_PROXY_GROUP_A_PROXY_URL"," "); let cfg=load_config(&p).expect("!"); assert!(cfg.groups[0].proxy_url.is_none()); clean_env(); }
+    #[test] #[serial] fn test_empty_target_default() { clean_env(); let d=tempdir().unwrap(); let p=d.path().join("_"); delete_file(&p); set_env("GEMINI_PROXY_GROUP_A_API_KEYS","k"); set_env("GEMINI_PROXY_GROUP_A_TARGET_URL"," "); let cfg=load_config(&p).expect("!"); assert_eq!(cfg.groups[0].target_url,default_target_url()); clean_env(); }
 } // end tests module

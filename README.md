@@ -25,7 +25,7 @@ This proxy acts as a middleman between your OpenAI-compatible application (like 
 
 *   Proxies requests specifically to Google's OpenAI compatibility endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/` by default).
 *   Supports multiple **groups** of Gemini API keys with optional upstream proxies (`http`, `https`, `socks5`) per group. Groups and their settings are **discovered and configured exclusively via environment variables** when using Docker Compose + `.env`.
-*   Automatic round-robin key rotation across **all** configured keys (from all groups combined).
+*   **Group Round-Robin Key Rotation:** Selects the next available key by iterating through key groups sequentially (round-robin between groups) and then iterating through keys within the selected group. This ensures fairer distribution across groups compared to rotating through all keys flattened.
 *   Handles `429 Too Many Requests` responses from the target API by temporarily disabling the rate-limited key.
 *   **Rate Limit Reset:** Limited keys are automatically considered available again after the next **daily midnight in the Pacific Time zone (America/Los_Angeles)** by default.
 *   **Persists Rate Limit State:** Saves the limited status and UTC reset time of keys to `key_states.json` (located in the current working directory, or `/app/` in Docker), allowing the proxy to skip known limited keys on startup.

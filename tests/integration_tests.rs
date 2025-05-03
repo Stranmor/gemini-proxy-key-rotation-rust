@@ -241,6 +241,142 @@ async fn test_handler_returns_last_429_on_exhaustion() {
     );
 }
 
+
+
+#[tokio::test]
+async fn test_handler_group_round_robin() {
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let test_path = "/v1/models";
+
+    let g1_key1 = "g1-key-1";
+    let g1_key2 = "g1-key-2";
+    let g2_key1 = "g2-key-1"; // Single key in this group
+    let g3_key1 = "g3-key-1";
+
+    // Mock successful responses for all keys initially
+    for key in [g1_key1, g1_key2, g2_key1, g3_key1] {
+        Mock::given(method("GET"))
+            .and(path(test_path))
+            .and(query_param("key", key))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{}\"}}", key)))
+            .mount(&server)
+            .await;
+    }
+
+    // 2. Setup Config and State
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    let groups = vec![
+        KeyGroup {
+            name: "group1".to_string(),
+            api_keys: vec![g1_key1.to_string(), g1_key2.to_string()],
+            target_url: server.uri(),
+            proxy_url: None,
+        },
+        KeyGroup {
+            name: "group2".to_string(),
+            api_keys: vec![g2_key1.to_string()],
+            target_url: server.uri(),
+            proxy_url: None,
+        },
+        KeyGroup {
+            name: "group3".to_string(),
+            api_keys: vec![g3_key1.to_string()],
+            target_url: server.uri(),
+            proxy_url: None,
+        },
+    ];
+    let config = create_test_config(groups, "127.0.0.1", 9996);
+    let app_state = Arc::new(
+        AppState::new(&config, &dummy_config_path)
+            .await
+            .expect("AppState failed"),
+    );
+
+    // Helper to extract key from response body
+    async fn get_key_from_response(response: Response) -> String {
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("Failed to read response body");
+        let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("Invalid JSON");
+        body_json["key_used"].as_str().unwrap().to_string()
+    }
+
+    // 3. Call handler multiple times and check key rotation
+    // Expected sequence: g1k1, g2k1, g3k1, g1k2, g2k1, g3k1, g1k1, ...
+
+    let res1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res1.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res1).await, g1_key1);
+
+    let res2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res2.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res2).await, g2_key1);
+
+    let res3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res3.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res3).await, g3_key1);
+
+    let res4 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res4.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res4).await, g1_key2); // Next key in group1
+
+    let res5 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res5.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res5).await, g2_key1); // Back to group2 (only one key)
+
+    let res6 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res6.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res6).await, g3_key1); // Back to group3 (only one key)
+
+    let res7 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res7.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res7).await, g1_key1); // Back to start of group1
+
+    // 4. Test skipping a rate-limited group
+    // Reset mocks and set g2_key1 to return 429, others to 200
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path(test_path))
+        .and(query_param("key", g2_key1))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+    // Remount mocks for other keys to return 200
+    for key in [g1_key1, g1_key2, g3_key1] { // Exclude g2_key1
+        Mock::given(method("GET"))
+            .and(path(test_path))
+            .and(query_param("key", key))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{}\"}}", key)))
+            .mount(&server)
+            .await;
+    }
+
+    // Make a request - should hit g2k1, get 429, mark key, retry
+    // Expected sequence now: g3k1 (skips g2), g1k2 (skips g2), ...
+
+    // Current state: next should be group2 (index 1) according to previous calls
+    // Try g2k1 -> 429 -> mark g2k1 limited -> continue search
+    // Try group3 (index 2) -> g3k1 -> OK
+    let res_skip1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res_skip1.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res_skip1).await, g3_key1); // Expect g3_key1 because g2 is skipped
+
+    // Current state: next should be group0 (index 0)
+    // Try g1k2 -> OK
+    let res_skip2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res_skip2.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res_skip2).await, g1_key2);
+
+    // Current state: next should be group1 (index 1)
+    // Try g2k1 -> still 429 -> continue search
+    // Try group3 (index 2) -> g3k1 -> OK
+    let res_skip3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    assert_eq!(res_skip3.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res_skip3).await, g3_key1);
+}
+
 // TODO: Add more tests from the plan:
 // - Test with POST /v1/chat/completions and body forwarding (similar structure, just change method and add body to request/mocks)
 // - Test error scenarios (e.g., mock server returning 500) -> Handler should return the corresponding error response immediately
