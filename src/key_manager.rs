@@ -56,6 +56,7 @@ pub struct KeyManager {
     key_states: Arc<RwLock<HashMap<String, KeyState>>>,
     state_file_path: PathBuf,
     save_mutex: Arc<Mutex<()>>,
+    rate_limit_behavior: crate::config::RateLimitBehavior, // Add the new field
 }
 
 impl KeyManager {
@@ -181,6 +182,7 @@ impl KeyManager {
             key_states: Arc::new(RwLock::new(initial_key_states)),
             state_file_path: state_file_path.clone(), // Use cloned path
             save_mutex: Arc::new(Mutex::new(())),
+            rate_limit_behavior: config.rate_limit_behavior.clone(), // Store the behavior
         };
 
         debug!(key_state.path = %state_file_path_display, "Performing initial state save/sync after KeyManager initialization.");
@@ -256,11 +258,7 @@ impl KeyManager {
                 };
 
                 let now = Utc::now();
-                let is_available = if key_state.is_limited {
-                    key_state.reset_time.map_or(false, |rt| now >= rt)
-                } else {
-                    true
-                };
+                let is_available = !key_state.is_limited || key_state.reset_time.map_or(true, |rt| now >= rt);
 
                 if is_available {
                     if key_state.is_limited {
@@ -343,62 +341,75 @@ impl KeyManager {
                     state_changed = true; // Mark as changed so save is triggered if needed
                 }
 
+                use crate::config::RateLimitBehavior;
+
                 // Mark as limited only if not already limited OR if it just expired and needs re-limiting
                 if !key_state.is_limited || had_expired {
-                    warn!(group.name=%group_name_for_log, "Marking key as rate-limited");
-                    let target_tz: Tz = Los_Angeles;
-                    let now_in_target_tz = now_utc.with_timezone(&target_tz);
-                    let tomorrow_naive_target =
-                        (now_in_target_tz + ChronoDuration::days(1)).date_naive();
-                    // Expect is okay here, failure indicates a chrono logic error
-                    let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target
-                        .and_hms_opt(0, 0, 0)
-                        .expect("Failed to calculate next midnight (00:00:00) in target timezone");
+                    warn!(group.name=%group_name_for_log, behavior = ?self.rate_limit_behavior, "Marking key as rate-limited");
 
-                    let (reset_time_utc, local_log_str): (DateTime<Utc>, String) = match target_tz
-                        .from_local_datetime(&reset_time_naive_target)
-                    {
-                        // Use TimeZone trait method
-                        chrono::LocalResult::Single(dt_target) => {
-                            (dt_target.with_timezone(&Utc), dt_target.to_string())
-                        }
-                        chrono::LocalResult::Ambiguous(dt1, dt2) => {
-                            // Log ambiguity and choice
-                            warn!(
+                    match self.rate_limit_behavior {
+                        RateLimitBehavior::BlockUntilMidnight => {
+                            let target_tz: Tz = Los_Angeles;
+                            let now_in_target_tz = now_utc.with_timezone(&target_tz);
+                            let tomorrow_naive_target =
+                                (now_in_target_tz + ChronoDuration::days(1)).date_naive();
+                            // Expect is okay here, failure indicates a chrono logic error
+                            let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target
+                                .and_hms_opt(0, 0, 0)
+                                .expect("Failed to calculate next midnight (00:00:00) in target timezone");
+
+                            let (reset_time_utc, local_log_str): (DateTime<Utc>, String) = match target_tz
+                                .from_local_datetime(&reset_time_naive_target)
+                            {
+                                // Use TimeZone trait method
+                                chrono::LocalResult::Single(dt_target) => {
+                                    (dt_target.with_timezone(&Utc), dt_target.to_string())
+                                }
+                                chrono::LocalResult::Ambiguous(dt1, dt2) => {
+                                    // Log ambiguity and choice
+                                    warn!(
+                                        group.name=%group_name_for_log,
+                                        target.naive_time = %reset_time_naive_target,
+                                        target.tz = ?target_tz,
+                                        ambiguous_time1 = %dt1,
+                                        ambiguous_time2 = %dt2,
+                                        "Ambiguous local time calculated for reset, choosing earlier time."
+                                    );
+                                    (dt1.with_timezone(&Utc), dt1.to_string())
+                                }
+                                chrono::LocalResult::None => {
+                                    // Log failure and fallback
+                                    error!(
+                                        group.name=%group_name_for_log,
+                                        target.naive_time = %reset_time_naive_target,
+                                        target.tz = ?target_tz,
+                                        "Calculated reset time does not exist in the target timezone! Falling back to UTC + 24h."
+                                    );
+                                    let fallback_utc = now_utc + ChronoDuration::hours(24);
+                                    (fallback_utc, "N/A (non-existent local time)".to_string())
+                                }
+                            };
+
+                            key_state.is_limited = true;
+                            key_state.reset_time = Some(reset_time_utc);
+                            state_changed = true; // Ensure state_changed is true after modification
+
+                            // Log the final calculated reset times
+                            info!(
                                 group.name=%group_name_for_log,
-                                target.naive_time = %reset_time_naive_target,
-                                target.tz = ?target_tz,
-                                ambiguous_time1 = %dt1,
-                                ambiguous_time2 = %dt2,
-                                "Ambiguous local time calculated for reset, choosing earlier time."
+                                key.reset_time.utc = %reset_time_utc,
+                                key.reset_time.local = %local_log_str, // Local representation in target TZ
+                                key.reset_time.tz = ?target_tz, // The target TZ used
+                                "Key limit set until next local midnight"
                             );
-                            (dt1.with_timezone(&Utc), dt1.to_string())
                         }
-                        chrono::LocalResult::None => {
-                            // Log failure and fallback
-                            error!(
-                                group.name=%group_name_for_log,
-                                target.naive_time = %reset_time_naive_target,
-                                target.tz = ?target_tz,
-                                "Calculated reset time does not exist in the target timezone! Falling back to UTC + 24h."
-                            );
-                            let fallback_utc = now_utc + ChronoDuration::hours(24);
-                            (fallback_utc, "N/A (non-existent local time)".to_string())
+                        RateLimitBehavior::RetryNextKey => {
+                             info!(group.name=%group_name_for_log, "Setting minimal reset time for immediate retry.");
+                             key_state.is_limited = true;
+                             key_state.reset_time = Some(Utc::now() + ChronoDuration::milliseconds(1));
+                             state_changed = true;
                         }
-                    };
-
-                    key_state.is_limited = true;
-                    key_state.reset_time = Some(reset_time_utc);
-                    state_changed = true; // Ensure state_changed is true after modification
-
-                    // Log the final calculated reset times
-                    info!(
-                        group.name=%group_name_for_log,
-                        key.reset_time.utc = %reset_time_utc,
-                        key.reset_time.local = %local_log_str, // Local representation in target TZ
-                        key.reset_time.tz = ?target_tz, // The target TZ used
-                        "Key limit set until next local midnight"
-                    );
+                    }
                 } else {
                     // Already limited with a future reset time
                     debug!(
@@ -737,6 +748,7 @@ mod tests {
                 port: 8080,
             },
             groups,
+            rate_limit_behavior: crate::config::RateLimitBehavior::default(), // Add the new field with default
         }
     }
 
@@ -1231,5 +1243,78 @@ mod tests {
             !temp_state_path.exists(),
             "Corrupt temp state file should be removed after failed recovery attempt"
         );
+    }
+
+    #[tokio::test]
+    async fn test_mark_key_as_limited_block_until_midnight() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("test_config.yaml"); // Need a path even if file is not read
+        let groups = vec![KeyGroup {
+            name: "g1".to_string(),
+            api_keys: vec!["k1".to_string()],
+            proxy_url: None,
+            target_url: "t1".to_string(),
+        }];
+        let config = AppConfig {
+            server: ServerConfig::default(),
+            groups,
+            rate_limit_behavior: crate::config::RateLimitBehavior::BlockUntilMidnight,
+        };
+        let manager = KeyManager::new(&config, &config_path).await;
+
+        manager.mark_key_as_limited("k1").await;
+        let states = manager.key_states.read().await;
+        let state = &states["k1"];
+
+        assert!(state.is_limited);
+        assert!(state.reset_time.is_some());
+
+        let reset_time_utc = state.reset_time.unwrap();
+        let target_tz: Tz = Los_Angeles;
+        let now_in_target_tz = Utc::now().with_timezone(&target_tz);
+        let reset_time_in_target_tz = reset_time_utc.with_timezone(&target_tz);
+
+        // Check if reset time is the next midnight in target timezone
+        // It should be after now in the target timezone
+        assert!(reset_time_in_target_tz > now_in_target_tz);
+        // And the time part should be 00:00:00
+        assert_eq!(reset_time_in_target_tz.time().format("%H:%M:%S").to_string(), "00:00:00");
+    }
+
+    #[tokio::test]
+    async fn test_mark_key_as_limited_retry_next_key() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("test_config.yaml"); // Need a path even if file is not read
+        let groups = vec![KeyGroup {
+            name: "g1".to_string(),
+            api_keys: vec!["k1".to_string()],
+            proxy_url: None,
+            target_url: "t1".to_string(),
+        }];
+        let config = AppConfig {
+            server: ServerConfig::default(),
+            groups,
+            rate_limit_behavior: crate::config::RateLimitBehavior::RetryNextKey,
+        };
+        let manager = KeyManager::new(&config, &config_path).await;
+
+        let now_before_mark = Utc::now();
+        manager.mark_key_as_limited("k1").await;
+        let now_after_mark = Utc::now();
+
+        let states = manager.key_states.read().await;
+        let state = &states["k1"];
+
+        assert!(state.is_limited);
+        assert!(state.reset_time.is_some());
+
+        let reset_time_utc = state.reset_time.unwrap();
+
+        // For RetryNextKey, the reset time should be very close to now
+        // We check if it's within a small time window around Utc::now()
+        let time_difference = reset_time_utc.signed_duration_since(now_before_mark);
+        // Assuming the async operations and test execution don't take more than a few seconds
+        // This assertion might need tuning based on test environment performance
+        assert!(time_difference >= ChronoDuration::zero() && time_difference < ChronoDuration::seconds(5));
     }
 }
