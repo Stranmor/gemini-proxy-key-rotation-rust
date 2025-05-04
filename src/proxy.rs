@@ -62,15 +62,22 @@ pub async fn forward_request(
     // Keep debug log for parsed base URL
     debug!(target.base_url = %base_url, group.name = %group_name, "Parsed base URL from configuration");
 
+    let openai_compat_prefix = "/v1beta/openai/";
     let original_path_and_query = uri.path_and_query().map_or("", |pq| pq.as_str());
-    let relative_path_and_query = original_path_and_query.trim_start_matches('/');
+    
+    // Combine the prefix and the original path. Handle leading/trailing slashes carefully.
+    let combined_path = if original_path_and_query.starts_with('/') {
+         format!("{}{}", openai_compat_prefix.trim_end_matches('/'), original_path_and_query)
+    } else {
+         format!("{}{}", openai_compat_prefix, original_path_and_query)
+    };
 
-    let mut final_target_url = base_url.join(relative_path_and_query).map_err(|e| {
+    let mut final_target_url = base_url.join(&combined_path).map_err(|e| {
         error!(
            target.base_url = %base_url,
-           request.path_and_query = %relative_path_and_query,
+           target.combined_path = %combined_path,
            error = %e,
-           "Failed to join base URL and relative path"
+           "Failed to join base URL and combined path"
         );
         AppError::Internal(format!("URL construction error: {}", e))
     })?;
