@@ -29,14 +29,15 @@ async fn create_test_system() -> (Arc<AppState>, MockServer, tempfile::TempDir) 
         api_keys: vec!["test-key-1".to_string(), "test-key-2".to_string()],
         target_url: server.uri(),
         proxy_url: None,
+        top_p: None,
     };
     
     let config = AppConfig {
         server: ServerConfig {
-            host: "127.0.0.1".to_string(),
             port: 8080,
             cache_ttl_secs: 300,
             cache_max_size: 100,
+            top_p: None,
         },
         groups: vec![test_group],
         rate_limit_behavior: Default::default(),

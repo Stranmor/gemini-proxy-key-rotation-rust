@@ -2,18 +2,20 @@
 
 use crate::{
     error::{AppError, Result},
+    key_manager::FlattenedKeyInfo,
     proxy, // Import the proxy module
     state::AppState,
 };
 use axum::{
     extract::{Request, State},
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::Response,
 };
 use chrono::Duration as ChronoDuration;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, error, info, instrument, warn}; // Added instrument
+use tracing::{debug, error, info, instrument, warn};
+use url::Url;
 
 /// Simple health check handler. Returns HTTP 200 OK.
 #[instrument(name = "health_check", level = "debug", skip_all)] // Add span for health check
@@ -87,7 +89,7 @@ pub async fn proxy_handler(
     }
     info!("Cache miss. Proceeding to forward request.");
 
-    let mut last_error_response: Option<Response> = None;
+    let mut last_error: Option<Response> = None;
     let mut attempt_count = 0;
 
     loop {
@@ -100,7 +102,11 @@ pub async fn proxy_handler(
                 attempts = attempt_count,
                 "No available API keys remaining after retries."
             );
-            return last_error_response.map_or(Err(AppError::NoAvailableKeys), Ok);
+            return if let Some(response) = last_error {
+                Ok(response)
+            } else {
+                Err(AppError::NoAvailableKeys)
+            };
         };
 
         let key_preview = format!("{}...", key_info.key.chars().take(4).collect::<String>());
@@ -120,11 +126,22 @@ pub async fn proxy_handler(
                 "Attempting request with key"
             );
 
+            // --- URL Translation ---
+            let final_target_url =
+                match build_translated_gemini_url(&key_info, &uri).await {
+                    Ok(url) => url,
+                    Err(e) => {
+                        error!("Failed to build translated Gemini URL: {}. This is a non-retriable client error.", e);
+                        return Err(e);
+                    }
+                };
+            // --- End URL Translation ---
+
             let forward_result = proxy::forward_request(
                 &state,
                 &key_info,
                 method.clone(),
-                uri.clone(),
+                final_target_url, // Pass the translated URL
                 headers.clone(),
                 body_bytes.clone(),
             )
@@ -180,7 +197,7 @@ pub async fn proxy_handler(
                         .key_manager
                         .mark_key_as_invalid(&api_key_to_mark)
                         .await;
-                    last_error_response = Some(response);
+                    last_error = Some(response);
                     break; // Break internal loop to get next key
                 }
                 // --- Rate Limit Error (429) ---
@@ -193,7 +210,7 @@ pub async fn proxy_handler(
                         .key_manager
                         .mark_key_as_limited(&api_key_to_mark)
                         .await;
-                    last_error_response = Some(response);
+                    last_error = Some(response);
                     break; // Break internal loop to get next key
                 }
                 // --- Retriable Server Errors (500, 503) ---
@@ -213,7 +230,7 @@ pub async fn proxy_handler(
                                 ChronoDuration::minutes(5),
                             )
                             .await;
-                        last_error_response = Some(response);
+                        last_error = Some(response);
                         break; // Break internal loop to get next key
                     }
                     sleep(Duration::from_secs(1)).await; // Wait before internal retry
@@ -229,4 +246,47 @@ pub async fn proxy_handler(
             }
         } // End internal retry loop
     } // End main loop
+}
+
+
+
+/// Builds the final Gemini URL, including the API key.
+/// This function encapsulates the logic that was previously inside `proxy::forward_request`.
+async fn build_translated_gemini_url(
+    key_info: &FlattenedKeyInfo,
+    original_uri: &Uri,
+) -> Result<Url> {
+    let target_base_url_str = &key_info.target_url;
+    let base_url = Url::parse(target_base_url_str).map_err(|e| {
+        error!(
+            target_base_url = %target_base_url_str,
+            group.name = %key_info.group_name,
+            error = %e,
+            "Failed to parse target_base_url from configuration for group"
+        );
+        AppError::Internal(format!("Invalid base URL in config: {e}"))
+    })?;
+
+    let path = original_uri.path();
+    let mut final_target_url = base_url.join(path).map_err(|e| {
+        error!(
+            base_url = %base_url,
+            path_to_join = %path,
+            error = %e,
+            "Failed to join base URL with request path"
+        );
+        AppError::UrlJoinError(format!("Failed to join URL path: {e}"))
+    })?;
+
+    if let Some(query) = original_uri.query() {
+        final_target_url.set_query(Some(query));
+    }
+
+    final_target_url
+        .query_pairs_mut()
+        .append_pair("key", &key_info.key);
+        
+    debug!(target.url = %final_target_url, "Constructed final target URL with key for request");
+
+    Ok(final_target_url)
 }

@@ -268,7 +268,7 @@ pub async fn detailed_health(State(state): State<Arc<AppState>>) -> Result<Json<
         version: option_env!("CARGO_PKG_VERSION").unwrap_or("N/A").to_string(),
         uptime_seconds: uptime,
         server_info: ServerInfo {
-            host: state.config.server.host.clone(),
+            host: "0.0.0.0".to_string(),
             port: state.config.server.port,
             rust_version: "N/A".to_string(), // sysinfo doesn't provide this
             build_info: BuildInfo {
@@ -496,10 +496,9 @@ pub async fn serve_dashboard(State(state): State<Arc<AppState>>) -> Html<String>
     let system_info_html = format!(
         "<div class=\"p-4 bg-gray-800 rounded-lg shadow-md\">
 <h2 class=\"text-xl font-bold mb-2\">System Info</h2>
-<p><strong>Memory Usage:</strong> {} MB</p>
-<p><strong>CPU Usage:</strong> {:.2} %</p>
-</div>",
-        mem_usage, cpu_usage
+<p><strong>Memory Usage:</strong> {mem_usage} MB</p>
+<p><strong>CPU Usage:</strong> {cpu_usage:.2} %</p>
+</div>"
     );
 
     // A bit of a hacky way to inject the info.

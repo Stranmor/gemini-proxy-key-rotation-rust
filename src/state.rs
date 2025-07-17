@@ -256,10 +256,10 @@ mod tests {
     fn create_test_state_config(groups: Vec<KeyGroup>) -> AppConfig {
         AppConfig {
             server: ServerConfig {
-                host: "0.0.0.0".to_string(),
                 port: 8080,
                 cache_ttl_secs: 300,
                 cache_max_size: 100,
+                top_p: None,
             },
             groups,
             rate_limit_behavior: Default::default(),
@@ -282,6 +282,7 @@ mod tests {
             api_keys: vec!["key1".to_string()],
             proxy_url: None,
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
+            top_p: None,
         }];
         let config = create_test_state_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
@@ -309,12 +310,14 @@ mod tests {
                 api_keys: vec!["key_http".to_string()],
                 proxy_url: Some(http_proxy_url.to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
+                top_p: None,
             },
             KeyGroup {
                 name: "g_socks".to_string(),
                 api_keys: vec!["key_socks".to_string()],
                 proxy_url: Some(socks_proxy_url.to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
+                top_p: None,
             },
             KeyGroup {
                 // Same HTTP proxy, should reuse client map entry
@@ -322,12 +325,14 @@ mod tests {
                 api_keys: vec!["key_http2".to_string()],
                 proxy_url: Some(http_proxy_url.to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
+                top_p: None,
             },
             KeyGroup {
                 name: "g_no_proxy".to_string(),
                 api_keys: vec!["key_none".to_string()],
                 proxy_url: None,
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
+                top_p: None,
             },
         ];
         let config = create_test_state_config(groups);
@@ -381,6 +386,7 @@ mod tests {
             api_keys: vec!["key_invalid".to_string()],
             proxy_url: Some("::not a proxy url::".to_string()), // Invalid syntax
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
+            top_p: None,
         }];
         let config = create_test_state_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
@@ -406,6 +412,7 @@ mod tests {
             api_keys: vec!["key_unsupported".to_string()],
             proxy_url: Some("ftp://unsupported.proxy".to_string()), // Unsupported scheme
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
+            top_p: None,
         }];
         let config = create_test_state_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
@@ -438,6 +445,7 @@ mod tests {
                 api_keys: vec!["k1".to_string()],
                 proxy_url: Some("http://127.0.0.1:34569".to_string()), // Likely free port
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
+                top_p: None,
             },
             // Use a socks URL that might cause build issues or is hard to resolve
             KeyGroup {
@@ -446,6 +454,7 @@ mod tests {
                 // Provide a URL that might fail build if socks feature isn't compiled correctly or has issues
                 proxy_url: Some("socks5://invalid-host-that-causes-build-error:1080".to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
+                top_p: None,
             },
         ];
         let config = create_test_state_config(groups);
