@@ -37,6 +37,32 @@ This proxy acts as a middleman between your OpenAI-compatible application (like 
 *   Configurable logging using `tracing` and the `RUST_LOG` environment variable.
 *   Basic health check endpoint (`/health`).
 
+## Architecture
+
+The Gemini Proxy Key Rotation service is built with a modular architecture, leveraging Rust's ownership and concurrency features to ensure high performance and reliability. Below are the core components and their interactions:
+
+*   [`main.rs`](src/main.rs): The entry point of the application. It initializes logging, loads the configuration, sets up the `KeyManager` and `AppState`, and starts the Axum HTTP server.
+*   [`config.rs`](src/config.rs): Handles loading and validating the application's configuration from environment variables and an optional `config.yaml` file. It defines how API key groups, proxy URLs, and target URLs are parsed and structured.
+*   [`key_manager.rs`](src/key_manager.rs): Manages the lifecycle of Gemini API keys. It's responsible for loading keys, selecting the next available key using a group round-robin strategy, tracking rate limits, and persisting key states to `key_states.json`.
+*   [`state.rs`](src/state.rs): Defines the shared application state (`AppState`) that is accessible across different request handlers. This includes the `KeyManager`, configuration, and other shared resources.
+*   [`handler.rs`](src/handler.rs): Contains the Axum request handlers. It processes incoming HTTP requests, interacts with the `KeyManager` to get an API key, and prepares the request for forwarding.
+*   [`proxy.rs`](src/proxy.rs): Responsible for forwarding the modified HTTP request to the actual Google Gemini API endpoint (or an upstream proxy if configured). It handles the network communication and returns the response to the client.
+
+**Request Flow Diagram:**
+
+```mermaid
+graph TD
+    A[Client Request] --> B{Axum HTTP Server};
+    B --> C[handler.rs: Process Request];
+    C --> D{state.rs: Access AppState};
+    D --> E[key_manager.rs: Get Next Key];
+    E --> F{proxy.rs: Forward Request};
+    F --> G[Google Gemini API];
+    G --> F;
+    F --> C;
+    C --> H[Client Response];
+```
+
 ## Requirements
 
 *   **Docker & Docker Compose:** The easiest and **most secure** way to run the proxy. `docker-compose` is usually included with Docker Desktop. ([Install Docker](https://docs.docker.com/engine/install/)).
@@ -112,6 +138,19 @@ This method uses Docker Compose and a `.env` file to manage configuration secure
     ```
     *(Use `docker compose down -v` to also remove the anonymous volume if you used named volumes instead of bind mounts for `key_states.json`)*.
 
+### Usage with Makefile
+
+For convenience, a `Makefile` is provided to automate common development and operational tasks.
+
+*   **Build and Start:** `make` or `make all`
+*   **Start Services:** `make up`
+*   **Stop Services:** `make down`
+*   **View Logs:** `make logs`
+*   **Restart Services:** `make restart`
+*   **Run Tests:** `make test`
+*   **Run Linter:** `make lint`
+*   **Clean Build Artifacts:** `make clean`
+
 ### Option 2: Building and Running Locally
 
 Use this primarily for development. Configuration can rely on environment variables or `config.yaml`.
@@ -186,6 +225,32 @@ curl http://localhost:8081/v1/chat/completions \
 
 **Example Configuration Screenshot:**
 ![Roo Code Configuration Example](2025-04-13_14-02.png)
+
+## API Reference
+
+The proxy exposes a minimal set of HTTP endpoints designed for compatibility with OpenAI clients and basic health monitoring.
+
+### Endpoints
+
+*   **`GET /health`**
+    *   **Purpose:** A simple health check endpoint.
+    *   **Description:** Returns a `200 OK` status code if the proxy is running and responsive. This is useful for load balancers, Docker health checks, and basic monitoring.
+    *   **Example:**
+        ```bash
+        curl http://localhost:8081/health
+        # Expected Response: HTTP/1.1 200 OK (empty body)
+        ```
+
+*   **`/v1/*` (Proxy Endpoint)**
+    *   **Purpose:** Acts as a transparent proxy for OpenAI-compatible API requests.
+    *   **Description:** All requests sent to the proxy with a path starting `/v1/` (e.g., `/v1/chat/completions`, `/v1/models`) are intercepted. The proxy then:
+        1.  Selects an available Gemini API key using its internal rotation logic.
+        2.  Adds the necessary `x-goog-api-key` and `Authorization: Bearer <key>` headers.
+        3.  Rewrites the request URL to target `https://generativelanguage.googleapis.com/v1beta/openai/` (or a group-specific `target_url` if configured).
+        4.  Forwards the request to the Google Gemini API.
+        5.  Returns the response from Google Gemini API back to the client.
+    *   **Compatibility:** Designed to work seamlessly with standard OpenAI client libraries and tools.
+    *   **Example:** (See [Example `curl` to proxy](#example-curl-to-proxy) for usage examples)
 
 ## Configuration (`config.yaml`)
 

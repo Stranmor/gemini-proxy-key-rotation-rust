@@ -21,8 +21,13 @@ pub struct AppState {
 
 impl AppState {
     /// Creates a new `AppState`. Initializes KeyManager and pre-builds HTTP clients.
-    /// Returns `Err` if parsing a proxy URL or its scheme fails, or if the base client build fails.
-    /// Logs errors and skips client creation for individual proxy build failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if:
+    /// - The base HTTP client (no proxy) fails to build, which is a fatal error.
+    /// - A proxy URL has a syntactically invalid format or an unsupported scheme.
+    /// - An unexpected I/O or other error occurs during client initialization.
     #[instrument(level = "info", skip(config, config_path), fields(config.path = %config_path.display()))]
     pub async fn new(config: &AppConfig, config_path: &Path) -> Result<Self> {
         info!("Creating shared AppState: Initializing KeyManager and HTTP clients...");
@@ -198,27 +203,28 @@ impl AppState {
     }
 
     /// Returns a reference to the appropriate HTTP client.
-    /// Logs an error if the requested client (identified by proxy_url Option) is not found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `AppError::Internal` if the requested client (identified by the `proxy_url` Option)
+    /// was not found in the pre-built client map. This indicates a logic error, as all required
+    /// clients should have been initialized at startup.
     #[instrument(level = "debug", skip(self), fields(proxy.url = ?proxy_url))]
     #[inline]
     pub fn get_client(&self, proxy_url: Option<&str>) -> Result<&Client> {
         let key = proxy_url.map(String::from); // Create Option<String> key for HashMap lookup
-        match self.http_clients.get(&key) {
-            Some(client) => {
-                debug!("Retrieved HTTP client");
-                Ok(client)
-            }
-            None => {
-                let msg = if let Some(p_url) = proxy_url {
-                    format!("Requested HTTP client for proxy '{}' was not found/initialized in AppState.", p_url)
-                } else {
-                    "Requested base HTTP client (None proxy) was unexpectedly missing.".to_string()
-                };
-                // Structured error log
-                error!(proxy.url = ?proxy_url, error.message = %msg, "HTTP client lookup failed");
-                Err(AppError::Internal(msg)) // Return internal error
-            }
-        }
+        self.http_clients.get(&key).map_or_else(|| {
+            let msg = proxy_url.map_or_else(
+                || "Requested base HTTP client (None proxy) was unexpectedly missing.".to_string(),
+                |p_url| format!("Requested HTTP client for proxy '{p_url}' was not found/initialized in AppState."),
+            );
+            // Structured error log
+            error!(proxy.url = ?proxy_url, error.message = %msg, "HTTP client lookup failed");
+            Err(AppError::Internal(msg)) // Return internal error
+        }, |client| {
+            debug!("Retrieved HTTP client");
+            Ok(client)
+        })
     }
 }
 

@@ -103,7 +103,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_details) = match self {
             // --- 5xx Server Errors (Internal details logged, generic message to client) ---
-            AppError::Config(msg) => {
+            Self::Config(msg) => {
                 error!("Configuration error: {}", msg); // Log the specific error
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -114,7 +114,7 @@ impl IntoResponse for AppError {
                     },
                 )
             }
-            AppError::Io(e) => {
+            Self::Io(e) => {
                 error!("IO error: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -125,7 +125,7 @@ impl IntoResponse for AppError {
                     },
                 )
             }
-            AppError::YamlParsing(e) => {
+            Self::YamlParsing(e) => {
                 error!("YAML parsing error: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -136,7 +136,7 @@ impl IntoResponse for AppError {
                     },
                 )
             }
-            AppError::ProxyConfigError(data) => {
+            Self::ProxyConfigError(data) => {
                 error!("Proxy configuration error: {}", data); // Log detailed error
                 (
                     StatusCode::INTERNAL_SERVER_ERROR, // Config issue is internal
@@ -149,18 +149,18 @@ impl IntoResponse for AppError {
                     },
                 )
             }
-            AppError::HttpClientBuildError { source, proxy_url } => {
+            Self::HttpClientBuildError { source, proxy_url } => {
                 error!(proxy_url = ?proxy_url, "HTTP client build error: {}", source);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorDetails {
                         error_type: "HTTP_CLIENT_BUILD_ERROR".to_string(),
                         message: "Internal server error building HTTP client".to_string(),
-                        details: proxy_url.map(|u| format!("Related proxy: {}", u)),
+                        details: proxy_url.map(|u| format!("Related proxy: {u}")),
                     },
                 )
             }
-            AppError::Internal(msg) => {
+            Self::Internal(msg) => {
                 error!("Internal server error: {}", msg);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -173,7 +173,7 @@ impl IntoResponse for AppError {
             }
 
             // --- 5xx Errors related to upstream/proxying ---
-            AppError::Reqwest(e) => {
+            Self::Reqwest(e) => {
                 error!("Upstream reqwest error: {}", e);
                 // More robust error classification
                 let (status_code, msg_key) = if e.is_timeout() {
@@ -207,7 +207,7 @@ impl IntoResponse for AppError {
                     },
                 )
             }
-            AppError::UpstreamServiceError { status, body } => {
+            Self::UpstreamServiceError { status, body } => {
                 error!(
                     "Upstream service returned error: Status={}, Body='{}'",
                     status, body
@@ -221,7 +221,7 @@ impl IntoResponse for AppError {
                     },
                 )
             }
-            AppError::ResponseBodyError(msg) => {
+            Self::ResponseBodyError(msg) => {
                 error!("Response body processing error: {}", msg);
                 (
                     StatusCode::BAD_GATEWAY, // Error processing upstream response
@@ -232,7 +232,7 @@ impl IntoResponse for AppError {
                     },
                 )
             }
-            AppError::NoAvailableKeys => (
+            Self::NoAvailableKeys => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorDetails {
                     error_type: "NO_AVAILABLE_KEYS".to_string(),
@@ -243,7 +243,7 @@ impl IntoResponse for AppError {
             ),
 
             // --- 4xx Client Errors ---
-            AppError::RequestBodyError(msg) => (
+            Self::RequestBodyError(msg) => (
                 StatusCode::BAD_REQUEST,
                 ErrorDetails {
                     error_type: "REQUEST_BODY_ERROR".to_string(),
@@ -251,7 +251,7 @@ impl IntoResponse for AppError {
                     details: Some(msg),
                 },
             ),
-            AppError::InvalidClientApiKey => (
+            Self::InvalidClientApiKey => (
                 StatusCode::UNAUTHORIZED, // Or FORBIDDEN depending on semantics
                 ErrorDetails {
                     error_type: "INVALID_API_KEY".to_string(),

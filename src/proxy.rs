@@ -32,8 +32,19 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 ];
 
 /// Takes incoming request components and forwards them to the appropriate upstream target using cached clients.
+///
 /// Orchestrates the core proxying logic. Rate limit handling (429) is delegated to the calling handler.
-/// Assumes this function is called within a tracing span that includes request_id.
+/// Assumes this function is called within a tracing span that includes `request_id`.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The base URL from configuration is invalid.
+/// - The final target URL cannot be constructed.
+/// - The HTTP client for the required proxy cannot be retrieved.
+/// - The request to the target fails (e.g., network error, timeout).
+/// - The response body stream from the target has an error.
+/// - The final response to the client cannot be constructed.
 pub async fn forward_request(
     state: &AppState,
     key_info: &FlattenedKeyInfo,
@@ -57,7 +68,7 @@ pub async fn forward_request(
            error = %e, // Use display for parse error
            "Failed to parse target_base_url from configuration for group"
         );
-        AppError::Internal(format!("Invalid base URL in config: {}", e))
+        AppError::Internal(format!("Invalid base URL in config: {e}"))
     })?;
     // Keep debug log for parsed base URL
     debug!(target.base_url = %base_url, group.name = %group_name, "Parsed base URL from configuration");
@@ -69,7 +80,7 @@ pub async fn forward_request(
     let combined_path = if original_path_and_query.starts_with('/') {
          format!("{}{}", openai_compat_prefix.trim_end_matches('/'), original_path_and_query)
     } else {
-         format!("{}{}", openai_compat_prefix, original_path_and_query)
+         format!("{openai_compat_prefix}{original_path_and_query}")
     };
 
     let mut final_target_url = base_url.join(&combined_path).map_err(|e| {
@@ -79,7 +90,7 @@ pub async fn forward_request(
            error = %e,
            "Failed to join base URL and combined path"
         );
-        AppError::Internal(format!("URL construction error: {}", e))
+        AppError::Internal(format!("URL construction error: {e}"))
     })?;
     // --- End URL Construction ---
 
@@ -151,7 +162,7 @@ pub async fn forward_request(
                 "unknown"
             };
             // Use the imported Error trait to call source()
-            let underlying_source = e.source().map(|s| s.to_string()); // Get underlying error if available
+            let underlying_source = e.source().map(ToString::to_string); // Get underlying error if available
 
             error!(
                 error = %e, // Display format for top-level error
@@ -183,8 +194,7 @@ pub async fn forward_request(
             "Error reading upstream response body stream"
         );
         AppError::ResponseBodyError(format!(
-            "Upstream body stream error (status {}): {}",
-            captured_response_status, e
+            "Upstream body stream error (status {captured_response_status}): {e}"
         ))
     });
     let axum_response_body = Body::from_stream(response_body_stream);
@@ -195,7 +205,7 @@ pub async fn forward_request(
         .body(axum_response_body)
         .map_err(|e| {
             error!(error = %e, "Failed to build final client response");
-            AppError::Internal(format!("Failed to construct client response: {}", e))
+            AppError::Internal(format!("Failed to construct client response: {e}"))
         })?;
 
     *client_response.headers_mut() = response_headers;
@@ -239,7 +249,7 @@ fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_requ
 /// Returns a Result to indicate potential failures.
 #[tracing::instrument(level="debug")] // Removed skip attribute
 // Removed API key parameter as it's now in the URL
-fn add_auth_headers(_headers: &mut HeaderMap) -> Result<()> { // Renamed headers to _headers
+fn add_auth_headers(_: &mut HeaderMap) -> Result<()> {
     // Authentication headers (x-goog-api-key, Authorization) are no longer added here.
     // The API key is now expected to be included in the URL query parameters.
     Ok(()) // Function now always succeeds

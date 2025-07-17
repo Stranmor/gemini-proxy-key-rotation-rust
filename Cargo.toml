@@ -12,32 +12,32 @@ categories = ["web-programming::proxy", "api-bindings", "network-programming"]
 
 [dependencies]
 # Web framework
-axum = "0.7"
-tower = { version = "0.4", features = ["util"] } # Added for ServiceBuilder and middleware utilities
+axum = "~0.7.5"
+tower = { version = "~0.4.13", features = ["util"] } # Added for ServiceBuilder and middleware utilities
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+tokio = { version = "~1.37.0", features = ["rt-multi-thread", "macros", "signal", "sync"] }
 # HTTP client
-# Reverted to version 0.12.5 with known necessary features
-reqwest = { version = "0.12.5", features = ["json", "native-tls", "stream", "socks"], default-features = false }
+# Attempting to upgrade to the latest compatible version.
+reqwest = { version = "~0.12.22", features = ["json", "native-tls", "stream", "socks"], default-features = false }
 # Serialization/Deserialization
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
-serde_json = "1.0" # Added for AppError JSON response
+serde = { version = "~1.0.203", features = ["derive"] }
+serde_yaml = "~0.9.34"
+serde_json = "~1.0.120" # Added for AppError JSON response
 # Error handling
-thiserror = "1.0"
+thiserror = "~1.0.61"
 # URL parsing
-url = "2" # Keep for config validation
+url = "~2.5.2" # Keep for config validation
 # Async stream utilities
-futures-util = "0.3" # Needed for stream mapping
+futures-util = "~0.3.31" # Needed for stream mapping
 # Logging and tracing
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] } # Added "json" feature
+tracing = "~0.1.40"
+tracing-subscriber = { version = "~0.3.18", features = ["env-filter", "fmt", "json"] } # Added "json" feature
 # Time handling
-chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.8" # Needed for specific timezone reset logic
+chrono = { version = "~0.4.38", features = ["serde"] }
+chrono-tz = "~0.9.0" # Needed for specific timezone reset logic
 # Command-line argument parsing
-clap = { version = "4.5", features = ["derive"] }
-uuid = { version = "1", features = ["v4"] } # Updated version specifier, kept 1.x for stability
+clap = { version = "~4.5.8", features = ["derive"] }
+uuid = { version = "~1.9.1", features = ["v4"] } # Updated version specifier, kept 1.x for stability
 
 # Standard library types like Arc, AtomicUsize, Mutex/RwLock are used directly
 
@@ -61,8 +61,7 @@ panic = "abort"      # Abort on panic for smaller binary
 
 # Dependencies only used for tests, examples, benchmarks
 [dev-dependencies]
-wiremock = "0.6" # Mocking HTTP server
-tempfile = "3.10" # For creating temporary files/dirs in tests
-lazy_static = "1.5" # For static mutex in tests
-http-body-util = { version = "0.1", features = ["full"] } # For working with bodies in tests
-serial_test = "3.0" # For serializing tests modifying std::env
+wiremock = "~0.6.1" # Mocking HTTP server
+tempfile = "~3.10.1" # For creating temporary files/dirs in tests
+http-body-util = { version = "~0.1.2", features = ["full"] } # For working with bodies in tests
+serial_test = "~3.1.1" # For serializing tests modifying std::env

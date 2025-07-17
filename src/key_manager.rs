@@ -1,6 +1,6 @@
 // src/key_manager.rs
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, RateLimitBehavior};
 use crate::error::{AppError, Result as AppResult}; // Use AppResult alias where appropriate
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc}; // ENSURED TimeZone is imported
 use chrono_tz::America::Los_Angeles; // Use Los_Angeles timezone (PST/PDT)
@@ -104,8 +104,8 @@ impl KeyManager {
                 group_entry.push(key_info); // Add key to its group in the map
 
                 // Process state (this part remains largely the same)
-                let state_to_insert = if let Some(persisted) = persisted_states.get(key) {
-                    if persisted.is_limited && persisted.reset_time.map_or(false, |rt| now >= rt) {
+                let state_to_insert = persisted_states.get(key).map_or_else(KeyState::default, |persisted| {
+                    if persisted.is_limited && persisted.reset_time.is_some_and(|rt| now >= rt) {
                         info!(api_key.preview = %Self::preview(key), group.name = %group.name, "Persisted limit for key has expired. Initializing as available.");
                         KeyState::default()
                     } else {
@@ -114,9 +114,7 @@ impl KeyManager {
                         }
                         persisted.clone()
                     }
-                } else {
-                    KeyState::default()
-                };
+                });
                 initial_key_states
                     .entry(key.clone())
                     .or_insert(state_to_insert);
@@ -212,13 +210,10 @@ impl KeyManager {
 
         for group_offset in 0..num_groups {
             let current_group_idx = (initial_group_index + group_offset) % num_groups;
-            let (group_name, keys_in_group) = match self.grouped_keys.get(current_group_idx) {
-                 Some(group_data) => group_data,
-                 None => {
-                     error!(group.index = current_group_idx, "Internal inconsistency: Group index out of bounds. Skipping.");
-                     continue; // Should not happen
-                 }
-             };
+            let Some((group_name, keys_in_group)) = self.grouped_keys.get(current_group_idx) else {
+                error!(group.index = current_group_idx, "Internal inconsistency: Group index out of bounds. Skipping.");
+                continue; // Should not happen
+            };
 
             if keys_in_group.is_empty() {
                 debug!(group.index = current_group_idx, group.name = %group_name, "Skipping empty group");
@@ -226,12 +221,9 @@ impl KeyManager {
             }
 
             let num_keys_in_group = keys_in_group.len();
-            let group_key_index_atomic = match self.key_indices_per_group.get(current_group_idx) {
-                Some(atomic_idx) => atomic_idx,
-                None => {
-                    error!(group.index = current_group_idx, group.name=%group_name, "Internal inconsistency: Missing key index for group. Skipping.");
-                    continue; // Should not happen
-                }
+            let Some(group_key_index_atomic) = self.key_indices_per_group.get(current_group_idx) else {
+                error!(group.index = current_group_idx, group.name=%group_name, "Internal inconsistency: Missing key index for group. Skipping.");
+                continue; // Should not happen
             };
             let initial_key_index_in_group = group_key_index_atomic.load(Ordering::Relaxed);
 
@@ -239,26 +231,20 @@ impl KeyManager {
 
             for key_offset in 0..num_keys_in_group {
                 let current_key_idx_in_group = (initial_key_index_in_group + key_offset) % num_keys_in_group;
-                let key_info = match keys_in_group.get(current_key_idx_in_group) {
-                     Some(ki) => ki,
-                     None => {
-                         error!(group.index = current_group_idx, group.name=%group_name, key.index=current_key_idx_in_group, "Internal inconsistency: Key index out of bounds within group. Skipping key.");
-                         continue; // Should not happen
-                     }
-                 };
+                let Some(key_info) = keys_in_group.get(current_key_idx_in_group) else {
+                    error!(group.index = current_group_idx, group.name=%group_name, key.index=current_key_idx_in_group, "Internal inconsistency: Key index out of bounds within group. Skipping key.");
+                    continue; // Should not happen
+                };
 
                 let key_preview = Self::preview(&key_info.key);
 
-                let key_state = match key_states_guard.get(&key_info.key) {
-                    Some(state) => state,
-                    None => {
-                        error!(api_key.preview = %key_preview, group.name = %group_name, "Internal inconsistency: Key found in group but missing from state map! Skipping.");
-                        continue;
-                    }
+                let Some(key_state) = key_states_guard.get(&key_info.key) else {
+                    error!(api_key.preview = %key_preview, group.name = %group_name, "Internal inconsistency: Key found in group but missing from state map! Skipping.");
+                    continue;
                 };
 
                 let now = Utc::now();
-                let is_available = !key_state.is_limited || key_state.reset_time.map_or(true, |rt| now >= rt);
+                let is_available = !key_state.is_limited || key_state.reset_time.is_none_or(|rt| now >= rt);
 
                 if is_available {
                     if key_state.is_limited {
@@ -287,17 +273,16 @@ impl KeyManager {
                     // Release read lock before returning
                     drop(key_states_guard);
                     return Some(key_info.clone());
-                } else {
-                    // Key is limited, log why it was skipped
-                    debug!(
-                       api_key.preview = %key_preview,
-                       group.name = %group_name,
-                       key.index_in_group = current_key_idx_in_group,
-                       reason = "limited",
-                       key.reset_time = ?key_state.reset_time,
-                       "Skipped key in group"
-                    );
                 }
+                // Key is limited, log why it was skipped
+                debug!(
+                    api_key.preview = %key_preview,
+                    group.name = %group_name,
+                    key.index_in_group = current_key_idx_in_group,
+                    reason = "limited",
+                    key.reset_time = ?key_state.reset_time,
+                    "Skipped key in group"
+                );
             } // End inner loop (keys in group)
              debug!(group.index = current_group_idx, group.name = %group_name, "No available key found in this group during this pass.");
         } // End outer loop (groups)
@@ -311,6 +296,15 @@ impl KeyManager {
         None
     }
 
+    /// Marks a key as rate-limited.
+    ///
+    /// This function updates the in-memory state of a key to indicate it has hit a rate limit.
+    /// The state is then persisted to a file asynchronously.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if it fails to calculate the next midnight time in the target timezone.
+    /// This would indicate a critical logic error in the `chrono` or `chrono-tz` libraries.
     #[tracing::instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %Self::preview(api_key)))]
     pub async fn mark_key_as_limited(&self, api_key: &str) {
         let key_preview = Self::preview(api_key); // Keep for simpler access within scope
@@ -325,14 +319,14 @@ impl KeyManager {
                  if let Some(found_key_info) = self.grouped_keys.iter()
                      .flat_map(|(_, keys)| keys.iter())
                      .find(|k| k.key == api_key) {
-                    group_name_for_log = found_key_info.group_name.clone();
+                    group_name_for_log.clone_from(&found_key_info.group_name);
                  }
 
                 let now_utc = Utc::now();
                 let mut state_changed = false;
 
                 // Check if the limit had actually expired before we got the write lock
-                let had_expired = key_state.is_limited && key_state.reset_time.map_or(false, |rt| now_utc >= rt);
+                let had_expired = key_state.is_limited && key_state.reset_time.is_some_and(|rt| now_utc >= rt);
                 if had_expired {
                     info!(group.name=%group_name_for_log, "Resetting previously expired limit before marking again.");
                     // Explicitly reset the state if it had expired
@@ -340,8 +334,6 @@ impl KeyManager {
                     key_state.reset_time = None;
                     state_changed = true; // Mark as changed so save is triggered if needed
                 }
-
-                use crate::config::RateLimitBehavior;
 
                 // Mark as limited only if not already limited OR if it just expired and needs re-limiting
                 if !key_state.is_limited || had_expired {
@@ -461,7 +453,7 @@ impl KeyManager {
                     }
                 }
                 .instrument(save_span)
-                .await // Apply instrumentation here
+                .await; // Apply instrumentation here
             });
         }
     }
@@ -514,7 +506,7 @@ impl KeyManager {
             error!(error = %e, "Failed to serialize key states to JSON");
             std_io::Error::new(
                 std_io::ErrorKind::InvalidData,
-                format!("Failed to serialize key states: {}", e),
+                format!("Failed to serialize key states: {e}"),
             )
         })?;
 
@@ -659,7 +651,7 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
 async fn find_latest_temp_file(dir: &Path, base_filename: &str) -> Option<PathBuf> {
     let mut latest_mod_time: Option<std::time::SystemTime> = None;
     let mut latest_temp_file: Option<PathBuf> = None;
-    let temp_prefix = format!(".{}.", base_filename);
+    let temp_prefix = format!(".{base_filename}.");
     let temp_suffix = ".tmp";
     debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %dir.display(), "Searching for latest temporary file");
 
@@ -672,7 +664,7 @@ async fn find_latest_temp_file(dir: &Path, base_filename: &str) -> Option<PathBu
                         debug!(temp_file.path = %path.display(), "Found potential temporary file");
                         if let Ok(metadata) = entry.metadata().await {
                             if let Ok(modified) = metadata.modified() {
-                                if latest_mod_time.map_or(true, |latest| modified > latest) {
+                                if latest_mod_time.is_none() || modified > latest_mod_time.unwrap() {
                                     debug!(temp_file.path = %path.display(), ?modified, "Updating latest temporary file");
                                     latest_mod_time = Some(modified);
                                     latest_temp_file = Some(path.clone());
@@ -702,7 +694,7 @@ async fn find_latest_temp_file(dir: &Path, base_filename: &str) -> Option<PathBu
 /// Cleans up all temporary state files matching the pattern in a directory.
 #[tracing::instrument(level = "debug", skip(dir, base_filename))]
 async fn cleanup_temp_files(dir: &Path, base_filename: &str) {
-    let temp_prefix = format!(".{}.", base_filename);
+    let temp_prefix = format!(".{base_filename}.");
     let temp_suffix = ".tmp";
     debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %dir.display(), "Cleaning up temporary files");
     let mut cleaned_count = 0;
@@ -748,7 +740,7 @@ mod tests {
                 port: 8080,
             },
             groups,
-            rate_limit_behavior: crate::config::RateLimitBehavior::default(), // Add the new field with default
+            rate_limit_behavior: RateLimitBehavior::default(), // Add the new field with default
         }
     }
 

@@ -2,7 +2,8 @@
 /target
 
 # Rust lock file
-Cargo.lock
+# Cargo.lock should be checked into version control for applications
+# to ensure reproducible builds. For libraries, it should be ignored.
 
 # Runtime state file
 key_states.json
@@ -20,10 +21,6 @@ config.yaml
 *.swp
 *~
 
-
-# Project artifacts and internal tooling state
-/project_artifacts/
+# Kilocode internal state
+# This should be ignored to avoid committing user-specific IDE state.
 /.kilocode/
-/.roo/
-/memory-bank/
-ИСПРАВЛЕНИЯ.md

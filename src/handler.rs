@@ -21,7 +21,7 @@ pub async fn health_check() -> StatusCode {
 }
 
 /// The main Axum handler function that processes incoming requests.
-/// This function is instrumented by the trace_requests middleware.
+/// This function is instrumented by the `trace_requests` middleware.
 /// # Arguments
 ///
 /// * `State(state)`: The shared application state (`Arc<AppState>`).
@@ -30,6 +30,22 @@ pub async fn health_check() -> StatusCode {
 /// # Returns
 ///
 /// Returns a `Result<Response, AppError>` which Axum converts into an HTTP response.
+/// Handles incoming proxy requests, forwarding them to the appropriate upstream service
+/// using a rotated API key.
+///
+/// This function is instrumented by the `trace_requests` middleware.
+///
+/// # Arguments
+/// * `state` - Shared application state containing `KeyManager` and HTTP clients.
+/// * `req` - The incoming HTTP request from the client.
+///
+/// # Errors
+/// Returns an `AppError` if:
+/// - The request body cannot be read.
+/// - No API keys are available.
+/// - An error occurs during forwarding the request to the upstream service.
+/// - The upstream service returns an error.
+/// - The response body from the upstream service cannot be processed.
 pub async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     req: Request, // Request is consumed here to extract parts
@@ -48,10 +64,7 @@ pub async fn proxy_handler(
         Err(e) => {
             // Log with structured error field
             error!(error = ?e, error.source = %e, "Failed to buffer request body");
-            return Err(AppError::RequestBodyError(format!(
-                "Failed to read request body: {}",
-                e
-            )));
+            return Err(AppError::RequestBodyError(format!("Failed to read request body: {e}")));
         }
     };
 
@@ -66,29 +79,26 @@ pub async fn proxy_handler(
         );
 
         // 1. Get the next available key info
-        let key_info = match state.key_manager.get_next_available_key_info().await {
-            Some(ki) => ki,
-            None => {
-                // Log with structured field indicating cause
-                warn!(
-                    cause = "no_available_keys",
-                    attempts = attempt_count,
-                    last_429_present = last_429_response.is_some(),
-                    "No available API keys remaining after retries."
-                );
-                // If we previously got a 429, return that. Otherwise, return NoAvailableKeys.
-                return match last_429_response {
-                    Some(response) => {
-                        info!(
-                            status = response.status().as_u16(),
-                            attempts = attempt_count,
-                            "Exhausted all keys, returning last 429 response."
-                        );
-                        Ok(response)
-                    }
-                    None => Err(AppError::NoAvailableKeys),
-                };
-            }
+        let Some(key_info) = state.key_manager.get_next_available_key_info().await else {
+            // Log with structured field indicating cause
+            warn!(
+                cause = "no_available_keys",
+                attempts = attempt_count,
+                last_429_present = last_429_response.is_some(),
+                "No available API keys remaining after retries."
+            );
+            // If we previously got a 429, return that. Otherwise, return NoAvailableKeys.
+            return last_429_response.map_or_else(
+                || Err(AppError::NoAvailableKeys),
+                |response| {
+                    info!(
+                        status = response.status().as_u16(),
+                        attempts = attempt_count,
+                        "Exhausted all keys, returning last 429 response."
+                    );
+                    Ok(response)
+                },
+            );
         };
 
         let key_preview = format!("{}...", key_info.key.chars().take(4).collect::<String>());
@@ -114,38 +124,9 @@ pub async fn proxy_handler(
         )
         .await;
 
-        // 3. Handle the result from forward_request
-        match forward_result {
-            Ok(response) => {
-                let response_status = response.status();
-                // Check for rate limit response *after* successful forwarding
-                if response_status == StatusCode::TOO_MANY_REQUESTS {
-                    warn!(
-                        attempt = attempt_count,
-                        status = response_status.as_u16(), // Use u16 for status
-                        api_key.preview=%key_preview,
-                        group.name=%group_name,
-                        "Target API returned 429. Marking key as limited and retrying."
-                    );
-                    // Mark the key as limited using the cloned key string
-                    state
-                        .key_manager
-                        .mark_key_as_limited(&api_key_to_mark)
-                        .await;
-                    last_429_response = Some(response); // Store the 429 response
-                    continue; // Try the next key
-                } else {
-                    // Success or other non-429 status
-                    info!(
-                        attempt = attempt_count,
-                        status = response_status.as_u16(),
-                        api_key.preview=%key_preview,
-                        group.name=%group_name,
-                        "Sending successful response to client"
-                    );
-                    return Ok(response); // Return the successful response
-                }
-            }
+        // 3. Handle the result from forward_request, returning early on transport errors
+        let response = match forward_result {
+            Ok(response) => response,
             Err(err) => {
                 // Log the error originating from the proxy module or earlier steps
                 error!(
@@ -158,6 +139,35 @@ pub async fn proxy_handler(
                 // Don't retry on other errors (like Bad Gateway, connection refused etc.)
                 return Err(err); // Propagate the error
             }
+        };
+
+        // 4. Handle the response status: retry on 429, return on others
+        let response_status = response.status();
+        if response_status == StatusCode::TOO_MANY_REQUESTS {
+            warn!(
+                attempt = attempt_count,
+                status = response_status.as_u16(), // Use u16 for status
+                api_key.preview=%key_preview,
+                group.name=%group_name,
+                "Target API returned 429. Marking key as limited and retrying."
+            );
+            // Mark the key as limited using the cloned key string
+            state
+                .key_manager
+                .mark_key_as_limited(&api_key_to_mark)
+                .await;
+            last_429_response = Some(response); // Store the 429 response
+            continue; // Try the next key
         }
+
+        // 5. Success: any other status code is considered a successful proxy event
+        info!(
+            attempt = attempt_count,
+            status = response_status.as_u16(),
+            api_key.preview=%key_preview,
+            group.name=%group_name,
+            "Sending successful response to client"
+        );
+        return Ok(response); // Return the successful response
     } // end loop
 }

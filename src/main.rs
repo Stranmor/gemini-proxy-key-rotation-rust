@@ -34,6 +34,8 @@ struct CliArgs {
 // Middleware to add Request ID and trace requests
 // Note: Changed signature to accept Request<Body> and return AxumResponse directly
 // This simplifies the middleware implementation and error handling.
+/// # Panics
+/// This function does not panic.
 async fn trace_requests(
     req: AxumRequest<Body>, // Accepts Request<Body> directly
     next: Next,             // Next no longer needs <B>
@@ -71,6 +73,14 @@ async fn trace_requests(
     response // Return the response directly
 }
 
+/// # Panics
+///
+/// This function will panic if:
+/// - It fails to install the Ctrl+C or terminate signal handlers.
+/// - Configuration loading or validation fails.
+/// - The application state (e.g., HTTP clients) cannot be initialized.
+/// - The server fails to bind to the specified address.
+/// - The server run loop encounters a fatal error.
 #[tokio::main]
 async fn main() {
     // --- Initialize Tracing (JSON format) ---
