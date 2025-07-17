@@ -122,7 +122,6 @@ async fn main() {
          config.groups.count = app_config.groups.len(),
          config.groups.names = ?group_names, // Log group names
          config.total_keys = total_keys,
-         server.host = %app_config.server.host,
          server.port = app_config.server.port,
          "Configuration loaded and validated successfully."
     );
@@ -149,19 +148,7 @@ async fn main() {
         .layer(middleware::from_fn(trace_requests))
         .with_state(app_state);
 
-    let addr_str = format!("{}:{}", app_config.server.host, app_config.server.port);
-    let addr: SocketAddr = match addr_str.parse() {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!(
-                server.address = %addr_str,
-                error = ?e,
-                "Invalid server address derived from configuration. Exiting."
-            );
-            process::exit(1);
-        }
-    };
-
+    let addr = SocketAddr::from(([0, 0, 0, 0], app_config.server.port));
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => {
             // Log with structured address field
