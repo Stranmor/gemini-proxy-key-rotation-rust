@@ -89,7 +89,7 @@ pub async fn proxy_handler(
     }
     info!("Cache miss. Proceeding to forward request.");
 
-    let mut last_error: Option<(StatusCode, axum::http::HeaderMap, axum::body::Bytes)> = None;
+    let mut last_error: Option<Response> = None;
     let mut attempt_count = 0;
 
     loop {
@@ -102,12 +102,7 @@ pub async fn proxy_handler(
                 attempts = attempt_count,
                 "No available API keys remaining after retries."
             );
-            return if let Some((status, headers, body)) = last_error {
-                let mut response = Response::builder()
-                    .status(status)
-                    .body(axum::body::Body::from(body))
-                    .unwrap();
-                *response.headers_mut() = headers;
+            return if let Some(response) = last_error {
                 Ok(response)
             } else {
                 Err(AppError::NoAvailableKeys)
@@ -202,10 +197,7 @@ pub async fn proxy_handler(
                         .key_manager
                         .mark_key_as_invalid(&api_key_to_mark)
                         .await;
-                    // Buffer the body before storing the response
-                    let (parts, body) = response.into_parts();
-                    let error_body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|e| AppError::RequestBodyError(format!("Failed to buffer error response body: {e}")))?;
-                    last_error = Some((parts.status, parts.headers, error_body_bytes));
+                    last_error = Some(response);
                     break; // Break internal loop to get next key
                 }
                 // --- Rate Limit Error (429) ---
@@ -218,10 +210,7 @@ pub async fn proxy_handler(
                         .key_manager
                         .mark_key_as_limited(&api_key_to_mark)
                         .await;
-                    // Buffer the body before storing the response
-                    let (parts, body) = response.into_parts();
-                    let error_body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|e| AppError::RequestBodyError(format!("Failed to buffer error response body: {e}")))?;
-                    last_error = Some((parts.status, parts.headers, error_body_bytes));
+                    last_error = Some(response);
                     break; // Break internal loop to get next key
                 }
                 // --- Retriable Server Errors (500, 503) ---
@@ -241,10 +230,7 @@ pub async fn proxy_handler(
                                 ChronoDuration::minutes(5),
                             )
                             .await;
-                        // Buffer the body before storing the response
-                        let (parts, body) = response.into_parts();
-                        let error_body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|e| AppError::RequestBodyError(format!("Failed to buffer error response body: {e}")))?;
-                        last_error = Some((parts.status, parts.headers, error_body_bytes));
+                        last_error = Some(response);
                         break; // Break internal loop to get next key
                     }
                     sleep(Duration::from_secs(1)).await; // Wait before internal retry
