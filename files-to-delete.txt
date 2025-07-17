@@ -1,0 +1,5 @@
+project_artifacts
+.kilocode
+.roo
+memory-bank
+ИСПРАВЛЕНИЯ.md

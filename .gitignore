@@ -20,3 +20,10 @@ config.yaml
 *.swp
 *~
 
+
+# Project artifacts and internal tooling state
+/project_artifacts/
+/.kilocode/
+/.roo/
+/memory-bank/
+ИСПРАВЛЕНИЯ.md

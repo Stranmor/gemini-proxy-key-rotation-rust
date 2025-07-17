@@ -1,0 +1,444 @@
+openapi: 3.0.0
+info:
+  title: Gemini Proxy API
+  description: |
+    A high-performance proxy for Google Gemini API with key rotation, caching, and monitoring.
+    
+    This proxy provides OpenAI-compatible endpoints that forward requests to Google's Gemini API
+    while managing multiple API keys, implementing intelligent retry logic, and providing
+    comprehensive monitoring and caching capabilities.
+  version: 1.0.0
+  contact:
+    name: Gemini Proxy Support
+    url: https://github.com/stranmor/gemini-proxy-key-rotation-rust
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://your-proxy-domain.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Basic health check
+      description: Returns the health status of the proxy service
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "OK"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: Returns metrics in Prometheus format for monitoring
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Metrics data
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP gemini_proxy_requests_total Total number of requests
+                  # TYPE gemini_proxy_requests_total counter
+                  gemini_proxy_requests_total 1234
+
+  /v1/chat/completions:
+    post:
+      summary: Create chat completion
+      description: |
+        Creates a chat completion using Google Gemini models through OpenAI-compatible interface.
+        The proxy will automatically select an available API key and handle retries.
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              simple_chat:
+                summary: Simple chat completion
+                value:
+                  model: "gemini-1.5-flash-latest"
+                  messages:
+                    - role: "user"
+                      content: "Hello, how are you?"
+                  temperature: 0.7
+      responses:
+        '200':
+          description: Successful completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/models:
+    get:
+      summary: List available models
+      description: Returns a list of available Gemini models
+      operationId: listModels
+      responses:
+        '200':
+          description: List of available models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+
+  /admin/health:
+    get:
+      summary: Detailed health check
+      description: Returns comprehensive health and status information
+      operationId: detailedHealth
+      responses:
+        '200':
+          description: Detailed health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailedHealthStatus'
+
+  /admin/keys:
+    get:
+      summary: List API keys
+      description: Returns information about configured API keys
+      operationId: listKeys
+      parameters:
+        - name: group
+          in: query
+          description: Filter by group name
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filter by key status
+          schema:
+            type: string
+            enum: [active, limited, quarantined]
+      responses:
+        '200':
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/KeyInfo'
+
+  /admin/cache:
+    get:
+      summary: Get cache statistics
+      description: Returns current cache statistics
+      operationId: getCacheStats
+      responses:
+        '200':
+          description: Cache statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheStats'
+    delete:
+      summary: Clear cache
+      description: Clears all cached responses
+      operationId: clearCache
+      responses:
+        '200':
+          description: Cache cleared successfully
+
+  /admin/metrics:
+    get:
+      summary: Get metrics summary
+      description: Returns a summary of key metrics
+      operationId: getMetricsSummary
+      responses:
+        '200':
+          description: Metrics summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSummary'
+
+components:
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: The Gemini model to use
+          example: "gemini-1.5-flash-latest"
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 1
+          description: Sampling temperature
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum number of tokens to generate
+        stream:
+          type: boolean
+          default: false
+          description: Whether to stream the response
+
+    ChatMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant]
+        content:
+          type: string
+          description: The message content
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: "chat.completion"
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatChoice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    ChatChoice:
+      type: object
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/ChatMessage'
+        finish_reason:
+          type: string
+          enum: [stop, length, content_filter]
+
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    ModelList:
+      type: object
+      properties:
+        object:
+          type: string
+          example: "list"
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+
+    Model:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: "model"
+        created:
+          type: integer
+        owned_by:
+          type: string
+
+    DetailedHealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "healthy"
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+        server_info:
+          $ref: '#/components/schemas/ServerInfo'
+        key_status:
+          $ref: '#/components/schemas/KeyStatus'
+        cache_status:
+          $ref: '#/components/schemas/CacheStats'
+
+    ServerInfo:
+      type: object
+      properties:
+        host:
+          type: string
+        port:
+          type: integer
+        rust_version:
+          type: string
+
+    KeyStatus:
+      type: object
+      properties:
+        total_keys:
+          type: integer
+        active_keys:
+          type: integer
+        limited_keys:
+          type: integer
+        quarantined_keys:
+          type: integer
+
+    KeyInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        group_name:
+          type: string
+        key_preview:
+          type: string
+        status:
+          type: string
+          enum: [active, limited, quarantined]
+        last_used:
+          type: string
+          format: date-time
+          nullable: true
+        rate_limited_until:
+          type: string
+          format: date-time
+          nullable: true
+        quarantined_until:
+          type: string
+          format: date-time
+          nullable: true
+
+    CacheStats:
+      type: object
+      properties:
+        total_entries:
+          type: integer
+        expired_entries:
+          type: integer
+        active_entries:
+          type: integer
+        max_size:
+          type: integer
+        default_ttl_seconds:
+          type: integer
+
+    MetricsSummary:
+      type: object
+      properties:
+        total_requests:
+          type: integer
+        total_retries:
+          type: integer
+        total_cache_hits:
+          type: integer
+        total_cache_misses:
+          type: integer
+        cache_hit_rate:
+          type: number
+        active_keys:
+          type: integer
+        limited_keys:
+          type: integer
+        quarantined_keys:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            type:
+              type: string
+            message:
+              type: string
+            details:
+              type: string
+              nullable: true
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              type: "REQUEST_BODY_ERROR"
+              message: "Failed to process request body"
+
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              type: "UPSTREAM_SERVICE_ERROR"
+              message: "Upstream service returned an error"
+
+    ServiceUnavailable:
+      description: Service unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              type: "NO_AVAILABLE_KEYS"
+              message: "No available API keys to process the request at this time"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Any non-empty bearer token. The proxy ignores the actual token value
+        and manages authentication with Google Gemini API internally.
+
+security:
+  - BearerAuth: []

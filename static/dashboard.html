@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Proxy Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 0.5rem;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .metric:last-child {
+            border-bottom: none;
+        }
+        
+        .metric-label {
+            font-weight: 500;
+        }
+        
+        .metric-value {
+            font-weight: 600;
+            color: #27ae60;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        
+        .status-healthy { background: #27ae60; }
+        .status-warning { background: #f39c12; }
+        .status-error { background: #e74c3c; }
+        
+        .key-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .key-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            margin: 0.5rem 0;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border-left: 4px solid #3498db;
+        }
+        
+        .key-item.limited {
+            border-left-color: #f39c12;
+        }
+        
+        .key-item.quarantined {
+            border-left-color: #e74c3c;
+        }
+        
+        .key-preview {
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+        
+        .key-status {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-active {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-limited {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status-quarantined {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .refresh-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            background: #2980b9;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+        
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 Gemini Proxy Dashboard</h1>
+    </div>
+    
+    <div class="container">
+        <div class="grid">
+            <div class="card">
+                <h2>System Status</h2>
+                <div id="system-status" class="loading">Loading...</div>
+            </div>
+            
+            <!-- SYSINFO_PLACEHOLDER -->
+
+            <div class="card">
+                <h2>Request Metrics</h2>
+                <div id="request-metrics" class="loading">Loading...</div>
+            </div>
+            
+            <div class="card">
+                <h2>Cache Statistics</h2>
+                <div id="cache-stats" class="loading">Loading...</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>API Keys Status</h2>
+            <button class="refresh-btn" onclick="refreshData()">Refresh</button>
+            <div id="keys-status" class="loading">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        let refreshInterval;
+        
+        async function fetchData(endpoint) {
+            try {
+                const response = await fetch(endpoint);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return await response.json();
+            } catch (error) {
+                console.error(`Failed to fetch ${endpoint}:`, error);
+                throw error;
+            }
+        }
+        
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            
+            if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+            if (hours > 0) return `${hours}h ${minutes}m`;
+            return `${minutes}m`;
+        }
+        
+        function renderSystemStatus(data) {
+            const container = document.getElementById('system-status');
+            const statusClass = data.status === 'healthy' ? 'status-healthy' : 'status-error';
+            
+            container.innerHTML = `
+                <div class="metric">
+                    <span class="metric-label">
+                        <span class="status-indicator ${statusClass}"></span>
+                        Status
+                    </span>
+                    <span class="metric-value">${data.status}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Uptime</span>
+                    <span class="metric-value">${formatUptime(data.uptime_seconds)}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Version</span>
+                    <span class="metric-value">${data.version}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Server</span>
+                    <span class="metric-value">${data.server_info.host}:${data.server_info.port}</span>
+                </div>
+            `;
+        }
+        
+        function renderRequestMetrics(data) {
+            const container = document.getElementById('request-metrics');
+            const keyStatus = data.key_status;
+            
+            container.innerHTML = `
+                <div class="metric">
+                    <span class="metric-label">Total Keys</span>
+                    <span class="metric-value">${keyStatus.total_keys}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Active Keys</span>
+                    <span class="metric-value">${keyStatus.active_keys}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Limited Keys</span>
+                    <span class="metric-value">${keyStatus.limited_keys}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Quarantined Keys</span>
+                    <span class="metric-value">${keyStatus.quarantined_keys}</span>
+                </div>
+            `;
+        }
+        
+        function renderCacheStats(data) {
+            const container = document.getElementById('cache-stats');
+            const cache = data.cache_status;
+            const hitRate = cache.total_entries > 0 ? 
+                ((cache.active_entries / cache.total_entries) * 100).toFixed(1) : 0;
+            
+            container.innerHTML = `
+                <div class="metric">
+                    <span class="metric-label">Total Entries</span>
+                    <span class="metric-value">${cache.total_entries}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Active Entries</span>
+                    <span class="metric-value">${cache.active_entries}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Hit Rate</span>
+                    <span class="metric-value">${hitRate}%</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Max Size</span>
+                    <span class="metric-value">${cache.max_size}</span>
+                </div>
+            `;
+        }
+        
+        async function renderKeysStatus() {
+            const container = document.getElementById('keys-status');
+            
+            try {
+                const keys = await fetchData('/admin/keys');
+                
+                if (keys.length === 0) {
+                    container.innerHTML = '<div class="loading">No API keys found</div>';
+                    return;
+                }
+                
+                const keysByGroup = keys.reduce((acc, key) => {
+                    if (!acc[key.group_name]) acc[key.group_name] = [];
+                    acc[key.group_name].push(key);
+                    return acc;
+                }, {});
+                
+                let html = '<div class="key-list">';
+                
+                for (const [groupName, groupKeys] of Object.entries(keysByGroup)) {
+                    html += `<h3 style="margin: 1rem 0 0.5rem 0; color: #2c3e50;">Group: ${groupName}</h3>`;
+                    
+                    groupKeys.forEach(key => {
+                        const statusClass = key.status === 'active' ? 'status-active' : 
+                                          key.status === 'limited' ? 'status-limited' : 'status-quarantined';
+                        
+                        html += `
+                            <div class="key-item ${key.status}">
+                                <div>
+                                    <div class="key-preview">${key.key_preview}</div>
+                                    <small style="color: #666;">ID: ${key.id}</small>
+                                </div>
+                                <div class="key-status ${statusClass}">${key.status}</div>
+                            </div>
+                        `;
+                    });
+                }
+                
+                html += '</div>';
+                container.innerHTML = html;
+                
+            } catch (error) {
+                container.innerHTML = `<div class="error">Failed to load keys: ${error.message}</div>`;
+            }
+        }
+        
+        async function refreshData() {
+            try {
+                const healthData = await fetchData('/admin/health');
+                renderSystemStatus(healthData);
+                renderRequestMetrics(healthData);
+                renderCacheStats(healthData);
+                await renderKeysStatus();
+            } catch (error) {
+                console.error('Failed to refresh data:', error);
+                document.querySelectorAll('.loading').forEach(el => {
+                    el.innerHTML = `<div class="error">Failed to load data: ${error.message}</div>`;
+                });
+            }
+        }
+        
+        // Initial load
+        refreshData();
+        
+        // Auto-refresh every 30 seconds
+        refreshInterval = setInterval(refreshData, 30000);
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) clearInterval(refreshInterval);
+        });
+    </script>
+</body>
+</html>
