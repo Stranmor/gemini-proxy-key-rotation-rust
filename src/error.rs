@@ -573,7 +573,7 @@ mod tests {
             AppError::Reqwest(e),
             StatusCode::BAD_GATEWAY,
             "UPSTREAM_ERROR",
-            "Internal error setting up upstream request",
+            "Could not connect to upstream service",
             true,
         )
         .await;

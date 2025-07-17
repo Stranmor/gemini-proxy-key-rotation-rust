@@ -562,7 +562,7 @@ impl KeyManager {
 
         let base_filename = final_path.file_name().unwrap_or_default().to_string_lossy();
         let temp_filename = format!(".{}.{}.tmp", base_filename, Uuid::new_v4());
-        let temp_path = Path::new("/tmp").join(&temp_filename);
+        let temp_path = parent_dir.join(&temp_filename);
         let temp_path_display = temp_path.display().to_string(); // Capture for logs
 
         // Serialize JSON
@@ -641,7 +641,7 @@ impl KeyManager {
 #[tracing::instrument(level = "info", skip(path), fields(key_state.path = %path.display()))]
 async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
     let base_filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let _parent_dir = path.parent().unwrap_or_else(|| Path::new(".")); // Keep for context, but mark as unused for now
+    let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let path_display = path.display().to_string(); // Capture display string
 
     let mut recovered_from_temp = false;
@@ -650,7 +650,7 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
     match async_fs::read_to_string(path).await {
         Ok(json_data) => {
             // Attempt to clean up any old temp files on successful load
-            cleanup_temp_files(&base_filename).await;
+            cleanup_temp_files(parent_dir, &base_filename).await;
             match serde_json::from_str::<HashMap<String, KeyState>>(&json_data) {
                 Ok(states) => {
                     info!(state.count = states.len(), "Successfully loaded key states");
@@ -672,7 +672,7 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
     }
 
     // Attempt recovery from temp file if main file failed or not found
-    if let Some(temp_path) = find_latest_temp_file(&base_filename).await {
+    if let Some(temp_path) = find_latest_temp_file(parent_dir, &base_filename).await {
         let temp_path_display = temp_path.display().to_string(); // Capture display string
         warn!(temp_file.path = %temp_path_display, "Attempting recovery from temporary state file.");
         match async_fs::read_to_string(&temp_path).await {
@@ -680,29 +680,29 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
                 match serde_json::from_str::<HashMap<String, KeyState>>(&temp_json_data) {
                     Ok(states) => {
                         info!(state.count = states.len(), temp_file.path = %temp_path_display, "Successfully recovered key states from temporary file");
-                        // Attempt to rename recovered file to main path
-                        if let Err(rename_err) = std_fs::rename(&temp_path, path) {
+                        // Attempt to copy recovered file to main path
+                        if let Err(copy_err) = async_fs::copy(&temp_path, path).await {
                             error!(
                                 temp_file.path = %temp_path_display,
                                 final_file.path = %path_display,
-                                error = ?rename_err,
+                                error = ?copy_err,
                                 "Failed to copy recovered temp state file to main path. State recovered in memory, but file system may be inconsistent."
                             );
-                       } else {
-                           info!(final_file.path = %path_display, "Successfully copied recovered temp state file to main path.");
+                        } else {
+                            info!(final_file.path = %path_display, "Successfully copied recovered temp state file to main path.");
                             if let Err(rm_err) = async_fs::remove_file(&temp_path).await {
-                               warn!(temp_file.path = %temp_path_display, error = ?rm_err, "Failed to remove temporary file after successful recovery.");
-                           }
-                           // Clean up potentially other old temp files after successful copy
-                           cleanup_temp_files(&base_filename).await;
-                       }
+                                warn!(temp_file.path = %temp_path_display, error = ?rm_err, "Failed to remove temporary file after successful recovery.");
+                            }
+                            // Clean up potentially other old temp files after successful copy
+                            cleanup_temp_files(parent_dir, &base_filename).await;
+                        }
                         recovered_from_temp = true;
                         recovered_states = states; // Store recovered states
                     }
                     Err(parse_e) => {
                         error!(temp_file.path = %temp_path_display, error = %parse_e, "Failed to parse temporary key state file (JSON invalid). Recovery failed.");
                         // Attempt to remove corrupt temp file
-                        if let Err(rm_err) = std_fs::remove_file(&temp_path) {
+                        if let Err(rm_err) = async_fs::remove_file(&temp_path).await {
                             warn!(temp_file.path = %temp_path_display, error = ?rm_err, "Failed to remove corrupt temporary file after parse failure");
                         }
                         recovered_states = HashMap::new(); // Ensure empty map on parse failure
@@ -712,7 +712,7 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
             Err(read_e) => {
                 error!(temp_file.path = %temp_path_display, error = %read_e, "Failed to read temporary key state file. Recovery failed.");
                 // Attempt to remove unreadable temp file
-                if let Err(rm_err) = std_fs::remove_file(&temp_path) {
+                if let Err(rm_err) = async_fs::remove_file(&temp_path).await {
                     warn!(temp_file.path = %temp_path_display, error = ?rm_err, "Failed to remove unreadable temporary file");
                 }
                 recovered_states = HashMap::new(); // Ensure empty map on read failure
@@ -732,13 +732,12 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
 }
 
 /// Finds the most recently modified temporary state file matching the pattern.
-#[tracing::instrument(level = "debug", skip(base_filename))]
-async fn find_latest_temp_file(base_filename: &str) -> Option<PathBuf> {
+#[tracing::instrument(level = "debug", skip(temp_dir, base_filename))]
+async fn find_latest_temp_file(temp_dir: &Path, base_filename: &str) -> Option<PathBuf> {
     let mut latest_mod_time: Option<std::time::SystemTime> = None;
     let mut latest_temp_file: Option<PathBuf> = None;
     let temp_prefix = format!(".{base_filename}.");
     let temp_suffix = ".tmp";
-    let temp_dir = Path::new("/tmp");
     debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %temp_dir.display(), "Searching for latest temporary file");
 
     if let Ok(mut read_dir) = async_fs::read_dir(temp_dir).await {
@@ -778,11 +777,10 @@ async fn find_latest_temp_file(base_filename: &str) -> Option<PathBuf> {
 }
 
 /// Cleans up all temporary state files matching the pattern in a directory.
-#[tracing::instrument(level = "debug", skip(base_filename))]
-async fn cleanup_temp_files(base_filename: &str) {
+#[tracing::instrument(level = "debug", skip(temp_dir, base_filename))]
+async fn cleanup_temp_files(temp_dir: &Path, base_filename: &str) {
     let temp_prefix = format!(".{base_filename}.");
     let temp_suffix = ".tmp";
-    let temp_dir = Path::new("/tmp");
 
     debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %temp_dir.display(), "Cleaning up temporary files");
     let mut cleaned_count = 0;
