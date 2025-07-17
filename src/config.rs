@@ -1,25 +1,14 @@
 // src/config.rs
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashMap, HashSet},
-    env, fs, io,
-    path::Path,
-};
+use std::{collections::HashSet, fs, io, path::Path};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
 use crate::error::{AppError, Result};
 
-// --- Constants ---
-
-const ENV_VAR_PREFIX: &str = "GEMINI_PROXY_GROUP_";
-const API_KEYS_SUFFIX: &str = "_API_KEYS";
-const PROXY_URL_SUFFIX: &str = "_PROXY_URL";
-const TARGET_URL_SUFFIX: &str = "_TARGET_URL";
-
 // --- Data Structures ---
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyGroup {
     pub name: String,
@@ -29,6 +18,8 @@ pub struct KeyGroup {
     pub proxy_url: Option<String>,
     #[serde(default = "default_target_url")]
     pub target_url: String,
+    #[serde(default)]
+    pub top_p: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default, Serialize)]
@@ -39,7 +30,7 @@ pub enum RateLimitBehavior {
     RetryNextKey,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Default, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
@@ -50,26 +41,17 @@ pub struct AppConfig {
     pub rate_limit_behavior: RateLimitBehavior,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    #[serde(default = "default_server_host")]
-    pub host: String,
     #[serde(default = "default_server_port")]
     pub port: u16,
     #[serde(default = "default_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
     #[serde(default = "default_cache_max_size")]
     pub cache_max_size: usize,
-}
-
-#[derive(Default, Debug)]
-struct EnvGroupData {
-    // Store the first original casing encountered for this group name
-    original_name: Option<String>, // Keep this to ensure final KeyGroup uses the *actual* name from env
-    api_keys: Option<Vec<String>>,
-    proxy_url: Option<String>, // Simplified: Some("url") or None
-    target_url: Option<String>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
 }
 
 // --- Default Implementations ---
@@ -77,15 +59,12 @@ struct EnvGroupData {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            host: default_server_host(),
             port: default_server_port(),
             cache_ttl_secs: default_cache_ttl_secs(),
             cache_max_size: default_cache_max_size(),
+            top_p: None,
         }
     }
-}
-fn default_server_host() -> String {
-    "0.0.0.0".to_string()
 }
 const fn default_server_port() -> u16 {
     8080
@@ -97,185 +76,29 @@ const fn default_cache_max_size() -> usize {
     1000 // Max 1000 entries
 }
 fn default_target_url() -> String {
-    "https://generativelanguage.googleapis.com".to_string()
+    "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
 }
 
 // --- Helper Functions ---
 
-fn extract_original_group_name_segment<'a>(env_key: &'a str, suffix: &'a str) -> Option<&'a str> {
-    env_key
-        .strip_prefix(ENV_VAR_PREFIX)?
-        .strip_suffix(suffix)
-}
-#[tracing::instrument(level = "trace", fields(value.len = value.len()))]
-fn parse_api_keys(value: &str) -> Vec<String> {
-    value
-        .trim()
-        .split(',')
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .collect()
-}
-#[tracing::instrument(level = "trace", fields(value.len = value.len()))]
-fn parse_proxy_url(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-#[tracing::instrument(level = "trace", fields(value.len = value.len()))]
-fn parse_target_url(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
 fn clean_target_url(url_str: &str) -> String {
     url_str.strip_suffix('/').unwrap_or(url_str).to_string()
 }
 
-// --- Configuration Loading Logic ---
-
-#[tracing::instrument(level = "debug", skip(path), fields(config.path = %path.display()))]
-fn load_yaml_defaults(path: &Path) -> Result<ServerConfig> {
-    #[derive(Deserialize)]
-    struct Cfg {
-        #[serde(default)]
-        server: ServerConfig,
-    }
-
-    let path_str = path.display().to_string();
-    match fs::read_to_string(path) {
-        Ok(contents) => {
-            if contents.trim().is_empty() {
-                warn!(src = "yaml", "Empty file");
-                return Ok(ServerConfig::default());
-            }
-
-            match serde_yaml::from_str::<Cfg>(&contents) {
-                Ok(cfg) => Ok(cfg.server),
-                Err(e) => {
-                    warn!(src = "yaml", e = %e, "Parse error");
-                    Ok(ServerConfig::default())
-                }
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            warn!(src = "yaml", "Not found");
-            Ok(ServerConfig::default())
-        }
-        Err(e) => {
-            error!(src = "yaml", e = %e, "Read error");
-            Err(AppError::Io(io::Error::new(
-                e.kind(),
-                format!("Read error {path_str}: {e}"),
-            )))
-        }
-    }
-}
-
-/// Discovers group settings from environment variables. Keys are case-sensitive original group names.
-#[tracing::instrument(level = "debug")]
-fn discover_env_groups() -> HashMap<String, EnvGroupData> { // Returns map keyed by ORIGINAL name
-    let mut env_groups: HashMap<String, EnvGroupData> = HashMap::new();
-    debug!("Discovering ENV groups (case-sensitive keys)...");
-
-    for (env_key, value) in env::vars() {
-        if !env_key.starts_with(ENV_VAR_PREFIX) {
-            continue; // Skip unrelated env vars quickly
-        }
-        let process_suffix = |suffix: &str| -> Option<String> { // Return original name as String
-            extract_original_group_name_segment(&env_key, suffix).map(ToString::to_string)
-        };
-
-        if let Some(original_name) = process_suffix(API_KEYS_SUFFIX) {
-            if original_name.is_empty() { warn!(var=%env_key, "Skip group with empty name derived from ENV var"); continue; }
-            let keys = parse_api_keys(&value);
-            debug!(var=%env_key, group.original=%original_name, keys=keys.len(), "Discovered API keys");
-            // Use original_name (case-sensitive) as the key
-            let entry = env_groups.entry(original_name.clone()).or_default();
-            // Store the original_name within the data as well
-            if entry.original_name.is_none() { entry.original_name = Some(original_name); }
-            entry.api_keys = Some(keys);
-        } else if let Some(original_name) = process_suffix(PROXY_URL_SUFFIX) {
-             if original_name.is_empty() { warn!(var=%env_key, "Skip group with empty name derived from ENV var"); continue; }
-            let proxy = parse_proxy_url(&value);
-            debug!(var=%env_key, group.original=%original_name, proxy=?proxy, "Discovered Proxy URL");
-            let entry = env_groups.entry(original_name.clone()).or_default();
-            if entry.original_name.is_none() { entry.original_name = Some(original_name); }
-            entry.proxy_url = proxy;
-        } else if let Some(original_name) = process_suffix(TARGET_URL_SUFFIX) {
-             if original_name.is_empty() { warn!(var=%env_key, "Skip group with empty name derived from ENV var"); continue; }
-            if let Some(target) = parse_target_url(&value) {
-                debug!(var=%env_key, group.original=%original_name, target=%target, "Discovered Target URL");
-                let entry = env_groups.entry(original_name.clone()).or_default();
-                if entry.original_name.is_none() { entry.original_name = Some(original_name); }
-                entry.target_url = Some(target);
-            } else {
-                warn!(var=%env_key, group.original=%original_name, "Empty target URL ignored");
-            }
-        }
-    }
-
-    debug!(discovered_keys=?env_groups.keys().collect::<Vec<_>>(), "Finished ENV discovery (keys are original case)");
-    env_groups
-}
-
-/// Builds the final list of KeyGroups using data discovered from environment variables.
-/// Expects ORIGINAL names as keys in env_groups map.
-#[tracing::instrument(level = "debug", skip(env_groups))]
-fn build_final_groups(env_groups: HashMap<String, EnvGroupData>) -> Vec<KeyGroup> {
-    let mut final_groups: Vec<KeyGroup> = Vec::new();
-    debug!("Building final groups from case-sensitive map...");
-
-    for (original_group_name_key, data) in env_groups {
-        // Use the map key (which is the original_name) directly as the group name
-        let final_group_name = original_group_name_key; // No need for data.original_name here
-
-        match data.api_keys {
-            Some(api_keys) => {
-                if api_keys.is_empty() {
-                    warn!(group = %final_group_name, "Skipping group defined via ENV but with empty API_KEYS list.");
-                    continue;
-                }
-                info!(group = %final_group_name, keys = api_keys.len(), "Building group details");
-                let target =
-                    data.target_url
-                        .map_or_else(default_target_url, |u| clean_target_url(&u));
-
-                final_groups.push(KeyGroup {
-                    name: final_group_name, // Use the original case name from the key
-                    api_keys,
-                    proxy_url: data.proxy_url,
-                    target_url: target,
-                });
-            }
-            None => {
-                // Only warn if other settings were provided for this group name
-                if data.proxy_url.is_some() || data.target_url.is_some() {
-                    warn!(group = %final_group_name, "Orphaned proxy/target URL settings found via ENV for group without API_KEYS defined.");
-                }
-                // Otherwise, just skip silently
-            }
-        }
-    }
-
-    debug!(count = final_groups.len(), "Finished building groups");
-    final_groups
-}
-
 // --- Configuration Validation Functions ---
 fn validate_server_config(server: &ServerConfig) -> bool {
-    if server.host.trim().is_empty() || server.port == 0 {
-        error!(h = %server.host, p = server.port, e = "bad server");
-        false
-    } else {
-        true
+    let mut errors = 0;
+    if server.port == 0 {
+        error!(p = server.port, e = "bad server port");
+        errors += 1;
     }
+    if let Some(tp) = server.top_p {
+        if !(0.0..=1.0).contains(&tp) {
+            error!(err = "server top_p out of range", top_p = tp);
+            errors += 1;
+        }
+    }
+    errors == 0
 }
 fn validate_target_url(g: &str, url: &str) -> bool {
     match Url::parse(url) {
@@ -319,18 +142,19 @@ fn validate_proxy_url(g: &str, url: &str) -> bool {
 }
 
 #[tracing::instrument(level = "debug", skip(cfg, source), fields(cfg.source = %source))]
-fn validate_config(cfg: &AppConfig, source: &str) -> bool {
+fn validate_config(cfg: &mut AppConfig, source: &str) -> bool {
     let mut errors = 0;
     if !validate_server_config(&cfg.server) {
         errors += 1;
     }
+
     if cfg.groups.is_empty() {
         error!(source = source, err = "no_groups");
         errors += 1;
     } else {
         let mut names = HashSet::new();
         let mut keys_total = 0;
-        for group in &cfg.groups {
+        for group in &mut cfg.groups {
             let name = group.name.trim();
             if name.is_empty() {
                 // Check for empty name first
@@ -353,11 +177,21 @@ fn validate_config(cfg: &AppConfig, source: &str) -> bool {
                 warn!(group = %group.name, warn = "no_keys"); /* Group without keys is warned, but not instant error */
             }
             keys_total += group.api_keys.len();
+
+            // Clean the target URL in-place
+            group.target_url = clean_target_url(&group.target_url);
+
             if !validate_target_url(&group.name, &group.target_url) {
                 errors += 1;
             }
             if let Some(p) = &group.proxy_url {
                 if !validate_proxy_url(&group.name, p) {
+                    errors += 1;
+                }
+            }
+            if let Some(tp) = group.top_p {
+                if !(0.0..=1.0).contains(&tp) {
+                    error!(group = %group.name, err = "top_p_out_of_range", top_p = tp);
                     errors += 1;
                 }
             }
@@ -379,9 +213,7 @@ fn validate_config(cfg: &AppConfig, source: &str) -> bool {
 
 // --- Main Loading Function ---
 #[tracing::instrument(level = "info", skip(path), fields(config.path = %path.display()))]
-/// Loads the application configuration from a YAML file and environment variables.
-///
-/// Environment variables take precedence over YAML file settings.
+/// Loads the application configuration from a YAML file.
 ///
 /// # Arguments
 /// * `path` - The path to the configuration YAML file.
@@ -389,51 +221,65 @@ fn validate_config(cfg: &AppConfig, source: &str) -> bool {
 /// # Errors
 /// Returns an `AppError::Config` if:
 /// - The YAML file cannot be read or parsed.
-/// - Environment variables are malformed or conflict.
 /// - Validation of the final configuration fails.
 /// - Any I/O error occurs during file reading.
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     let path_str = path.display().to_string();
-    let server_config = load_yaml_defaults(path)?;
-    let env_groups = discover_env_groups(); // Now uses ORIGINAL keys
-    let discovered_count = env_groups.len(); // Get count before move
-    debug!(
-        discovered_env_group_count = discovered_count,
-        "Groups discovered from environment"
-    );
-    let final_groups = build_final_groups(env_groups); // Expects ORIGINAL keys
-    let built_count = final_groups.len(); // Get count before move
-    debug!(
-        built_group_count = built_count,
-        "Groups built before validation"
-    );
-    let final_config = AppConfig {
-        server: server_config,
-        groups: final_groups,
-        rate_limit_behavior: RateLimitBehavior::default(),
+    let contents = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            error!(src = "yaml", path = %path_str, "Config file not found.");
+            return Err(AppError::Config(format!(
+                "Config file not found: {path_str}"
+            )));
+        }
+        Err(e) => {
+            error!(src = "yaml", e = %e, "Read error");
+            return Err(AppError::Io(io::Error::new(
+                e.kind(),
+                format!("Read error {path_str}: {e}"),
+            )));
+        }
     };
-    if !validate_config(&final_config, &path_str) {
+
+    if contents.trim().is_empty() {
+        warn!(src = "yaml", "Config file is empty.");
+        return Err(AppError::Config(format!(
+            "Config file is empty: {path_str}"
+        )));
+    }
+
+    let mut config: AppConfig = match serde_yaml::from_str(&contents) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            error!(src = "yaml", e = %e, "Parse error");
+            return Err(AppError::Config(format!(
+                "Failed to parse config file {path_str}: {e}"
+            )));
+        }
+    };
+
+    if !validate_config(&mut config, &path_str) {
         error!(config.source = %path_str, "Validation failed.");
         return Err(AppError::Config("Validation failed".to_string()));
     }
-    // No need for redundant total_keys check here, validate_config handles it
+
     info!(
-        groups = final_config.groups.len(),
-        keys_total = final_config
+        groups = config.groups.len(),
+        keys_total = config
             .groups
             .iter()
             .map(|g| g.api_keys.len())
             .sum::<usize>(),
         "Config loaded OK."
     );
-    Ok(final_config)
+    Ok(config)
 }
 
 // --- Tests ---
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
     use std::fs::File;
     use std::io::Write;
     use std::path::PathBuf;
@@ -446,62 +292,6 @@ mod tests {
             .unwrap();
         p
     }
-    fn delete_file(p: &PathBuf) {
-        let _ = std::fs::remove_file(p);
-    }
-    fn set_env(k: &str, v: &str) {
-        std::env::set_var(k, v);
-    }
-    fn remove_env(k: &str) {
-        std::env::remove_var(k);
-    }
-    fn clean_env() {
-        debug!(
-            "Cleaning environment variables starting with '{}'",
-            ENV_VAR_PREFIX
-        );
-        let vars_to_remove: Vec<String> = std::env::vars()
-            .filter(|(k, _)| k.starts_with(ENV_VAR_PREFIX))
-            .map(|(k, _)| k)
-            .collect();
-        for k in vars_to_remove {
-            debug!(env_var = %k, "Removing environment variable");
-            std::env::remove_var(&k);
-        }
-        // Also remove the specific ones mentioned before, just in case they don't match the prefix exactly
-        // (though they should match based on current const definition)
-        remove_env("gemini_proxy_group_duplicate_api_keys"); // Example from previous code
-        remove_env("gemini_proxy_group_mixedcase_api_keys"); // Example from previous code
-    }
-    #[test]
-    fn test_extract_orig() {
-        assert_eq!(
-            extract_original_group_name_segment("GEMINI_PROXY_GROUP_MY_API_KEYS", "_API_KEYS"),
-            Some("MY")
-        );
-    }
-    #[test]
-    fn test_extract_fail() {
-        assert_eq!(extract_original_group_name_segment("X", "_"), None);
-    }
-    #[test]
-    fn test_parse_keys() {
-        assert_eq!(
-            parse_api_keys("a, b"),
-            vec!["a".to_string(), "b".to_string()]
-        );
-        assert_eq!(parse_api_keys(" ,, "), Vec::<String>::new());
-    } // Added .to_string()
-    #[test]
-    fn test_parse_proxy() {
-        assert_eq!(parse_proxy_url(" h://p "), Some("h://p".to_string()));
-        assert_eq!(parse_proxy_url(""), None);
-    }
-    #[test]
-    fn test_parse_target() {
-        assert_eq!(parse_target_url(" h://t "), Some("h://t".to_string()));
-        assert_eq!(parse_target_url(""), None);
-    }
     #[test]
     fn test_clean_url() {
         assert_eq!(clean_target_url("h://a/p/"), "h://a/p");
@@ -511,16 +301,10 @@ mod tests {
     fn test_val_srv() {
         assert!(validate_server_config(&ServerConfig::default()));
         assert!(!validate_server_config(&ServerConfig {
-            host: " ".into(),
-            port: 1,
-            cache_ttl_secs: 300,
-            cache_max_size: 100,
-        }));
-        assert!(!validate_server_config(&ServerConfig {
-            host: "h".into(),
             port: 0,
             cache_ttl_secs: 300,
             cache_max_size: 100,
+            top_p: None,
         }));
     }
     #[test]
@@ -560,16 +344,17 @@ mod tests {
     }
     #[test]
     fn test_val_cfg_ok() {
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             groups: vec![KeyGroup {
                 name: "G".into(),
                 api_keys: vec!["k".into()],
                 proxy_url: None,
                 target_url: default_target_url(),
+                top_p: None,
             }],
             ..Default::default()
         };
-        assert!(validate_config(&cfg, ""));
+        assert!(validate_config(&mut cfg, ""));
     }
     #[test]
     fn test_val_cfg_bad_name() {
@@ -578,16 +363,17 @@ mod tests {
                 .with_max_level(tracing::Level::WARN)
                 .finish(),
         );
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             groups: vec![KeyGroup {
                 name: "".into(),
                 api_keys: vec!["k".into()],
                 proxy_url: None,
                 target_url: default_target_url(),
+                top_p: None,
             }],
             ..Default::default()
         };
-        assert!(!validate_config(&cfg, ""));
+        assert!(!validate_config(&mut cfg, ""));
     }
     #[test]
     fn test_val_cfg_dupe_name() {
@@ -596,37 +382,40 @@ mod tests {
                 .with_max_level(tracing::Level::WARN)
                 .finish(),
         );
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             groups: vec![
                 KeyGroup {
                     name: "N".into(),
                     api_keys: vec!["k".into()],
                     proxy_url: None,
                     target_url: default_target_url(),
+                    top_p: None,
                 },
                 KeyGroup {
                     name: "n".into(),
                     api_keys: vec!["k".into()],
                     proxy_url: None,
                     target_url: default_target_url(),
+                    top_p: None,
                 },
             ],
             ..Default::default()
         };
-        assert!(!validate_config(&cfg, ""));
+        assert!(!validate_config(&mut cfg, ""));
     }
     #[test]
     fn test_val_cfg_empty_keys_ok() {
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             groups: vec![KeyGroup {
                 name: "G".into(),
                 api_keys: vec!["k1".to_string(), "k3".to_string()],
                 proxy_url: None,
                 target_url: default_target_url(),
+                top_p: None,
             }],
             ..Default::default()
         };
-        assert!(validate_config(&cfg, ""));
+        assert!(validate_config(&mut cfg, ""));
     }
     #[test]
     fn test_val_cfg_no_keys() {
@@ -635,16 +424,17 @@ mod tests {
                 .with_max_level(tracing::Level::WARN)
                 .finish(),
         );
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             groups: vec![KeyGroup {
                 name: "G".into(),
                 api_keys: vec![],
                 proxy_url: None,
                 target_url: default_target_url(),
+                top_p: None,
             }],
             ..Default::default()
         };
-        assert!(!validate_config(&cfg, ""));
+        assert!(!validate_config(&mut cfg, ""));
     } // Should fail validation as total keys = 0
     #[test]
     fn test_val_cfg_no_groups() {
@@ -653,214 +443,76 @@ mod tests {
                 .with_max_level(tracing::Level::WARN)
                 .finish(),
         );
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             groups: vec![],
             ..Default::default()
         };
-        assert!(!validate_config(&cfg, ""));
+        assert!(!validate_config(&mut cfg, ""));
     }
+
     #[test]
-    #[serial]
-    fn test_load_env_ok() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_DEFAULT_API_KEYS", "k1");
-        set_env("GEMINI_PROXY_GROUP_G1_API_KEYS", "k2");
-        set_env("GEMINI_PROXY_GROUP_G1_PROXY_URL", "http://p");
-        let cfg = load_config(&p).expect("!");
-        assert_eq!(cfg.groups.len(), 2);
-        clean_env();
-    } // Uses load_config now
-    #[test]
-    #[serial]
-    fn test_load_yaml_env() {
-        clean_env();
+    fn test_load_no_groups_from_file() {
         let d = tempdir().unwrap();
         let p = create_temp_config_file(&d, "server:\n  port: 1\n");
-        set_env("GEMINI_PROXY_GROUP_D_API_KEYS", " k ");
-        let cfg = load_config(&p).expect("!");
-        assert_eq!(cfg.server.port, 1);
-        assert_eq!(cfg.groups.len(), 1);
-        assert_eq!(cfg.groups[0].api_keys, vec!["k".to_string()]);
-        clean_env();
-    } // Added .to_string()
-      // Removed test_env_var_case_insensitivity_for_discovery
+        let r = load_config(&p);
+        assert!(
+            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Validation failed"))
+        );
+    }
+
     #[test]
-    #[serial]
-    fn test_load_no_groups() {
-        clean_env();
+    fn test_load_config_from_file_ok() {
+        let yaml_content = r#"
+server:
+  port: 8081
+groups:
+  - name: "Group1"
+    api_keys: ["key1", "key2"]
+    target_url: "https://api.example.com/"
+    proxy_url: "http://proxy.example.com"
+    top_p: 0.9
+"#;
+        let d = tempdir().unwrap();
+        let p = create_temp_config_file(&d, yaml_content);
+        let cfg = load_config(&p).expect("Should load config successfully");
+
+        assert_eq!(cfg.server.port, 8081);
+        assert_eq!(cfg.groups.len(), 1);
+        let group = &cfg.groups[0];
+        assert_eq!(group.name, "Group1");
+        assert_eq!(group.api_keys, vec!["key1", "key2"]);
+        assert_eq!(group.target_url, "https://api.example.com"); // Note trailing slash is removed
+        assert_eq!(group.proxy_url, Some("http://proxy.example.com".to_string()));
+        assert_eq!(group.top_p, Some(0.9));
+    }
+
+    #[test]
+    fn test_load_config_file_not_found() {
+        let d = tempdir().unwrap();
+        let p = d.path().join("non_existent_config.yaml");
+        let r = load_config(&p);
+        assert!(
+            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Config file not found"))
+        );
+    }
+
+    #[test]
+    fn test_load_empty_config_file() {
         let d = tempdir().unwrap();
         let p = create_temp_config_file(&d, "");
         let r = load_config(&p);
         assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
+            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Config file is empty"))
         );
-        clean_env();
     }
+
     #[test]
-    #[serial]
-    fn test_load_no_keys() {
-        clean_env();
+    fn test_load_bad_yaml() {
         let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "");
+        let p = create_temp_config_file(&d, "server: { port: 123,");
         let r = load_config(&p);
         assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
+            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Failed to parse config file"))
         );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_val_bad_proxy_env() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
-        set_env("GEMINI_PROXY_GROUP_A_PROXY_URL", ":b");
-        let r = load_config(&p);
-        assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
-        );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_val_bad_scheme_env() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
-        set_env("GEMINI_PROXY_GROUP_A_PROXY_URL", "ftp://p");
-        let r = load_config(&p);
-        assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
-        );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_val_bad_target_env() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
-        set_env("GEMINI_PROXY_GROUP_A_TARGET_URL", ":b");
-        let r = load_config(&p);
-        assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
-        );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_val_empty_name_env() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP__API_KEYS", "k");
-        let r = load_config(&p);
-        assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
-        );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_validation_fails_on_duplicate_group_name() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
-        set_env("GEMINI_PROXY_GROUP_a_API_KEYS", "k");
-        let r = load_config(&p);
-        assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
-        );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_load_empty_key_ok() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_.yaml");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_DEF_API_KEYS", "k1,,k3");
-        let result = load_config(&p);
-        assert!(result.is_ok(), "Got: {:?}", result.err());
-        let cfg = result.unwrap();
-        assert_eq!(
-            cfg.groups[0].api_keys,
-            vec!["k1".to_string(), "k3".to_string()]
-        );
-        clean_env();
-    } // Added .to_string()
-    #[test]
-    #[serial]
-    fn test_target_path_ok() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
-        set_env("GEMINI_PROXY_GROUP_A_TARGET_URL", "https://a.com/p");
-        let result = load_config(&p);
-        assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap().groups[0].target_url,
-            "https://a.com/p"
-        );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_warn_orphan() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_O_PURL", "http://p");
-        set_env("GEMINI_PROXY_GROUP_O_TURL", "http://t");
-        let result = load_config(&p);
-        assert!(
-            result.is_err()
-                && matches!(result.err(), Some(AppError::Config(m)) if m == "Validation failed")
-        );
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_empty_proxy_none() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
-        set_env("GEMINI_PROXY_GROUP_A_PROXY_URL", " ");
-        let cfg = load_config(&p).expect("!");
-        assert!(cfg.groups[0].proxy_url.is_none());
-        clean_env();
-    }
-    #[test]
-    #[serial]
-    fn test_empty_target_default() {
-        clean_env();
-        let d = tempdir().unwrap();
-        let p = d.path().join("_");
-        delete_file(&p);
-        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
-        set_env("GEMINI_PROXY_GROUP_A_TARGET_URL", " ");
-        let cfg = load_config(&p).expect("!");
-        assert_eq!(cfg.groups[0].target_url, default_target_url());
-        clean_env();
     }
 } // end tests module

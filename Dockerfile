@@ -3,8 +3,8 @@
 ARG APP_NAME=gemini-proxy-key-rotation-rust
 
 # Stage 1: Build the application
-# Use a specific version of the rust:alpine image for reproducible builds.
-FROM rust:1.76-alpine AS builder
+# Use a specific, recent rust:alpine image to ensure compatibility.
+FROM rust:1.82-alpine AS builder
 
 # ARG must be redefined in each stage where it's used.
 ARG APP_NAME
@@ -18,12 +18,12 @@ WORKDIR /app
 RUN cargo new --bin app_cache
 WORKDIR /app/app_cache
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release --target x86_64-unknown-linux-musl --features reqwest/native-tls-vendored
 
 # Copy the actual application source and build it.
 # This build will be fast as dependencies are already cached.
 COPY src ./src
+COPY static ./static
 # The `rm` ensures we do a clean build of the actual application code.
 RUN rm -f target/x86_64-unknown-linux-musl/release/deps/app_cache* && \
     cargo build --release --target x86_64-unknown-linux-musl --features reqwest/native-tls-vendored && \
@@ -33,8 +33,8 @@ RUN rm -f target/x86_64-unknown-linux-musl/release/deps/app_cache* && \
 # Use a specific version of Alpine for reproducible builds.
 FROM alpine:3.19
 
-# ARG must be redefined in the final stage.
-ARG APP_NAME
+# Use ENV instead of ARG so the variable is available at runtime for CMD.
+ENV APP_NAME=gemini-proxy-key-rotation-rust
 
 # Install ca-certificates, required for making HTTPS requests at runtime.
 RUN apk --no-cache add ca-certificates
@@ -45,6 +45,8 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 # Set the working directory and switch to the non-privileged user.
 WORKDIR /app
+# Set ownership of the app directory to the appuser to allow writing state files
+RUN chown -R appuser:appgroup /app
 USER appuser
 
 # Copy the statically linked and stripped binary from the builder stage.
@@ -53,5 +55,5 @@ COPY --from=builder /app/app_cache/target/x86_64-unknown-linux-musl/release/${AP
 # Expose the port the application listens on.
 EXPOSE 8080
 
-# Define the command to run the application.
-CMD ["./${APP_NAME}"]
+# Define the command to run the application, using shell form to allow variable substitution.
+CMD ./${APP_NAME}

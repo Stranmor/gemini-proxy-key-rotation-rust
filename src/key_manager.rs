@@ -26,18 +26,15 @@ use uuid::Uuid; // For unique temporary file names
 // --- Structures ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum KeyStatus {
+    #[default]
     Available,
     RateLimited,
     Invalid,
     TemporarilyUnavailable,
 }
 
-impl Default for KeyStatus {
-    fn default() -> Self {
-        KeyStatus::Available
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct KeyState {
@@ -51,10 +48,10 @@ pub struct FlattenedKeyInfo {
     pub proxy_url: Option<String>,
     pub target_url: String,
     pub group_name: String,
+    pub top_p: Option<f32>,
     // Add original index within the group for state lookup if needed later
     // pub original_group_index: usize,
 }
-
 // --- KeyManager ---
 
 #[derive(Debug)]
@@ -114,6 +111,7 @@ impl KeyManager {
                     proxy_url: group.proxy_url.clone(),
                     target_url: group.target_url.clone(),
                     group_name: group.name.clone(),
+                    top_p: group.top_p,
                 };
                 group_entry.push(key_info); // Add key to its group in the map
 
@@ -564,7 +562,7 @@ impl KeyManager {
 
         let base_filename = final_path.file_name().unwrap_or_default().to_string_lossy();
         let temp_filename = format!(".{}.{}.tmp", base_filename, Uuid::new_v4());
-        let temp_path = parent_dir.join(&temp_filename); // Borrow temp_filename
+        let temp_path = Path::new("/tmp").join(&temp_filename);
         let temp_path_display = temp_path.display().to_string(); // Capture for logs
 
         // Serialize JSON
@@ -588,16 +586,22 @@ impl KeyManager {
         }
 
         // Atomic rename
-        debug!(temp_file.path = %temp_path_display, "Attempting atomic rename");
-        if let Err(e) = std_fs::rename(&temp_path, final_path) {
-            error!(temp_file.path = %temp_path_display, final_file.path = %final_path.display(), error = ?e, "Failed atomic rename of state file");
+        // Copy and remove, which is more reliable across different filesystems (like /tmp to a mounted volume)
+        debug!(temp_file.path = %temp_path_display, "Copying temporary file to final destination");
+        if let Err(e) = async_fs::copy(&temp_path, final_path).await {
+            error!(temp_file.path = %temp_path_display, final_file.path = %final_path.display(), error = ?e, "Failed to copy state file from temp to final destination");
             // Attempt cleanup on failure
-            if let Err(rm_err) = std_fs::remove_file(&temp_path) {
-                warn!(temp_file.path = %temp_path_display, error = ?rm_err, "Failed to remove temporary file after rename failure");
+            if let Err(rm_err) = async_fs::remove_file(&temp_path).await {
+                warn!(temp_file.path = %temp_path_display, error = ?rm_err, "Failed to remove temporary file after copy failure");
             }
             return Err(e);
         }
 
+        // Clean up the temporary file after successful copy
+        if let Err(e) =  async_fs::remove_file(&temp_path).await {
+            warn!(temp_file.path = %temp_path_display, error = ?e, "Failed to remove temporary file after successful copy.");
+            // This is not a fatal error, so we don't return an error
+        }
         info!("Successfully saved key states atomically"); // Info level for successful save
         Ok(())
     }
@@ -637,7 +641,7 @@ impl KeyManager {
 #[tracing::instrument(level = "info", skip(path), fields(key_state.path = %path.display()))]
 async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
     let base_filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let _parent_dir = path.parent().unwrap_or_else(|| Path::new(".")); // Keep for context, but mark as unused for now
     let path_display = path.display().to_string(); // Capture display string
 
     let mut recovered_from_temp = false;
@@ -646,7 +650,7 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
     match async_fs::read_to_string(path).await {
         Ok(json_data) => {
             // Attempt to clean up any old temp files on successful load
-            cleanup_temp_files(parent_dir, &base_filename).await;
+            cleanup_temp_files(&base_filename).await;
             match serde_json::from_str::<HashMap<String, KeyState>>(&json_data) {
                 Ok(states) => {
                     info!(state.count = states.len(), "Successfully loaded key states");
@@ -668,7 +672,7 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
     }
 
     // Attempt recovery from temp file if main file failed or not found
-    if let Some(temp_path) = find_latest_temp_file(parent_dir, &base_filename).await {
+    if let Some(temp_path) = find_latest_temp_file(&base_filename).await {
         let temp_path_display = temp_path.display().to_string(); // Capture display string
         warn!(temp_file.path = %temp_path_display, "Attempting recovery from temporary state file.");
         match async_fs::read_to_string(&temp_path).await {
@@ -682,13 +686,16 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
                                 temp_file.path = %temp_path_display,
                                 final_file.path = %path_display,
                                 error = ?rename_err,
-                                "Failed to rename recovered temp state file to main path. State recovered in memory, but file system may be inconsistent."
+                                "Failed to copy recovered temp state file to main path. State recovered in memory, but file system may be inconsistent."
                             );
-                        } else {
-                            info!(final_file.path = %path_display, "Successfully renamed recovered temp state file to main path.");
-                            // Clean up potentially other old temp files after successful rename
-                            cleanup_temp_files(parent_dir, &base_filename).await;
-                        }
+                       } else {
+                           info!(final_file.path = %path_display, "Successfully copied recovered temp state file to main path.");
+                            if let Err(rm_err) = async_fs::remove_file(&temp_path).await {
+                               warn!(temp_file.path = %temp_path_display, error = ?rm_err, "Failed to remove temporary file after successful recovery.");
+                           }
+                           // Clean up potentially other old temp files after successful copy
+                           cleanup_temp_files(&base_filename).await;
+                       }
                         recovered_from_temp = true;
                         recovered_states = states; // Store recovered states
                     }
@@ -725,15 +732,16 @@ async fn load_key_states_from_file(path: &Path) -> HashMap<String, KeyState> {
 }
 
 /// Finds the most recently modified temporary state file matching the pattern.
-#[tracing::instrument(level = "debug", skip(dir, base_filename))]
-async fn find_latest_temp_file(dir: &Path, base_filename: &str) -> Option<PathBuf> {
+#[tracing::instrument(level = "debug", skip(base_filename))]
+async fn find_latest_temp_file(base_filename: &str) -> Option<PathBuf> {
     let mut latest_mod_time: Option<std::time::SystemTime> = None;
     let mut latest_temp_file: Option<PathBuf> = None;
     let temp_prefix = format!(".{base_filename}.");
     let temp_suffix = ".tmp";
-    debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %dir.display(), "Searching for latest temporary file");
+    let temp_dir = Path::new("/tmp");
+    debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %temp_dir.display(), "Searching for latest temporary file");
 
-    if let Ok(mut read_dir) = async_fs::read_dir(dir).await {
+    if let Ok(mut read_dir) = async_fs::read_dir(temp_dir).await {
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
             if path.is_file() {
@@ -758,7 +766,7 @@ async fn find_latest_temp_file(dir: &Path, base_filename: &str) -> Option<PathBu
             }
         }
     } else {
-        warn!(directory = %dir.display(), "Could not read directory to find temp files");
+        warn!(directory = %temp_dir.display(), "Could not read directory to find temp files");
     }
 
     if let Some(ref p) = latest_temp_file {
@@ -770,14 +778,16 @@ async fn find_latest_temp_file(dir: &Path, base_filename: &str) -> Option<PathBu
 }
 
 /// Cleans up all temporary state files matching the pattern in a directory.
-#[tracing::instrument(level = "debug", skip(dir, base_filename))]
-async fn cleanup_temp_files(dir: &Path, base_filename: &str) {
+#[tracing::instrument(level = "debug", skip(base_filename))]
+async fn cleanup_temp_files(base_filename: &str) {
     let temp_prefix = format!(".{base_filename}.");
     let temp_suffix = ".tmp";
-    debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %dir.display(), "Cleaning up temporary files");
+    let temp_dir = Path::new("/tmp");
+
+    debug!(temp_file.prefix = %temp_prefix, temp_file.suffix = %temp_suffix, directory = %temp_dir.display(), "Cleaning up temporary files");
     let mut cleaned_count = 0;
 
-    if let Ok(mut read_dir) = async_fs::read_dir(dir).await {
+    if let Ok(mut read_dir) = async_fs::read_dir(temp_dir).await {
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
             if path.is_file() {
@@ -795,7 +805,7 @@ async fn cleanup_temp_files(dir: &Path, base_filename: &str) {
             }
         }
     } else {
-        warn!(directory = %dir.display(), "Could not read directory to clean temp files");
+        warn!(directory = %temp_dir.display(), "Could not read directory to clean temp files");
     }
     debug!(cleaned_count, "Temporary file cleanup finished");
 }
@@ -814,10 +824,10 @@ mod tests {
     fn create_test_config(groups: Vec<KeyGroup>) -> AppConfig {
         AppConfig {
             server: ServerConfig {
-                host: "0.0.0.0".to_string(),
                 port: 8080,
                 cache_ttl_secs: 300,
                 cache_max_size: 100,
+                top_p: None,
             },
             groups,
             rate_limit_behavior: RateLimitBehavior::default(), // Add the new field with default
@@ -898,6 +908,7 @@ mod tests {
             ],
             proxy_url: None,
             target_url: "t1".to_string(),
+            top_p: None,
         }];
         let config = create_test_config(groups);
         let manager = KeyManager::new(&config, &config_path).await;
@@ -926,12 +937,12 @@ mod tests {
             .unwrap()
             .write_all(b"initial_content")
             .unwrap();
-
         let groups = vec![KeyGroup {
             name: "g1".to_string(),
             api_keys: vec!["k1".to_string(), "k2".to_string()],
             proxy_url: None,
             target_url: "t1".to_string(),
+            top_p: None,
         }];
         let config = create_test_config(groups);
         let manager = KeyManager::new(&config, &config_path).await;
@@ -1002,6 +1013,7 @@ mod tests {
             api_keys: vec!["k1".to_string(), "k2".to_string()],
             proxy_url: None,
             target_url: "t1".to_string(),
+            top_p: None,
         }];
         let config = create_test_config(groups);
         let manager = KeyManager::new(&config, &config_path).await;
@@ -1047,6 +1059,7 @@ mod tests {
             api_keys: vec!["k1_expired".to_string(), "k3_new".to_string()],
             proxy_url: None,
             target_url: "t1".to_string(),
+            top_p: None,
         }];
         let config = create_test_config(groups);
 
@@ -1081,18 +1094,21 @@ mod tests {
                 api_keys: vec!["g1k1".to_string(), "g1k2".to_string()],
                 proxy_url: None,
                 target_url: "t1".to_string(),
+                top_p: None,
             },
             KeyGroup {
                 name: "g2".to_string(),
                 api_keys: vec!["g2k1".to_string()],
                 proxy_url: None,
                 target_url: "t2".to_string(),
+                top_p: None,
             },
             KeyGroup {
                 name: "g3".to_string(),
                 api_keys: vec!["g3k1".to_string(), "g3k2".to_string(), "g3k3".to_string()],
                 proxy_url: None,
                 target_url: "t3".to_string(),
+                top_p: None,
             },
         ];
         let config = create_test_config(groups);
@@ -1115,9 +1131,9 @@ mod tests {
          let dir = tempdir().unwrap();
          let config_path = create_temp_yaml_config(&dir);
          let groups = vec![
-             KeyGroup { name: "g1".to_string(), api_keys: vec!["g1k1".to_string(), "g1k2".to_string()], proxy_url: None, target_url: "t1".to_string() },
-             KeyGroup { name: "g2".to_string(), api_keys: vec!["g2k1".to_string()], proxy_url: None, target_url: "t2".to_string() },
-             KeyGroup { name: "g3".to_string(), api_keys: vec!["g3k1".to_string()], proxy_url: None, target_url: "t3".to_string() },
+             KeyGroup { name: "g1".to_string(), api_keys: vec!["g1k1".to_string(), "g1k2".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None },
+             KeyGroup { name: "g2".to_string(), api_keys: vec!["g2k1".to_string()], proxy_url: None, target_url: "t2".to_string(), top_p: None },
+             KeyGroup { name: "g3".to_string(), api_keys: vec!["g3k1".to_string()], proxy_url: None, target_url: "t3".to_string(), top_p: None },
          ];
          let mut config = create_test_config(groups);
          // Use BlockUntilMidnight to make test deterministic
@@ -1140,8 +1156,8 @@ mod tests {
          let dir = tempdir().unwrap();
          let config_path = create_temp_yaml_config(&dir);
          let groups = vec![
-             KeyGroup { name: "g1".to_string(), api_keys: vec!["g1k1".to_string()], proxy_url: None, target_url: "t1".to_string() },
-             KeyGroup { name: "g2".to_string(), api_keys: vec!["g2k1".to_string()], proxy_url: None, target_url: "t2".to_string() },
+             KeyGroup { name: "g1".to_string(), api_keys: vec!["g1k1".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None },
+             KeyGroup { name: "g2".to_string(), api_keys: vec!["g2k1".to_string()], proxy_url: None, target_url: "t2".to_string(), top_p: None },
          ];
          let mut config = create_test_config(groups);
          // Use BlockUntilMidnight to make test deterministic
@@ -1221,7 +1237,7 @@ mod tests {
     async fn test_mark_key_as_limited_block_until_midnight() {
         let dir = tempdir().unwrap();
         let config_path = create_temp_yaml_config(&dir);
-        let groups = vec![KeyGroup { name: "g1".to_string(), api_keys: vec!["k1".to_string()], proxy_url: None, target_url: "t1".to_string() }];
+        let groups = vec![KeyGroup { name: "g1".to_string(), api_keys: vec!["k1".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None }];
         let mut config = create_test_config(groups);
         config.rate_limit_behavior = RateLimitBehavior::BlockUntilMidnight;
         let manager = KeyManager::new(&config, &config_path).await;
@@ -1243,7 +1259,7 @@ mod tests {
     async fn test_mark_key_as_limited_retry_next_key() {
         let dir = tempdir().unwrap();
         let config_path = create_temp_yaml_config(&dir);
-        let groups = vec![KeyGroup { name: "g1".to_string(), api_keys: vec!["k1".to_string()], proxy_url: None, target_url: "t1".to_string() }];
+        let groups = vec![KeyGroup { name: "g1".to_string(), api_keys: vec!["k1".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None }];
         let mut config = create_test_config(groups);
         config.rate_limit_behavior = RateLimitBehavior::RetryNextKey;
         let manager = KeyManager::new(&config, &config_path).await;

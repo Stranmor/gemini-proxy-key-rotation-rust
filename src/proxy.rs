@@ -7,9 +7,10 @@ use crate::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, Method, Uri}, // Removed unused StatusCode
+    http::{HeaderMap, Method}, // Removed unused StatusCode
     response::Response,
 };
+
 use futures_util::TryStreamExt;
 use std::error::Error; // Import Error trait for source()
 use std::time::Instant; // Added Instant
@@ -49,46 +50,83 @@ pub async fn forward_request(
     state: &AppState,
     key_info: &FlattenedKeyInfo,
     method: Method,
-    uri: Uri,
+    target_url: Url,
     headers: HeaderMap,
     body_bytes: Bytes,
 ) -> Result<Response> {
     let api_key = &key_info.key;
-    let target_base_url_str = &key_info.target_url;
     let proxy_url_option = key_info.proxy_url.as_deref();
     let group_name = &key_info.group_name;
     let request_key_preview = format!("{}...", api_key.chars().take(4).collect::<String>());
 
-    // --- URL Construction ---
-    let base_url = Url::parse(target_base_url_str).map_err(|e| {
-        // Structured error log
-        error!(
-           target_base_url = %target_base_url_str,
-           group.name = %group_name,
-           error = %e, // Use display for parse error
-           "Failed to parse target_base_url from configuration for group"
-        );
-        AppError::Internal(format!("Invalid base URL in config: {e}"))
-    })?;
-    // Keep debug log for parsed base URL
-    debug!(target.base_url = %base_url, group.name = %group_name, "Parsed base URL from configuration");
-
-    let _original_path_and_query = uri.path_and_query().map_or("", |pq| pq.as_str()); // Mark as unused
-
-    let mut final_target_url = base_url;
-    final_target_url.set_path(uri.path());
-    if let Some(query) = uri.query() {
-        final_target_url.set_query(Some(query));
-    }
-    // --- End URL Construction ---
-
-    // Append API Key after initial construction
-    final_target_url.query_pairs_mut().append_pair("key", api_key);
-    debug!(target.url = %final_target_url, "Constructed final target URL with key for request");
-
+    let final_target_url = target_url;
     let outgoing_method = method;
     let outgoing_headers = build_forward_headers(&headers)?; // Removed api_key argument
-    let outgoing_reqwest_body = reqwest::Body::from(body_bytes);
+
+    // --- Body Modification ---
+    let outgoing_reqwest_body = {
+        // If body is empty or not valid JSON, we can't inject anything, so forward original.
+        match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+            Ok(mut json_body) => {
+                // Successfully parsed JSON, now check logic.
+                let client_has_top_p = json_body
+                    .get("generationConfig")
+                    .and_then(|gc| gc.get("topP"))
+                    .is_some();
+
+                if client_has_top_p {
+                    debug!("Client provided top_p, forwarding original body.");
+                    reqwest::Body::from(body_bytes)
+                } else {
+                    // Client did not provide top_p, check for server-side config.
+                    if let Some(top_p_value) = key_info.top_p.or(state.config.server.top_p) {
+                        // Inject server-side top_p.
+                        let injection_result = (|| {
+                            // Use a closure to handle multiple ? operators
+                            let obj = json_body.as_object_mut()?;
+                            let generation_config = obj
+                                .entry("generationConfig")
+                                .or_insert_with(|| serde_json::json!({}));
+                            let config_obj = generation_config.as_object_mut()?;
+                            config_obj.insert("topP".to_string(), serde_json::json!(top_p_value));
+                            Some(())
+                        })();
+
+                        if injection_result.is_some() {
+                            // Reserialize and create new body.
+                            match serde_json::to_vec(&json_body) {
+                                Ok(modified_body_bytes) => {
+                                    let source = if key_info.top_p.is_some() {
+                                        "group"
+                                    } else {
+                                        "server"
+                                    };
+                                    debug!(group.name = %group_name, top_p = top_p_value, top_p.source = source, "Successfully injected server-side top_p");
+                                    reqwest::Body::from(Bytes::from(modified_body_bytes))
+                                }
+                                Err(e) => {
+                                    warn!(group.name = %group_name, error = %e, "Failed to re-serialize body after top_p injection, forwarding original body");
+                                    reqwest::Body::from(body_bytes)
+                                }
+                            }
+                        } else {
+                            warn!("Failed to inject top_p because the JSON structure was not as expected (e.g., not an object). Forwarding original body.");
+                            reqwest::Body::from(body_bytes)
+                        }
+                    } else {
+                        // No client top_p and no server top_p, forward original.
+                        reqwest::Body::from(body_bytes)
+                    }
+                }
+            }
+            Err(_) => {
+                // Body is not valid JSON, forward as is.
+                trace!("Request body is not valid JSON, cannot process for top_p injection. Forwarding original body.");
+                reqwest::Body::from(body_bytes)
+            }
+        }
+    };
+    // --- End Body Modification ---
 
     // --- Get Client ---
     let http_client = state.get_client(proxy_url_option)?; // Error handled within
@@ -98,10 +136,11 @@ pub async fn forward_request(
     info!(
         http.method = %outgoing_method,
         target.url = %final_target_url,
+        http.headers = ?outgoing_headers,
         api_key.preview = %request_key_preview,
         group.name = %group_name,
         proxy.url = ?proxy_url_option, // Use debug formatting for Option<&str>
-        "Forwarding request to target"
+        "Forwarding raw request to target"
     );
 
     // --- Send request ---
@@ -192,6 +231,20 @@ pub async fn forward_request(
         .status(response_status)
         .body(axum_response_body)
         .map_err(|e| {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             error!(error = %e, "Failed to build final client response");
             AppError::Internal(format!("Failed to construct client response: {e}"))
         })?;
@@ -210,6 +263,7 @@ fn build_forward_headers(original_headers: &HeaderMap) -> Result<HeaderMap> { //
     add_auth_headers(&mut filtered)?; // Error propagated
     Ok(filtered)
 }
+
 
 /// Creates the `HeaderMap` for the response sent back to the original client.
 #[tracing::instrument(level="debug", skip(original_headers), fields(header_count = original_headers.len()))]
@@ -285,6 +339,26 @@ mod tests {
 
     #[test]
     fn test_build_response_headers_filters_hop_by_hop() {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         let mut upstream_headers = HeaderMap::new();
         upstream_headers.insert("content-type", HeaderValue::from_static("text/plain"));
         upstream_headers.insert("x-upstream-specific", HeaderValue::from_static("value2"));
