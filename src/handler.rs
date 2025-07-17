@@ -267,16 +267,14 @@ async fn build_translated_gemini_url(
         AppError::Internal(format!("Invalid base URL in config: {e}"))
     })?;
 
-    let path = original_uri.path();
-    let mut final_target_url = base_url.join(path).map_err(|e| {
-        error!(
-            base_url = %base_url,
-            path_to_join = %path,
-            error = %e,
-            "Failed to join base URL with request path"
-        );
-        AppError::UrlJoinError(format!("Failed to join URL path: {e}"))
-    })?;
+    let mut final_target_url = base_url;
+    let original_path = original_uri.path().trim_start_matches('/');
+    if !original_path.is_empty() {
+        final_target_url
+            .path_segments_mut()
+            .map_err(|_| AppError::UrlJoinError("URL cannot be a base".to_string()))?
+            .extend(original_path.split('/'));
+    }
 
     if let Some(query) = original_uri.query() {
         final_target_url.set_query(Some(query));
