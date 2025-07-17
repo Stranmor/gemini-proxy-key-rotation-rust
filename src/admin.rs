@@ -3,6 +3,7 @@
 use crate::cache::CacheStats;
 use crate::config::AppConfig;
 use crate::error::{AppError, Result};
+use crate::key_manager::{KeyStatus as KmKeyStatus}; // Renamed to avoid conflict
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -123,7 +124,8 @@ pub struct KeyStatus {
     pub total_keys: usize,
     pub active_keys: usize,
     pub limited_keys: usize,
-    pub quarantined_keys: usize,
+    pub invalid_keys: usize,
+    pub temporarily_unavailable_keys: usize,
     pub groups: Vec<GroupStatus>,
 }
 
@@ -165,8 +167,7 @@ pub struct KeyInfo {
     pub key_preview: String,
     pub status: String,
     pub last_used: Option<DateTime<Utc>>,
-    pub rate_limited_until: Option<DateTime<Utc>>,
-    pub quarantined_until: Option<DateTime<Utc>>,
+    pub reset_time: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,39 +191,42 @@ pub struct ConfigUpdateRequest {
 /// for future compatibility where I/O or other operations might fail.
 #[axum::debug_handler]
 pub async fn detailed_health(State(state): State<Arc<AppState>>) -> Result<Json<DetailedHealthStatus>> {
-    let start_time = std::time::SystemTime::now();
-    
-    // Get key status
-    let key_states = state.key_manager.key_states.read().await;
+    let all_key_info = state.key_manager.get_all_key_info();
+    let key_states = state.key_manager.get_key_states().await;
     let now = Utc::now();
-    
+
     let mut active_keys = 0;
     let mut limited_keys = 0;
-    let mut quarantined_keys = 0;
-    
-    for key_state in key_states.values() {
-        if key_state.quarantined_until.is_some_and(|qt| now < qt) {
-            quarantined_keys += 1;
-        } else if key_state.is_limited && key_state.reset_time.is_none_or(|rt| now < rt) {
-            limited_keys += 1;
-        } else {
-            active_keys += 1;
+    let mut invalid_keys = 0;
+    let mut temp_unavailable_keys = 0;
+
+    for key_info in &all_key_info {
+        match key_states.get(&key_info.key) {
+            Some(state) => match state.status {
+                KmKeyStatus::Available => active_keys += 1,
+                KmKeyStatus::RateLimited => {
+                    if state.reset_time.is_some_and(|rt| now >= rt) {
+                        active_keys += 1;
+                    } else {
+                        limited_keys += 1;
+                    }
+                }
+                KmKeyStatus::Invalid => invalid_keys += 1,
+                KmKeyStatus::TemporarilyUnavailable => {
+                    if state.reset_time.is_some_and(|rt| now >= rt) {
+                        active_keys += 1;
+                    } else {
+                        temp_unavailable_keys += 1;
+                    }
+                }
+            },
+            None => active_keys += 1, // Default to active if no state
         }
     }
-    
+
     // Build group status
-    let mut group_statuses = Vec::new();
-    let mut proxy_groups: HashMap<String, Vec<String>> = HashMap::new();
-    
-    for group in &state.key_manager.all_keys {
-        if let Some(proxy_url) = &group.proxy_url {
-            proxy_groups.entry(proxy_url.clone()).or_default().push(group.group_name.clone());
-        }
-    }
-    
-    // Group keys by group name for status
     let mut groups_map: HashMap<String, GroupStatus> = HashMap::new();
-    for key_info in &state.key_manager.all_keys {
+    for key_info in &all_key_info {
         let entry = groups_map.entry(key_info.group_name.clone()).or_insert_with(|| {
             GroupStatus {
                 name: key_info.group_name.clone(),
@@ -233,71 +237,64 @@ pub async fn detailed_health(State(state): State<Arc<AppState>>) -> Result<Json<
             }
         });
         entry.total_keys += 1;
-        
+
         // Check if this specific key is active
-        if let Some(key_state) = key_states.get(&key_info.key) {
-            if !(key_state.quarantined_until.is_some_and(|qt| now < qt)
-                || (key_state.is_limited && key_state.reset_time.is_none_or(|rt| now < rt)))
-            {
-                entry.active_keys += 1;
-            }
-        } else {
-            entry.active_keys += 1; // Default to active if no state
+        let is_active = match key_states.get(&key_info.key) {
+            Some(state) => match state.status {
+                KmKeyStatus::Available => true,
+                KmKeyStatus::RateLimited | KmKeyStatus::TemporarilyUnavailable => {
+                    state.reset_time.is_some_and(|rt| now >= rt)
+                }
+                KmKeyStatus::Invalid => false,
+            },
+            None => true, // Default to active
+        };
+        if is_active {
+            entry.active_keys += 1;
         }
     }
-    
-    group_statuses.extend(groups_map.into_values());
-    
+    let group_statuses = groups_map.into_values().collect();
+
     // Build proxy status
-    let mut proxy_status = HashMap::new();
-    for (proxy_url, groups) in proxy_groups {
-        proxy_status.insert(proxy_url.clone(), ProxyStatus {
-            url: proxy_url.clone(),
-            status: "healthy".to_string(), // TODO: Implement actual health checks
-            last_check: now,
-            groups_using: groups,
-        });
-    }
-    
-    // Get cache stats from actual cache instance
+    let proxy_status = HashMap::new();
+    // TODO: Implement proxy health checks
+
     let cache_stats = state.cache.stats().await;
-    
-    let uptime = start_time.duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    
+    let uptime = state.start_time.elapsed().as_secs();
+
     let health_status = DetailedHealthStatus {
         status: "healthy".to_string(),
         timestamp: now,
         version: option_env!("CARGO_PKG_VERSION").unwrap_or("N/A").to_string(),
         uptime_seconds: uptime,
         server_info: ServerInfo {
-            host: "0.0.0.0".to_string(), // TODO: Get from actual config
-            port: 8080,
-            rust_version: option_env!("CARGO_PKG_RUST_VERSION").unwrap_or("unknown").to_string(),
+            host: state.config.server.host.clone(),
+            port: state.config.server.port,
+            rust_version: "N/A".to_string(), // sysinfo doesn't provide this
             build_info: BuildInfo {
                 version: option_env!("CARGO_PKG_VERSION").unwrap_or("N/A").to_string(),
-                git_hash: option_env!("GIT_HASH").unwrap_or("N/A").to_string(),
-                build_date: option_env!("BUILD_DATE").unwrap_or("N/A").to_string(),
-                target: option_env!("TARGET").unwrap_or("N/A").to_string(),
+                git_hash: "N/A".to_string(),
+                build_date: "N/A".to_string(),
+                target: "N/A".to_string(),
             },
         },
         key_status: KeyStatus {
-            total_keys: state.key_manager.all_keys.len(),
+            total_keys: all_key_info.len(),
             active_keys,
             limited_keys,
-            quarantined_keys,
+            invalid_keys,
+            temporarily_unavailable_keys: temp_unavailable_keys,
             groups: group_statuses,
         },
         cache_status: cache_stats,
         proxy_status,
         system_info: SystemInfo {
-            memory_usage_mb: get_memory_usage(),
-            cpu_usage_percent: get_cpu_usage(),
-            disk_usage_mb: get_disk_usage(),
+            memory_usage_mb: state.system_info.get_memory_usage().await,
+            cpu_usage_percent: state.system_info.get_cpu_usage().await,
+            disk_usage_mb: state.system_info.get_disk_usage(),
         },
     };
-    
+
     Ok(Json(health_status))
 }
 
@@ -313,51 +310,61 @@ pub async fn list_keys(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListKeysQuery>,
 ) -> Result<Json<Vec<KeyInfo>>> {
-    let key_states = state.key_manager.key_states.read().await;
+    let key_states = state.key_manager.get_key_states().await;
+    let all_key_info = state.key_manager.get_all_key_info();
     let now = Utc::now();
-    
+
     let mut keys = Vec::new();
-    
-    for key_info in &state.key_manager.all_keys {
+
+    for key_info in &all_key_info {
         // Filter by group if specified
         if let Some(ref group_filter) = query.group {
-            if key_info.group_name != *group_filter {
+            if &key_info.group_name != group_filter {
                 continue;
             }
         }
-        
-        let key_state = key_states.get(&key_info.key);
-        let status = key_state.map_or("active", |state| {
-            if state.quarantined_until.is_some_and(|qt| now < qt) {
-                "quarantined"
-            } else if state.is_limited && state.reset_time.is_none_or(|rt| now < rt) {
-                "limited"
-            } else {
-                "active"
+
+        let (status_str, reset_time) = match key_states.get(&key_info.key) {
+            Some(state) => {
+                let is_expired = state.reset_time.is_some_and(|rt| now >= rt);
+                let status = match state.status {
+                    KmKeyStatus::Available => "available",
+                    KmKeyStatus::RateLimited if is_expired => "available",
+                    KmKeyStatus::RateLimited => "limited",
+                    KmKeyStatus::Invalid => "invalid",
+                    KmKeyStatus::TemporarilyUnavailable if is_expired => "available",
+                    KmKeyStatus::TemporarilyUnavailable => "unavailable",
+                };
+                (status, state.reset_time)
             }
-        });
-        
+            None => ("available", None), // Default to active if no state
+        };
+
         // Filter by status if specified
         if let Some(ref status_filter) = query.status {
-            if status != *status_filter {
+            if status_str != status_filter {
                 continue;
             }
         }
-        
+
         keys.push(KeyInfo {
             id: format!("{:x}", md5::compute(&key_info.key)),
             group_name: key_info.group_name.clone(),
-            key_preview: format!("{}...{}", 
+            key_preview: format!(
+                "{}...{}",
                 &key_info.key[..6.min(key_info.key.len())],
-                if key_info.key.len() > 10 { &key_info.key[key_info.key.len()-4..] } else { "" }
+                if key_info.key.len() > 10 {
+                    &key_info.key[key_info.key.len() - 4..]
+                } else {
+                    ""
+                }
             ),
-            status: status.to_string(),
+            status: status_str.to_string(),
             last_used: None, // TODO: Track last usage
-            rate_limited_until: key_state.and_then(|s| s.reset_time),
-            quarantined_until: key_state.and_then(|s| s.quarantined_until),
+            reset_time,
         });
     }
-    
+
     Ok(Json(keys))
 }
 
@@ -373,7 +380,9 @@ pub async fn add_key(
 ) -> Result<Json<serde_json::Value>> {
     // TODO: Implement dynamic key addition
     warn!("Dynamic key addition not yet implemented");
-    Err(AppError::Internal("Dynamic key addition not implemented".to_string()))
+    Err(AppError::Internal(
+        "Dynamic key addition not implemented".to_string(),
+    ))
 }
 
 /// Remove an API key
@@ -388,7 +397,9 @@ pub async fn remove_key(
 ) -> Result<StatusCode> {
     // TODO: Implement dynamic key removal
     warn!(key_id = %key_id, "Dynamic key removal not yet implemented");
-    Err(AppError::Internal("Dynamic key removal not implemented".to_string()))
+    Err(AppError::Internal(
+        "Dynamic key removal not implemented".to_string(),
+    ))
 }
 
 /// Get current configuration
@@ -397,9 +408,8 @@ pub async fn remove_key(
 ///
 /// Returns an error as this feature is not yet implemented.
 #[axum::debug_handler]
-pub async fn get_config(State(_state): State<Arc<AppState>>) -> Result<Json<AppConfig>> {
-    // TODO: Return current configuration
-    Err(AppError::Internal("Config retrieval not implemented".to_string()))
+pub async fn get_config(State(state): State<Arc<AppState>>) -> Result<Json<AppConfig>> {
+    Ok(Json(state.config.clone()))
 }
 
 /// Update configuration
@@ -413,7 +423,9 @@ pub async fn update_config(
     Json(_request): Json<ConfigUpdateRequest>,
 ) -> Result<Json<serde_json::Value>> {
     // TODO: Implement configuration updates
-    Err(AppError::Internal("Config updates not implemented".to_string()))
+    Err(AppError::Internal(
+        "Config updates not implemented".to_string(),
+    ))
 }
 
 /// Get metrics summary
@@ -474,12 +486,12 @@ pub async fn evict_cache_entry(
     }
 }
 /// Serve the admin dashboard
-pub async fn serve_dashboard() -> Html<String> {
-    let mut content = include_str!("../static/dashboard.html").to_string();
+pub async fn serve_dashboard(State(state): State<Arc<AppState>>) -> Html<String> {
+    let content = include_str!("../static/dashboard.html").to_string();
 
     // Inject system info
-    let mem_usage = get_memory_usage();
-    let cpu_usage = get_cpu_usage();
+    let mem_usage = state.system_info.get_memory_usage().await;
+    let cpu_usage = state.system_info.get_cpu_usage().await;
 
     let system_info_html = format!(
         "<div class=\"p-4 bg-gray-800 rounded-lg shadow-md\">
@@ -492,28 +504,7 @@ pub async fn serve_dashboard() -> Html<String> {
 
     // A bit of a hacky way to inject the info.
     // A proper templating engine would be better.
-    if let Some(pos) = content.find("<!-- SYSINFO_PLACEHOLDER -->") {
-        content.replace_range(pos..pos + "<!-- SYSINFO_PLACEHOLDER -->".len(), &system_info_html);
-    }
+    let final_content = content.replace("<!-- SYSINFO_PLACEHOLDER -->", &system_info_html);
 
-    Html(content)
-}
-// System info helpers
-fn get_memory_usage() -> u64 {
-    let mut sys = System::new_all();
-    sys.refresh_memory();
-    sys.used_memory() / 1024 / 1024
-}
-
-fn get_cpu_usage() -> f64 {
-    let mut sys = System::new_all();
-    sys.refresh_cpu();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_cpu();
-    sys.global_cpu_info().cpu_usage() as f64
-}
-
-const fn get_disk_usage() -> u64 {
-    // TODO: Implement actual disk usage detection using sysinfo
-    0
+    Html(final_content)
 }

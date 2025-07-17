@@ -1,6 +1,6 @@
 // tests/cache_tests.rs
 
-use gemini_proxy_key_rotation_rust::cache::{ResponseCache, CachedResponse};
+use gemini_proxy_key_rotation_rust::cache::{CachedResponse, ResponseCache};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -66,10 +66,10 @@ async fn test_cache_should_cache_logic() {
     assert!(cache.should_cache(StatusCode::OK, &headers));
     assert!(cache.should_cache(StatusCode::CREATED, &headers));
     
-    // Should not cache error responses
+    // Should not cache server error responses, but should cache specific client errors
     assert!(!cache.should_cache(StatusCode::INTERNAL_SERVER_ERROR, &headers));
-    assert!(!cache.should_cache(StatusCode::BAD_REQUEST, &headers));
-    assert!(!cache.should_cache(StatusCode::NOT_FOUND, &headers));
+    assert!(cache.should_cache(StatusCode::BAD_REQUEST, &headers));
+    assert!(cache.should_cache(StatusCode::NOT_FOUND, &headers));
     
     // Should not cache when explicitly told not to
     headers.insert("cache-control", HeaderValue::from_static("no-cache"));

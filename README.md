@@ -341,14 +341,24 @@ This is the **primary configuration method** when running with Docker Compose an
 *   **Management:** Automatic. Deleting the file resets the state memory.
 *   **.gitignore:** Included by default.
 
-### Error Handling
-*   **400 (from Target):** Invalid request from *your client*. Check OpenAI specs.
-*   **401/403 (from Target):** Invalid/revoked Gemini key or permissions issue.
-*   **429 (from Target):** Key rate-limited. Proxy handles retry with next key. Returns last 429 if all keys fail.
-*   **503 (from Proxy):** All keys currently marked as rate-limited.
-*   **502 (from Proxy):** Network error connecting to Google/upstream proxy.
-*   **500 (from Proxy):** Internal proxy error. Check proxy logs.
-*   **Config Errors:** Logged on startup, proxy exits. Check `.env` file format and values.
+### Resilience and Error Handling
+The proxy implements a sophisticated strategy to handle various errors from the upstream Google Gemini API, maximizing availability and resilience.
+
+*   **Immediate Failure (400, 404, 504):**
+    *   These errors indicate a problem with the client's request (`400 Bad Request`, `404 Not Found`) or a gateway timeout (`504 Gateway Timeout`) that is unlikely to be resolved by a retry.
+    *   **Action:** The error is immediately returned to the client without attempting to use another key.
+
+*   **Invalid Key (403 Forbidden):**
+    *   This error strongly indicates that the API key is invalid, revoked, or lacks the necessary permissions.
+    *   **Action:** The key is marked as `Invalid` and permanently removed from the rotation for the current session to prevent further useless attempts.
+
+*   **Rate Limiting (429 Too Many Requests):**
+    *   This is a common, temporary state indicating the key has exceeded its request quota.
+    *   **Action:** The key is temporarily disabled, and the proxy automatically retries the request with the next available key in the rotation.
+
+*   **Server Errors (500, 503):**
+    *   These errors (`500 Internal Server Error`, `503 Service Unavailable`) suggest a temporary problem on Google's end.
+    *   **Action:** The proxy will perform a fixed number of retries (currently 2) with the *same key* using a fixed 1-second delay between attempts. If all retries fail, the key is then temporarily disabled, and the system moves to the next key.
 
 ### Common Docker Compose Commands
 *   **Start/Run (background):** `docker compose up -d` (Builds if needed)

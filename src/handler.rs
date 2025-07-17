@@ -10,7 +10,9 @@ use axum::{
     http::StatusCode,
     response::Response,
 };
+use chrono::Duration as ChronoDuration;
 use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info, instrument, warn}; // Added instrument
 
 /// Simple health check handler. Returns HTTP 200 OK.
@@ -64,110 +66,167 @@ pub async fn proxy_handler(
         Err(e) => {
             // Log with structured error field
             error!(error = ?e, error.source = %e, "Failed to buffer request body");
-            return Err(AppError::RequestBodyError(format!("Failed to read request body: {e}")));
+            return Err(AppError::RequestBodyError(format!(
+                "Failed to read request body: {e}"
+            )));
         }
     };
 
-    let mut last_429_response: Option<Response> = None;
-    let mut attempt_count = 0; // Track attempt count for logging
+    // --- Cache Check ---
+    let cache_key = state
+        .cache
+        .generate_key(method.as_str(), uri.path(), uri.query(), &body_bytes);
+    if let Some(cached) = state.cache.get(&cache_key).await {
+        info!("Cache hit. Returning cached response.");
+        let mut response = Response::builder()
+            .status(StatusCode::from_u16(cached.status).unwrap_or(StatusCode::OK))
+            .body(axum::body::Body::from(cached.data.clone()))
+            .unwrap(); // Safe unwrap
+        *response.headers_mut() = cached.to_header_map();
+        return Ok(response);
+    }
+    info!("Cache miss. Proceeding to forward request.");
+
+    let mut last_error_response: Option<Response> = None;
+    let mut attempt_count = 0;
 
     loop {
         attempt_count += 1;
-        debug!(
-            attempt = attempt_count,
-            "Looking for next available API key"
-        );
+        debug!(attempt = attempt_count, "Looking for next available API key");
 
-        // 1. Get the next available key info
         let Some(key_info) = state.key_manager.get_next_available_key_info().await else {
-            // Log with structured field indicating cause
             warn!(
                 cause = "no_available_keys",
                 attempts = attempt_count,
-                last_429_present = last_429_response.is_some(),
                 "No available API keys remaining after retries."
             );
-            // If we previously got a 429, return that. Otherwise, return NoAvailableKeys.
-            return last_429_response.map_or_else(
-                || Err(AppError::NoAvailableKeys),
-                |response| {
-                    info!(
-                        status = response.status().as_u16(),
-                        attempts = attempt_count,
-                        "Exhausted all keys, returning last 429 response."
-                    );
-                    Ok(response)
-                },
-            );
+            return last_error_response.map_or(Err(AppError::NoAvailableKeys), Ok);
         };
 
         let key_preview = format!("{}...", key_info.key.chars().take(4).collect::<String>());
-        let group_name = key_info.group_name.clone(); // Clone for logging/marking
-        let api_key_to_mark = key_info.key.clone(); // Clone key string for potential marking
+        let group_name = key_info.group_name.clone();
+        let api_key_to_mark = key_info.key.clone();
 
-        debug!(
-            attempt = attempt_count,
-            api_key.preview = %key_preview,
-            group.name = %group_name,
-            "Attempting request with key"
-        );
-
-        // 2. Forward the request using the proxy module
-        // Note: We clone body_bytes for each attempt. Consider Arc<Bytes> if performance critical.
-        let forward_result = proxy::forward_request(
-            &state, // Pass reference to the AppState (Arc derefs to AppState)
-            &key_info,
-            method.clone(),
-            uri.clone(),        // Clone Uri
-            headers.clone(),    // Clone HeaderMap
-            body_bytes.clone(), // Clone Bytes for the attempt
-        )
-        .await;
-
-        // 3. Handle the result from forward_request, returning early on transport errors
-        let response = match forward_result {
-            Ok(response) => response,
-            Err(err) => {
-                // Log the error originating from the proxy module or earlier steps
-                error!(
-                   attempt = attempt_count,
-                   error = ?err, // Debug format for AppError
-                    api_key.preview=%key_preview,
-                    group.name=%group_name,
-                   "Error occurred during request forwarding attempt. Returning error to client."
-                );
-                // Don't retry on other errors (like Bad Gateway, connection refused etc.)
-                return Err(err); // Propagate the error
-            }
-        };
-
-        // 4. Handle the response status: retry on 429, return on others
-        let response_status = response.status();
-        if response_status == StatusCode::TOO_MANY_REQUESTS {
-            warn!(
+        // --- Internal Retry Loop for 5xx Errors ---
+        let mut internal_retry_count = 0;
+        let max_internal_retries = 2;
+        loop {
+            internal_retry_count += 1;
+            debug!(
                 attempt = attempt_count,
-                status = response_status.as_u16(), // Use u16 for status
-                api_key.preview=%key_preview,
-                group.name=%group_name,
-                "Target API returned 429. Marking key as limited and retrying."
+                internal_attempt = internal_retry_count,
+                api_key.preview = %key_preview,
+                group.name = %group_name,
+                "Attempting request with key"
             );
-            // Mark the key as limited using the cloned key string
-            state
-                .key_manager
-                .mark_key_as_limited(&api_key_to_mark)
-                .await;
-            last_429_response = Some(response); // Store the 429 response
-            continue; // Try the next key
-        }
 
-        // 5. Success: any other status code is considered a successful proxy event
-        info!(
-            attempt = attempt_count,
-            status = response_status.as_u16(),
-            api_key.preview=%key_preview,
-            group.name=%group_name,
-            "Sending successful response to client"
-        );
-        return Ok(response); // Return the successful response
-    } // end loop
+            let forward_result = proxy::forward_request(
+                &state,
+                &key_info,
+                method.clone(),
+                uri.clone(),
+                headers.clone(),
+                body_bytes.clone(),
+            )
+            .await;
+
+            let response = match forward_result {
+                Ok(resp) => resp,
+                Err(err) => {
+                    error!(error = ?err, "Request forwarding failed. Not retrying.");
+                    return Err(err);
+                }
+            };
+
+            let status = response.status();
+            match status {
+                // --- Terminal Success ---
+                s if s.is_success() => {
+                    info!(status = s.as_u16(), "Request successful.");
+                    // --- Cache Put ---
+                    if state.cache.should_cache(s, response.headers()) {
+                        let (parts, body) = response.into_parts();
+                        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+                        state
+                            .cache
+                            .put(
+                                cache_key.clone(),
+                                body_bytes.to_vec(),
+                                parts.headers.clone(),
+                                parts.status,
+                                None,
+                            )
+                            .await;
+                        // Reconstruct the response
+                        return Ok(Response::from_parts(parts, axum::body::Body::from(body_bytes)));
+                    }
+                    return Ok(response);
+                }
+                // --- Terminal Client Errors (400, 404, 504) ---
+                StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::GATEWAY_TIMEOUT => {
+                    warn!(
+                        status = status.as_u16(),
+                        "Received terminal client error. Not retrying."
+                    );
+                    return Ok(response);
+                }
+                // --- Key Invalid Error (403) ---
+                StatusCode::FORBIDDEN => {
+                    warn!(
+                        status = status.as_u16(),
+                        "Received 403 Forbidden. Marking key as invalid and retrying with next key."
+                    );
+                    state
+                        .key_manager
+                        .mark_key_as_invalid(&api_key_to_mark)
+                        .await;
+                    last_error_response = Some(response);
+                    break; // Break internal loop to get next key
+                }
+                // --- Rate Limit Error (429) ---
+                StatusCode::TOO_MANY_REQUESTS => {
+                    warn!(
+                        status = status.as_u16(),
+                        "Received 429 Too Many Requests. Marking key as rate-limited and retrying with next key."
+                    );
+                    state
+                        .key_manager
+                        .mark_key_as_limited(&api_key_to_mark)
+                        .await;
+                    last_error_response = Some(response);
+                    break; // Break internal loop to get next key
+                }
+                // --- Retriable Server Errors (500, 503) ---
+                StatusCode::INTERNAL_SERVER_ERROR | StatusCode::SERVICE_UNAVAILABLE => {
+                    warn!(
+                        status = status.as_u16(),
+                        internal_attempt = internal_retry_count,
+                        max_internal_retries,
+                        "Received retriable server error."
+                    );
+                    if internal_retry_count >= max_internal_retries {
+                        error!("Internal retries exhausted for key. Marking as temporarily unavailable.");
+                        state
+                            .key_manager
+                            .mark_key_as_temporarily_unavailable(
+                                &api_key_to_mark,
+                                ChronoDuration::minutes(5),
+                            )
+                            .await;
+                        last_error_response = Some(response);
+                        break; // Break internal loop to get next key
+                    }
+                    sleep(Duration::from_secs(1)).await; // Wait before internal retry
+                }
+                // --- Other Unexpected Errors ---
+                _ => {
+                    warn!(
+                        status = status.as_u16(),
+                        "Received unexpected status code. Returning response to client."
+                    );
+                    return Ok(response);
+                }
+            }
+        } // End internal retry loop
+    } // End main loop
 }

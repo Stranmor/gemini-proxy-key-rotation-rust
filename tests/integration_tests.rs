@@ -16,7 +16,7 @@ use gemini_proxy_key_rotation_rust::{
 use std::{fs::File, path::PathBuf, sync::Arc};
 use tempfile::tempdir;
 use wiremock::{
-    matchers::{method, path, query_param}, // Use path and query_param
+    matchers::{method, path, path_regex, query_param}, // Use path and query_param
     Mock,
     MockServer,
     ResponseTemplate,
@@ -28,8 +28,11 @@ fn create_test_config(groups: Vec<KeyGroup>, server_host: &str, server_port: u16
         server: ServerConfig {
             host: server_host.to_string(),
             port: server_port,
+            cache_ttl_secs: 300,
+            cache_max_size: 100,
         },
         groups,
+        rate_limit_behavior: Default::default(),
     }
 }
 
@@ -237,7 +240,8 @@ async fn test_handler_returns_last_429_on_exhaustion() {
     // Check it returned the body from the *second* 429 response
     assert!(
         body_str.contains("Rate limit 2"),
-        "Expected body from the last 429 response"
+        "Expected body from the last 429 response, got: {}",
+        body_str
     );
 }
 
@@ -257,7 +261,7 @@ async fn test_handler_group_round_robin() {
     // Mock successful responses for all keys initially
     for key in [g1_key1, g1_key2, g2_key1, g3_key1] {
         Mock::given(method("GET"))
-            .and(path(test_path))
+            .and(path_regex(format!("^{}.*", test_path))) // Match any path starting with test_path
             .and(query_param("key", key))
             .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{}\"}}", key)))
             .mount(&server)
@@ -306,31 +310,31 @@ async fn test_handler_group_round_robin() {
     // 3. Call handler multiple times and check key rotation
     // Expected sequence: g1k1, g2k1, g3k1, g1k2, g2k1, g3k1, g1k1, ...
 
-    let res1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=1", test_path)).await;
     assert_eq!(res1.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res1).await, g1_key1);
 
-    let res2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=2", test_path)).await;
     assert_eq!(res2.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res2).await, g2_key1);
 
-    let res3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=3", test_path)).await;
     assert_eq!(res3.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res3).await, g3_key1);
 
-    let res4 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res4 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=4", test_path)).await;
     assert_eq!(res4.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res4).await, g1_key2); // Next key in group1
 
-    let res5 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res5 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=5", test_path)).await;
     assert_eq!(res5.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res5).await, g2_key1); // Back to group2 (only one key)
 
-    let res6 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res6 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=6", test_path)).await;
     assert_eq!(res6.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res6).await, g3_key1); // Back to group3 (only one key)
 
-    let res7 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res7 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=7", test_path)).await;
     assert_eq!(res7.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res7).await, g1_key1); // Back to start of group1
 
@@ -359,20 +363,20 @@ async fn test_handler_group_round_robin() {
     // Current state: next should be group2 (index 1) according to previous calls
     // Try g2k1 -> 429 -> mark g2k1 limited -> continue search
     // Try group3 (index 2) -> g3k1 -> OK
-    let res_skip1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res_skip1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=8", test_path)).await;
     assert_eq!(res_skip1.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res_skip1).await, g3_key1); // Expect g3_key1 because g2 is skipped
 
     // Current state: next should be group0 (index 0)
     // Try g1k2 -> OK
-    let res_skip2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res_skip2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=9", test_path)).await;
     assert_eq!(res_skip2.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res_skip2).await, g1_key2);
 
     // Current state: next should be group1 (index 1)
     // Try g2k1 -> still 429 -> continue search
     // Try group3 (index 2) -> g3k1 -> OK
-    let res_skip3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, test_path).await;
+    let res_skip3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{}?req=10", test_path)).await;
     assert_eq!(res_skip3.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res_skip3).await, g3_key1);
 }

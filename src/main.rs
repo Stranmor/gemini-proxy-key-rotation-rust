@@ -12,24 +12,13 @@ use axum::{
     serve,
     Router,
 };
-use clap::Parser;
 // AppConfig, AppState etc. are now brought into scope via the library use statement
 use std::{net::SocketAddr, path::PathBuf, process, sync::Arc, time::Instant}; // Added Instant for middleware timing
 use tokio::net::TcpListener;
 use tokio::signal;
-use tower::ServiceBuilder; // Import ServiceBuilder for layering middleware
 use tracing::{error, info, span, Instrument, Level}; // Correct tracing imports
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter}; // Correct subscriber imports
 use uuid::Uuid; // Import Uuid
-
-/// Defines command-line arguments for the application using `clap`.
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct CliArgs {
-    /// Specifies the path to the YAML configuration file.
-    #[arg(short, long, value_name = "FILE", default_value = "config.yaml")]
-    config: PathBuf,
-}
 
 // Middleware to add Request ID and trace requests
 // Note: Changed signature to accept Request<Body> and return AxumResponse directly
@@ -98,23 +87,22 @@ async fn main() {
         .with(json_layer)
         .init();
 
-    // --- Parse Command Line Arguments ---
-    let args = CliArgs::parse();
-    let config_path = &args.config;
+    // --- Configuration Path ---
+    let config_path = PathBuf::from("config.yaml");
 
     // Use structured logging from the start
     info!("Starting Gemini API Key Rotation Proxy...");
 
     // Log config path details
     let config_path_display = config_path.display().to_string(); // Capture display string
-    if config_path.exists() || args.config != PathBuf::from("config.yaml") {
+    if config_path.exists() {
         info!(config.path = %config_path_display, "Using configuration file");
     } else {
         info!(config.path = %config_path_display, "Optional configuration file not found. Using defaults and environment variables.");
     }
 
     // --- Configuration Loading & Validation ---
-    let app_config = match config::load_config(config_path) {
+    let app_config = match config::load_config(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
             // Structured error logging
@@ -140,7 +128,7 @@ async fn main() {
     );
 
     // --- Application State Initialization ---
-    let app_state = match AppState::new(&app_config, config_path).await {
+    let app_state = match AppState::new(&app_config, &config_path).await {
         Ok(state) => Arc::new(state),
         Err(e) => {
             // Structured error logging
@@ -156,11 +144,9 @@ async fn main() {
     // Apply the tracing middleware
     let app = Router::new()
         .route("/health", get(handler::health_check)) // Add health check route
+        .merge(admin::admin_routes()) // Add admin routes
         .route("/*path", any(handler::proxy_handler)) // Catch-all proxy route
-        .layer(
-            // Apply middleware using ServiceBuilder
-            ServiceBuilder::new().layer(middleware::from_fn(trace_requests)),
-        )
+        .layer(middleware::from_fn(trace_requests))
         .with_state(app_state);
 
     let addr_str = format!("{}:{}", app_config.server.host, app_config.server.port);

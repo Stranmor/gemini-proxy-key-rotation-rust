@@ -7,6 +7,8 @@ pub mod handler;
 pub mod key_manager;
 pub mod proxy;
 pub mod state;
+pub mod admin;
+pub mod cache;
 
 // Re-export key types for easier use by the binary or tests
 pub use config::AppConfig;

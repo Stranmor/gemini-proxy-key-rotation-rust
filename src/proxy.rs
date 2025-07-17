@@ -73,25 +73,13 @@ pub async fn forward_request(
     // Keep debug log for parsed base URL
     debug!(target.base_url = %base_url, group.name = %group_name, "Parsed base URL from configuration");
 
-    let openai_compat_prefix = "/v1beta/openai/";
-    let original_path_and_query = uri.path_and_query().map_or("", |pq| pq.as_str());
-    
-    // Combine the prefix and the original path. Handle leading/trailing slashes carefully.
-    let combined_path = if original_path_and_query.starts_with('/') {
-         format!("{}{}", openai_compat_prefix.trim_end_matches('/'), original_path_and_query)
-    } else {
-         format!("{openai_compat_prefix}{original_path_and_query}")
-    };
+    let _original_path_and_query = uri.path_and_query().map_or("", |pq| pq.as_str()); // Mark as unused
 
-    let mut final_target_url = base_url.join(&combined_path).map_err(|e| {
-        error!(
-           target.base_url = %base_url,
-           target.combined_path = %combined_path,
-           error = %e,
-           "Failed to join base URL and combined path"
-        );
-        AppError::Internal(format!("URL construction error: {e}"))
-    })?;
+    let mut final_target_url = base_url;
+    final_target_url.set_path(uri.path());
+    if let Some(query) = uri.query() {
+        final_target_url.set_query(Some(query));
+    }
     // --- End URL Construction ---
 
     // Append API Key after initial construction

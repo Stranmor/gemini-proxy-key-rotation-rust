@@ -1,5 +1,5 @@
 // src/config.rs
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     env, fs, io,
@@ -19,7 +19,7 @@ const TARGET_URL_SUFFIX: &str = "_TARGET_URL";
 
 // --- Data Structures ---
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyGroup {
     pub name: String,
@@ -31,7 +31,7 @@ pub struct KeyGroup {
     pub target_url: String,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RateLimitBehavior {
     BlockUntilMidnight,
@@ -39,7 +39,7 @@ pub enum RateLimitBehavior {
     RetryNextKey,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
@@ -50,13 +50,17 @@ pub struct AppConfig {
     pub rate_limit_behavior: RateLimitBehavior,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_server_host")]
     pub host: String,
     #[serde(default = "default_server_port")]
     pub port: u16,
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    #[serde(default = "default_cache_max_size")]
+    pub cache_max_size: usize,
 }
 
 #[derive(Default, Debug)]
@@ -75,6 +79,8 @@ impl Default for ServerConfig {
         Self {
             host: default_server_host(),
             port: default_server_port(),
+            cache_ttl_secs: default_cache_ttl_secs(),
+            cache_max_size: default_cache_max_size(),
         }
     }
 }
@@ -83,6 +89,12 @@ fn default_server_host() -> String {
 }
 const fn default_server_port() -> u16 {
     8080
+}
+const fn default_cache_ttl_secs() -> u64 {
+    300 // 5 minutes
+}
+const fn default_cache_max_size() -> usize {
+    1000 // Max 1000 entries
 }
 fn default_target_url() -> String {
     "https://generativelanguage.googleapis.com".to_string()
@@ -500,11 +512,15 @@ mod tests {
         assert!(validate_server_config(&ServerConfig::default()));
         assert!(!validate_server_config(&ServerConfig {
             host: " ".into(),
-            port: 1
+            port: 1,
+            cache_ttl_secs: 300,
+            cache_max_size: 100,
         }));
         assert!(!validate_server_config(&ServerConfig {
             host: "h".into(),
-            port: 0
+            port: 0,
+            cache_ttl_secs: 300,
+            cache_max_size: 100,
         }));
     }
     #[test]
@@ -759,15 +775,16 @@ mod tests {
     #[test]
     #[serial]
     fn test_validation_fails_on_duplicate_group_name() {
-        clean_env(); // Assumes clean_env helper exists and works
-        let dir = tempdir().unwrap();
-        let non_existent_path = dir.path().join("ne.yaml");
-        delete_file(&non_existent_path);
-        set_env("GEMINI_PROXY_GROUP_DUP_API_KEYS", "key1"); // Use distinct var names for test clarity
-        set_env("GEMINI_PROXY_GROUP_dup_api_keys", "key2"); // Use distinct var names for test clarity
-        let result = load_config(&non_existent_path);
-        assert!(result.is_err(), "Expected Err for duplicate group names (case-insensitive)");
-        assert!(matches!(result.as_ref().err().unwrap(), AppError::Config(msg) if msg == "Validation failed"), "Expected validation failure message, got: {:?}", result.err());
+        clean_env();
+        let d = tempdir().unwrap();
+        let p = d.path().join("_.yaml");
+        delete_file(&p);
+        set_env("GEMINI_PROXY_GROUP_A_API_KEYS", "k");
+        set_env("GEMINI_PROXY_GROUP_a_API_KEYS", "k");
+        let r = load_config(&p);
+        assert!(
+            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m == "Validation failed")
+        );
         clean_env();
     }
     #[test]

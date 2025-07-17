@@ -2,11 +2,13 @@
 
 use crate::config::AppConfig;
 use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result}; // Ensured Proxy types are imported
-use crate::key_manager::KeyManager;
+use crate::{cache::ResponseCache, key_manager::KeyManager};
 use reqwest::{Client, ClientBuilder, Proxy};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Duration;
+use crate::admin::SystemInfoCollector;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::Instrument;
 use tracing::{debug, error, info, instrument, warn}; // Base tracing macros // Explicitly import the Instrument trait
 
@@ -17,6 +19,10 @@ use url::Url;
 pub struct AppState {
     pub key_manager: KeyManager,
     http_clients: HashMap<Option<String>, Client>,
+    pub cache: Arc<ResponseCache>,
+    pub start_time: Instant,
+    pub config: AppConfig,
+    pub system_info: SystemInfoCollector,
 }
 
 impl AppState {
@@ -32,6 +38,10 @@ impl AppState {
     pub async fn new(config: &AppConfig, config_path: &Path) -> Result<Self> {
         info!("Creating shared AppState: Initializing KeyManager and HTTP clients...");
         let key_manager = KeyManager::new(config, config_path).await; // KeyManager init logs its progress
+        let cache = Arc::new(ResponseCache::new(
+            Duration::from_secs(config.server.cache_ttl_secs),
+            config.server.cache_max_size,
+        ));
         let mut http_clients = HashMap::new();
 
         // Determine connection pool size based on key count, with a minimum floor
@@ -199,6 +209,10 @@ impl AppState {
         Ok(Self {
             key_manager,
             http_clients,
+            cache,
+            start_time: Instant::now(),
+            config: config.clone(),
+            system_info: SystemInfoCollector::new(),
         })
     }
 
@@ -244,8 +258,11 @@ mod tests {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
+                cache_ttl_secs: 300,
+                cache_max_size: 100,
             },
             groups,
+            rate_limit_behavior: Default::default(),
         }
     }
 

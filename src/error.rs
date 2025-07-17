@@ -5,7 +5,6 @@ use axum::{
     Json,
 };
 use serde::Serialize;
-// Removed unused import: use serde_json::json;
 use thiserror::Error;
 use tracing::error; // Import error for logging
 
@@ -44,6 +43,7 @@ pub struct ProxyConfigErrorData {
     pub url: String,
     pub kind: ProxyConfigErrorKind,
 }
+
 
 /// Represents the possible errors that can occur within the application.
 ///
@@ -181,7 +181,7 @@ impl IntoResponse for AppError {
                 } else if e.is_connect() {
                     (StatusCode::BAD_GATEWAY, "connect")
                 } else if e.is_request() {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "request_setup") // Error building the request itself
+                    (StatusCode::BAD_GATEWAY, "request_setup") // Error building the request itself (e.g., DNS issue)
                 } else if e.is_body() || e.is_decode() {
                     (StatusCode::BAD_GATEWAY, "body_or_decode") // Error processing response body
                 } else {
@@ -540,12 +540,12 @@ mod tests {
         let e = reqwest::get("http://invalid-url-that-does-not-exist-and-causes-error")
             .await
             .unwrap_err();
-        // Check based on the new logic: connection errors fall under "connect" message
+        // Check based on the new logic: request setup errors (like DNS) are now BAD_GATEWAY
         check_response(
             AppError::Reqwest(e),
             StatusCode::BAD_GATEWAY,
             "UPSTREAM_ERROR",
-            "Could not connect to upstream service",
+            "Internal error setting up upstream request",
             true,
         )
         .await;

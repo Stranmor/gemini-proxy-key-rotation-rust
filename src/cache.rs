@@ -85,15 +85,16 @@ impl ResponseCache {
 
     /// Generate cache key from request components
     #[must_use]
-    pub fn generate_key(&self, method: &str, path: &str, body: &[u8]) -> String {
+    pub fn generate_key(&self, method: &str, path: &str, query: Option<&str>, body: &[u8]) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
         method.hash(&mut hasher);
         path.hash(&mut hasher);
+        query.hash(&mut hasher); // Include query string in the hash
         body.hash(&mut hasher);
-        format!("{}:{:x}", method, hasher.finish())
+        format!("{}:{}:{:x}", method, path, hasher.finish())
     }
 
     /// Get cached response if exists and not expired
@@ -197,11 +198,6 @@ impl ResponseCache {
     /// Determine if response should be cached based on status and headers
     #[must_use]
     pub fn should_cache(&self, status: StatusCode, headers: &HeaderMap) -> bool {
-        // Don't cache error responses except for specific cases
-        if status.is_server_error() || status.is_client_error() {
-            return false;
-        }
-
         // Don't cache if explicitly told not to
         if let Some(cache_control) = headers.get("cache-control") {
             if let Ok(value) = cache_control.to_str() {
@@ -211,8 +207,8 @@ impl ResponseCache {
             }
         }
 
-        // Cache successful responses
-        status.is_success()
+        // Cache successful responses and specific client errors
+        status.is_success() || status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND
     }
 }
 
@@ -273,9 +269,11 @@ mod tests {
         // Should cache successful responses
         assert!(cache.should_cache(StatusCode::OK, &headers));
         
-        // Should not cache error responses
+        // Should not cache server error responses
         assert!(!cache.should_cache(StatusCode::INTERNAL_SERVER_ERROR, &headers));
-        assert!(!cache.should_cache(StatusCode::BAD_REQUEST, &headers));
+        // Should cache specific client errors
+        assert!(cache.should_cache(StatusCode::BAD_REQUEST, &headers));
+        assert!(cache.should_cache(StatusCode::NOT_FOUND, &headers));
         
         // Should not cache when explicitly told not to
         headers.insert("cache-control", HeaderValue::from_static("no-cache"));
