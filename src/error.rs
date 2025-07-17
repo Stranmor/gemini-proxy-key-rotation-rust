@@ -75,6 +75,9 @@ pub enum AppError {
     #[error("Request body processing error: {0}")]
     RequestBodyError(String), // Keep as String for diverse sources
 
+    #[error("JSON processing error: {0}")]
+    JsonProcessing(String, #[source] serde_json::Error),
+
     #[error("Response body processing error: {0}")]
     ResponseBodyError(String), // Keep as String for diverse sources
 
@@ -92,6 +95,9 @@ pub enum AppError {
         source: reqwest::Error,    // #[from] is definitely removed here
         proxy_url: Option<String>, // Add context
     },
+
+    #[error("Failed to join URL components: {0}")]
+    UrlJoinError(String),
 }
 
 // Removed manual `impl From<reqwest::Error> for AppError` to resolve conflict
@@ -168,6 +174,17 @@ impl IntoResponse for AppError {
                         error_type: "INTERNAL_SERVER_ERROR".to_string(),
                         message: "An unexpected internal server error occurred".to_string(),
                         details: None,
+                    },
+                )
+            }
+            Self::UrlJoinError(msg) => {
+                error!("URL join error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorDetails {
+                        error_type: "URL_CONSTRUCTION_ERROR".to_string(),
+                        message: "Internal error during URL construction".to_string(),
+                        details: None, // Do not expose internal path details
                     },
                 )
             }
@@ -251,6 +268,17 @@ impl IntoResponse for AppError {
                     details: Some(msg),
                 },
             ),
+            Self::JsonProcessing(msg, source) => {
+                error!("JSON processing error: {} - Source: {}", msg, source);
+                (
+                    StatusCode::BAD_REQUEST, // JSON error is a client-side malformed request
+                    ErrorDetails {
+                        error_type: "JSON_PROCESSING_ERROR".to_string(),
+                        message: msg,
+                        details: Some(source.to_string()),
+                    },
+                )
+            }
             Self::InvalidClientApiKey => (
                 StatusCode::UNAUTHORIZED, // Or FORBIDDEN depending on semantics
                 ErrorDetails {
