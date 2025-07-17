@@ -258,9 +258,10 @@ pub async fn forward_request(
 /// Now returns a Result to handle potential errors from add_auth_headers.
 #[tracing::instrument(level="debug", skip(original_headers), fields(header_count = original_headers.len()))] // Removed api_key
 fn build_forward_headers(original_headers: &HeaderMap) -> Result<HeaderMap> { // Removed api_key parameter
-    let mut filtered = HeaderMap::with_capacity(original_headers.len() + 3); // +3 for potential additions
+    let mut filtered = HeaderMap::with_capacity(original_headers.len());
     copy_non_hop_by_hop_headers(original_headers, &mut filtered, true);
-    add_auth_headers(&mut filtered)?; // Error propagated
+    // Auth headers are now part of the URL query string, so we don't add them here.
+    // We also don't need to call `add_auth_headers` anymore.
     Ok(filtered)
 }
 
@@ -287,15 +288,8 @@ fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_requ
     }
 }
 
-/// Adds the necessary authentication headers (`x-goog-api-key` and `Authorization: Bearer`).
-/// Returns a Result to indicate potential failures.
-#[tracing::instrument(level="debug")] // Removed skip attribute
-// Removed API key parameter as it's now in the URL
-fn add_auth_headers(_: &mut HeaderMap) -> Result<()> {
-    // Authentication headers (x-goog-api-key, Authorization) are no longer added here.
-    // The API key is now expected to be included in the URL query parameters.
-    Ok(()) // Function now always succeeds
-}
+// The `add_auth_headers` function is no longer needed as authentication
+// is handled via query parameters in the URL.
 
 #[cfg(test)]
 mod tests {
@@ -333,6 +327,27 @@ mod tests {
         // Check that auth headers are NOT present (removed as key is in URL)
         assert!(result_headers.get("x-goog-api-key").is_none());
         assert!(result_headers.get(header::AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn test_build_forward_headers_removes_auth_headers() {
+        let mut original_headers = HeaderMap::new();
+        original_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer client_token"),
+        );
+        original_headers.insert("x-goog-api-key", HeaderValue::from_static("client_key"));
+        original_headers.insert("x-custom-header", HeaderValue::from_static("custom_value"));
+
+        let result_headers = build_forward_headers(&original_headers).unwrap();
+
+        assert!(result_headers.get(header::AUTHORIZATION).is_none());
+        assert!(result_headers.get("x-goog-api-key").is_none());
+        assert_eq!(
+            result_headers.get("x-custom-header").unwrap(),
+            "custom_value"
+        );
+        assert_eq!(result_headers.len(), 1);
     }
 
     // Removed test: test_build_forward_headers_invalid_key_chars
