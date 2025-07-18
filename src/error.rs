@@ -516,31 +516,25 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Reliably triggering client build error in test is difficult without specific features/mocking"]
     async fn test_into_response_http_client_build_error() {
-        // Simulate a reqwest build error by providing an invalid proxy format
-        let invalid_proxy_url = "::not-a-valid-proxy-url";
-        let proxy_res = reqwest::Proxy::all(invalid_proxy_url); // This itself won't error yet
-        let builder = reqwest::Client::builder();
-        let builder_with_proxy = match proxy_res {
-            Ok(proxy) => builder.proxy(proxy),
-            Err(_) => builder, // Should ideally not happen with this string, but handle defensively
-        };
-        // .build() will likely fail because the proxy URL is invalid or cannot be resolved by reqwest internally
-        let build_error = builder_with_proxy
+        // Simulate a reqwest build error by providing an impossible TLS version range.
+        // This is a reliable way to make the client build fail.
+        let build_error = reqwest::Client::builder()
+            .min_tls_version(reqwest::tls::Version::TLS_1_3)
+            .max_tls_version(reqwest::tls::Version::TLS_1_2)
             .build()
-            .expect_err("Client build should fail with invalid proxy setup");
+            .expect_err("Client build should fail with an impossible TLS version range");
 
         check_response(
             // Manually construct the error variant now
             AppError::HttpClientBuildError {
                 source: build_error,
-                proxy_url: Some(invalid_proxy_url.to_string()),
+                proxy_url: None, // No proxy was involved in this specific build failure
             },
             StatusCode::INTERNAL_SERVER_ERROR,
             "HTTP_CLIENT_BUILD_ERROR",
             "Internal server error building HTTP client",
-            true, // Expect details (proxy URL)
+            false, // No details to expect in this case
         )
         .await;
     }

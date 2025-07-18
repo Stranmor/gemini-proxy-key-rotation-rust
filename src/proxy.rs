@@ -31,8 +31,7 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
     "authorization",  // Original authorization should be replaced
     "x-goog-api-key", // Original key (if any) should be replaced
 ];
-
-/// Takes incoming request components and forwards them to the appropriate upstream target using cached clients.
+/// Takes incoming request components and forwards them to the appropriate upstream target.
 ///
 /// Orchestrates the core proxying logic. Rate limit handling (429) is delegated to the calling handler.
 /// Assumes this function is called within a tracing span that includes `request_id`.

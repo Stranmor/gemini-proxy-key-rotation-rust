@@ -27,8 +27,6 @@ fn create_test_config(groups: Vec<KeyGroup>, server_port: u16) -> AppConfig {
     AppConfig {
         server: ServerConfig {
             port: server_port,
-            cache_ttl_secs: 300,
-            cache_max_size: 100,
             top_p: None,
         },
         groups,

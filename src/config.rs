@@ -46,10 +46,6 @@ pub struct AppConfig {
 pub struct ServerConfig {
     #[serde(default = "default_server_port")]
     pub port: u16,
-    #[serde(default = "default_cache_ttl_secs")]
-    pub cache_ttl_secs: u64,
-    #[serde(default = "default_cache_max_size")]
-    pub cache_max_size: usize,
     #[serde(default)]
     pub top_p: Option<f32>,
 }
@@ -60,20 +56,12 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             port: default_server_port(),
-            cache_ttl_secs: default_cache_ttl_secs(),
-            cache_max_size: default_cache_max_size(),
             top_p: None,
         }
     }
 }
 const fn default_server_port() -> u16 {
     8080
-}
-const fn default_cache_ttl_secs() -> u64 {
-    300 // 5 minutes
-}
-const fn default_cache_max_size() -> usize {
-    1000 // Max 1000 entries
 }
 fn default_target_url() -> String {
     "https://generativelanguage.googleapis.com/".to_string()
@@ -302,8 +290,6 @@ mod tests {
         assert!(validate_server_config(&ServerConfig::default()));
         assert!(!validate_server_config(&ServerConfig {
             port: 0,
-            cache_ttl_secs: 300,
-            cache_max_size: 100,
             top_p: None,
         }));
     }

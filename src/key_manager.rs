@@ -823,8 +823,6 @@ mod tests {
         AppConfig {
             server: ServerConfig {
                 port: 8080,
-                cache_ttl_secs: 300,
-                cache_max_size: 100,
                 top_p: None,
             },
             groups,

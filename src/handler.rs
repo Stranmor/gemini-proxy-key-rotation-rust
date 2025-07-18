@@ -235,7 +235,13 @@ pub async fn proxy_handler(
                                 ChronoDuration::minutes(5),
                             )
                             .await;
-                        last_error = Some(response);
+                        // If we're breaking due to server errors, only set this as the last
+                        // error if we haven't already captured a more specific client error
+                        // like 429 (rate-limited) or 403 (invalid key). This ensures
+                        // we return the most relevant error to the client upon exhaustion.
+                        if last_error.is_none() {
+                            last_error = Some(response);
+                        }
                         break; // Break internal loop to get next key
                     }
                     sleep(Duration::from_secs(1)).await; // Wait before internal retry
