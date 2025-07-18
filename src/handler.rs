@@ -73,21 +73,6 @@ pub async fn proxy_handler(
         }
     };
 
-    // --- Cache Check ---
-    let cache_key = state
-        .cache
-        .generate_key(method.as_str(), uri.path(), uri.query(), &body_bytes);
-    if let Some(cached) = state.cache.get(&cache_key).await {
-        info!("Cache hit. Returning cached response.");
-        let mut response = Response::builder()
-            .status(StatusCode::from_u16(cached.status).unwrap_or(StatusCode::OK))
-            .body(axum::body::Body::from(cached.data.clone()))
-            .unwrap(); // Safe unwrap
-        *response.headers_mut() = cached.to_header_map();
-        return Ok(response);
-    }
-    info!("Cache miss. Proceeding to forward request.");
-
     let mut last_error: Option<Response> = None;
     let mut attempt_count = 0;
 
@@ -127,7 +112,7 @@ pub async fn proxy_handler(
 
             // --- URL Translation ---
             // --- URL Construction ---
-            let mut base_url = Url::parse(&key_info.target_url).map_err(|e| {
+            let base_url = Url::parse(&key_info.target_url).map_err(|e| {
                 error!(
                     target_base_url = %key_info.target_url,
                     group.name = %key_info.group_name,
@@ -187,23 +172,6 @@ pub async fn proxy_handler(
                 // --- Terminal Success ---
                 s if s.is_success() => {
                     info!(status = s.as_u16(), "Request successful.");
-                    // --- Cache Put ---
-                    if state.cache.should_cache(s, response.headers()) {
-                        let (parts, body) = response.into_parts();
-                        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
-                        state
-                            .cache
-                            .put(
-                                cache_key.clone(),
-                                body_bytes.to_vec(),
-                                parts.headers.clone(),
-                                parts.status,
-                                None,
-                            )
-                            .await;
-                        // Reconstruct the response
-                        return Ok(Response::from_parts(parts, axum::body::Body::from(body_bytes)));
-                    }
                     return Ok(response);
                 }
                 // --- Terminal Client Errors (400, 404, 504) ---

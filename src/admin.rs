@@ -1,6 +1,5 @@
 // src/admin.rs
 
-use crate::cache::CacheStats;
 use crate::config::AppConfig;
 use crate::error::{AppError, Result};
 use crate::key_manager::{KeyStatus as KmKeyStatus}; // Renamed to avoid conflict
@@ -18,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use sysinfo::{System};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{warn};
 
 /// Collector for system information.
 /// Holds a single `System` instance to avoid repeated initialization
@@ -84,9 +83,6 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/admin/config", get(get_config))
         .route("/admin/config", put(update_config))
         .route("/admin/metrics", get(get_metrics_summary))
-        .route("/admin/cache", get(get_cache_stats))
-        .route("/admin/cache", delete(clear_cache))
-        .route("/admin/cache/:key", delete(evict_cache_entry))
 }
 
 /// Detailed health check response
@@ -98,7 +94,6 @@ pub struct DetailedHealthStatus {
     pub uptime_seconds: u64,
     pub server_info: ServerInfo,
     pub key_status: KeyStatus,
-    pub cache_status: CacheStats,
     pub proxy_status: HashMap<String, ProxyStatus>,
     pub system_info: SystemInfo,
 }
@@ -259,7 +254,6 @@ pub async fn detailed_health(State(state): State<Arc<AppState>>) -> Result<Json<
     let proxy_status = HashMap::new();
     // TODO: Implement proxy health checks
 
-    let cache_stats = state.cache.stats().await;
     let uptime = state.start_time.elapsed().as_secs();
 
     let health_status = DetailedHealthStatus {
@@ -286,7 +280,6 @@ pub async fn detailed_health(State(state): State<Arc<AppState>>) -> Result<Json<
             temporarily_unavailable_keys: temp_unavailable_keys,
             groups: group_statuses,
         },
-        cache_status: cache_stats,
         proxy_status,
         system_info: SystemInfo {
             memory_usage_mb: state.system_info.get_memory_usage().await,
@@ -438,52 +431,6 @@ pub async fn update_config(
 pub async fn get_metrics_summary(State(_state): State<Arc<AppState>>) -> Result<Json<()>> {
     // TODO: Collect actual metrics
     Ok(Json(()))
-}
-
-/// Get cache statistics
-///
-/// # Errors
-///
-/// This function currently does not return errors but is declared as `Result`
-/// for future compatibility.
-#[axum::debug_handler]
-pub async fn get_cache_stats(State(state): State<Arc<AppState>>) -> Result<Json<CacheStats>> {
-    let cache_stats = state.cache.stats().await;
-    Ok(Json(cache_stats))
-}
-
-/// Clear cache
-///
-/// # Errors
-///
-/// This function currently does not return errors but is declared as `Result`
-/// for future compatibility.
-#[axum::debug_handler]
-pub async fn clear_cache(State(state): State<Arc<AppState>>) -> Result<StatusCode> {
-    state.cache.clear().await;
-    info!("Cache cleared successfully");
-    Ok(StatusCode::OK)
-}
-
-/// Evict specific cache entry
-///
-/// # Errors
-///
-/// This function currently does not return errors but is declared as `Result`
-/// for future compatibility.
-#[axum::debug_handler]
-pub async fn evict_cache_entry(
-    State(state): State<Arc<AppState>>,
-    Path(key): Path<String>,
-) -> Result<StatusCode> {
-    info!(cache_key = %key, "Cache entry eviction requested");
-    if state.cache.remove(&key).await {
-        info!(cache_key = %key, "Cache entry evicted successfully");
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        warn!(cache_key = %key, "Cache entry not found for eviction");
-        Ok(StatusCode::NOT_FOUND)
-    }
 }
 /// Serve the admin dashboard
 pub async fn serve_dashboard(State(state): State<Arc<AppState>>) -> Html<String> {
