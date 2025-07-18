@@ -1,55 +1,33 @@
-# Example Configuration for Gemini Proxy
+# Example configuration for the Gemini Proxy
 
-# Optional: A global 'top_p' value to apply to all requests that don't have it specified
-# at the client or group level. Must be between 0.0 and 1.0.
-# The priority for this setting is: Client Request > Group Config > Global Config.
-# top_p: 0.9
-
-# Server configuration where the proxy itself listens.
-# The 'host' field is no longer configured here; the server binds to 0.0.0.0 by default.
+# Server settings
 server:
-  # Port number for the proxy server to listen on.
-  port: 8080
+  # Port the proxy will listen on
+  port: 8081
+  # Optional: Default top_p value for generation, must be between 0.0 and 1.0.
+  # This value will be injected into the request body if it's not already present.
+  top_p: 0.95
+  # Optional: Time-to-live for cached responses in seconds.
+  cache_ttl_secs: 300
+  # Optional: Maximum number of entries in the cache.
+  cache_max_size: 100
 
-# List of key groups. The proxy rotates through keys from ALL groups combined.
+# API key groups. The proxy will rotate through keys in a round-robin fashion.
 groups:
-  # This group will use the global `top_p` setting (if defined above) ONLY if the
-  # client does not provide a `top_p` in their request.
-  - name: "default-group"
-    # Target URL for requests using keys from this group.
-    # If omitted, defaults to the Google API endpoint for OpenAI compatibility.
-    # target_url: "https://generativelanguage.googleapis.com"
+  # Default group. You can have multiple groups.
+  - name: "Default"
+    # List of your Google Gemini API keys
+    api_keys:
+      - "your-gemini-api-key-1"
+      - "your-gemini-api-key-2"
+      - "your-gemini-api-key-3"
+    # Optional: Define an upstream proxy for this specific group.
+    # Supported schemes: http, https, socks5
+    # proxy_url: "socks5://user:password@host:port"
 
-    # Optional: Specify an upstream proxy (e.g., SOCKS5) for requests.
-    # proxy_url: "socks5://user:pass@your-proxy.com:1080"
-
-    # --- API Key Configuration ---
-    # --- API Key Configuration ---
-    # Option 1 (Recommended): Use Environment Variable
-    # The proxy will look for: GEMINI_PROXY_GROUP_DEFAULT_GROUP_API_KEYS
-    # See the "API Key Environment Variables" section in README.md for naming rules.
-    api_keys: []
-
-    # Option 2 (Less Secure): Define keys directly here
-    # api_keys:
-    #   - "YOUR_GEMINI_API_KEY_1"
-    #   - "YOUR_GEMINI_API_KEY_2"
-
-  # This group overrides the global `top_p` with its own specific value.
-  - name: "group-with-override-top-p"
-    # Optional: Override the 'top_p' parameter for requests using this group.
-    # This value must be between 0.0 and 1.0 (inclusive).
-    # It takes precedence over the global `top_p` setting, but is still overridden
-    # by a `top_p` value sent in the client's request body.
-    top_p: 0.95
-
-    # --- API Key Configuration ---
-    # Use environment variable: GEMINI_PROXY_GROUP_GROUP_WITH_OVERRIDE_TOP_P_API_KEYS
-    api_keys: []
-
-# You can add more groups as needed.
-#
-# Example of a third group using a specific proxy and no top_p override:
-# - name: "proxied-group"
-#   proxy_url: "socks5://user:pass@another-proxy.com:1080"
-#   api_keys: [] # Provide keys via GEMINI_PROXY_GROUP_PROXIED_GROUP_API_KEYS
+  # Example of another group with its own keys and proxy
+  # - name: "Group2-With-Proxy"
+  #   api_keys:
+  #     - "your-other-gemini-key-A"
+  #     - "your-other-gemini-key-B"
+  #   proxy_url: "http://proxy.example.com:8080"
