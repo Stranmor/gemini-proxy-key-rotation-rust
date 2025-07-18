@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     extract::{Request, State},
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::Response,
 };
 use chrono::Duration as ChronoDuration;
@@ -58,8 +58,16 @@ pub async fn proxy_handler(
 
     // Extract parts from the original request *before* the loop
     let method = req.method().clone();
-    let uri = req.uri().clone();
+    let mut uri = req.uri().clone();
     let headers = req.headers().clone();
+
+    // Special handling for /health/detailed to map it to the models endpoint
+    if uri.path() == "/health/detailed" {
+        let mut parts = uri.into_parts();
+        parts.path_and_query = Some("/v1beta/models".parse().unwrap());
+        uri = Uri::from_parts(parts).unwrap();
+        info!(new_path = %uri.path(), "Translated /health/detailed to models endpoint");
+    }
 
     // Buffer the body. Handle potential errors during buffering.
     let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
@@ -111,6 +119,15 @@ pub async fn proxy_handler(
             );
 
             // --- URL Translation ---
+            // This block translates OpenAI-compatible paths to Gemini-specific paths.
+            // For example, a request to `/v1/chat/completions` is proxied
+            // to `/v1beta/openai/chat/completions` on the target service.
+            let translated_path = if let Some(stripped_path) = uri.path().strip_prefix("/v1/") {
+                format!("/v1beta/openai/{}", stripped_path)
+            } else {
+                uri.path().to_string()
+            };
+
             // --- URL Construction ---
             let base_url = Url::parse(&key_info.target_url).map_err(|e| {
                 error!(
@@ -122,14 +139,7 @@ pub async fn proxy_handler(
                 AppError::Internal(format!("Invalid base URL in config: {e}"))
             })?;
 
-            // Translate specific health check path
-            let path_to_join = if uri.path() == "/health/detailed" {
-                "/v1beta/models"
-            } else {
-                uri.path()
-            };
-
-            let mut final_target_url = base_url.join(path_to_join).map_err(|e| {
+            let mut final_target_url = base_url.join(&translated_path).map_err(|e| {
                 error!(
                     base_url = %base_url,
                     path = %uri.path(),
