@@ -76,7 +76,7 @@ const fn default_cache_max_size() -> usize {
     1000 // Max 1000 entries
 }
 fn default_target_url() -> String {
-    "https://generativelanguage.googleapis.com/v1beta".to_string()
+    "https://generativelanguage.googleapis.com/".to_string()
 }
 
 // --- Helper Functions ---

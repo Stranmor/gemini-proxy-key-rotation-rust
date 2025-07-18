@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, Method}, // Removed unused StatusCode
+    http::{header, HeaderMap, HeaderValue, Method}, // Removed unused StatusCode
     response::Response,
 };
 
@@ -61,73 +61,46 @@ pub async fn forward_request(
 
     let final_target_url = target_url;
     let outgoing_method = method;
-    let outgoing_headers = build_forward_headers(&headers)?; // Removed api_key argument
+    let mut outgoing_headers = build_forward_headers(&headers, api_key)?;
 
     // --- Body Modification ---
-    let outgoing_reqwest_body = {
-        // If body is empty or not valid JSON, we can't inject anything, so forward original.
-        match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-            Ok(mut json_body) => {
-                // Successfully parsed JSON, now check logic.
-                let client_has_top_p = json_body
-                    .get("generationConfig")
-                    .and_then(|gc| gc.get("topP"))
-                    .is_some();
-
-                if client_has_top_p {
-                    debug!("Client provided top_p, forwarding original body.");
-                    reqwest::Body::from(body_bytes)
-                } else {
-                    // Client did not provide top_p, check for server-side config.
-                    if let Some(top_p_value) = key_info.top_p.or(state.config.server.top_p) {
-                        // Inject server-side top_p.
-                        let injection_result = (|| {
-                            // Use a closure to handle multiple ? operators
-                            let obj = json_body.as_object_mut()?;
-                            let generation_config = obj
-                                .entry("generationConfig")
-                                .or_insert_with(|| serde_json::json!({}));
-                            let config_obj = generation_config.as_object_mut()?;
-                            config_obj.insert("topP".to_string(), serde_json::json!(top_p_value));
-                            Some(())
-                        })();
-
-                        if injection_result.is_some() {
-                            // Reserialize and create new body.
-                            match serde_json::to_vec(&json_body) {
-                                Ok(modified_body_bytes) => {
-                                    let source = if key_info.top_p.is_some() {
-                                        "group"
-                                    } else {
-                                        "server"
-                                    };
-                                    debug!(group.name = %group_name, top_p = top_p_value, top_p.source = source, "Successfully injected server-side top_p");
-                                    reqwest::Body::from(Bytes::from(modified_body_bytes))
-                                }
-                                Err(e) => {
-                                    warn!(group.name = %group_name, error = %e, "Failed to re-serialize body after top_p injection, forwarding original body");
-                                    reqwest::Body::from(body_bytes)
-                                }
-                            }
+    let body_to_send =
+        if let Some(top_p_value) = state.config.server.top_p {
+            // Attempt to modify the body only if top_p is configured.
+            // The logic is wrapped in a closure to easily return the original bytes on any failure.
+            let modified_body_bytes = (|| {
+                if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                    if let Some(obj) = json_body.as_object_mut() {
+                        obj.insert("top_p".to_string(), serde_json::json!(top_p_value));
+                        if let Ok(modified_bytes) = serde_json::to_vec(&json_body) {
+                            info!(top_p = top_p_value, "Successfully injected top_p into request body");
+                            return Bytes::from(modified_bytes);
                         } else {
-                            warn!("Failed to inject top_p because the JSON structure was not as expected (e.g., not an object). Forwarding original body.");
-                            reqwest::Body::from(body_bytes)
+                            warn!("Failed to re-serialize JSON body after injecting top_p, forwarding original body.");
                         }
                     } else {
-                        // No client top_p and no server top_p, forward original.
-                        reqwest::Body::from(body_bytes)
+                        debug!("Request body is valid JSON but not an object, cannot inject top_p.");
                     }
+                } else {
+                    debug!("Request body is not valid JSON, cannot inject top_p.");
                 }
-            }
-            Err(_) => {
-                // Body is not valid JSON, forward as is.
-                trace!("Request body is not valid JSON, cannot process for top_p injection. Forwarding original body.");
-                reqwest::Body::from(body_bytes)
-            }
-        }
-    };
-    // --- End Body Modification ---
+                body_bytes.clone() // Return original on any failure
+            })();
 
+            // If the body was modified, update the Content-Length header.
+            if modified_body_bytes.len() != body_bytes.len() {
+                let new_length = modified_body_bytes.len();
+                debug!(old_len = body_bytes.len(), new_len = new_length, "Updating Content-Length due to body modification");
+                outgoing_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(new_length));
+            }
+
+            modified_body_bytes
+        } else {
+            body_bytes
+        };
+
+    let outgoing_reqwest_body = reqwest::Body::from(body_to_send);
+    // --- End Body Modification ---
     // --- Get Client ---
     let http_client = state.get_client(proxy_url_option)?; // Error handled within
                                                            // ---
@@ -231,20 +204,6 @@ pub async fn forward_request(
         .status(response_status)
         .body(axum_response_body)
         .map_err(|e| {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             error!(error = %e, "Failed to build final client response");
             AppError::Internal(format!("Failed to construct client response: {e}"))
         })?;
@@ -256,12 +215,11 @@ pub async fn forward_request(
 
 /// Creates the `HeaderMap` for the outgoing request to the target service.
 /// Now returns a Result to handle potential errors from add_auth_headers.
-#[tracing::instrument(level="debug", skip(original_headers), fields(header_count = original_headers.len()))] // Removed api_key
-fn build_forward_headers(original_headers: &HeaderMap) -> Result<HeaderMap> { // Removed api_key parameter
-    let mut filtered = HeaderMap::with_capacity(original_headers.len());
+#[tracing::instrument(level="debug", skip(original_headers, api_key), fields(header_count = original_headers.len()))]
+fn build_forward_headers(original_headers: &HeaderMap, api_key: &str) -> Result<HeaderMap> {
+    let mut filtered = HeaderMap::with_capacity(original_headers.len() + 3);
     copy_non_hop_by_hop_headers(original_headers, &mut filtered, true);
-    // Auth headers are now part of the URL query string, so we don't add them here.
-    // We also don't need to call `add_auth_headers` anymore.
+    add_auth_headers(&mut filtered, api_key)?;
     Ok(filtered)
 }
 
@@ -288,13 +246,31 @@ fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_requ
     }
 }
 
-// The `add_auth_headers` function is no longer needed as authentication
-// is handled via query parameters in the URL.
+/// Adds the necessary authentication headers (`x-goog-api-key` and `Authorization: Bearer`).
+/// Returns a Result to indicate potential failures.
+#[tracing::instrument(level="debug")] // Removed skip attribute
+// Now takes api_key to add the Bearer token
+fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
+    let auth_value_str = format!("Bearer {}", api_key);
+    match HeaderValue::from_str(&auth_value_str) {
+        Ok(auth_value) => {
+            headers.insert(header::AUTHORIZATION, auth_value);
+            trace!(header.name="Authorization", header.action="add", "Added Bearer token");
+            Ok(())
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to create Authorization header value");
+            Err(AppError::Internal(
+                "Failed to construct Authorization header".to_string(),
+            ))
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{header, HeaderName, HeaderValue}; // Correct imports
+    use axum::http::{header, HeaderName, HeaderValue,};
      // Import Error trait for source()
 
     #[test]
@@ -311,7 +287,7 @@ mod tests {
         original_headers.insert("x-goog-api-key", HeaderValue::from_static("old_key")); // Auth, should be removed
 
         // api_key is no longer passed as it's handled in URL construction
-        let result_headers = build_forward_headers(&original_headers).unwrap();
+        let result_headers = build_forward_headers(&original_headers, "test_key").unwrap();
 
         // Check standard headers are present
         assert_eq!(
@@ -324,9 +300,10 @@ mod tests {
         assert!(result_headers.get("host").is_none());
         assert!(result_headers.get("connection").is_none());
 
-        // Check that auth headers are NOT present (removed as key is in URL)
+        // Check that x-goog-api-key is absent, but the new Authorization header is present.
         assert!(result_headers.get("x-goog-api-key").is_none());
-        assert!(result_headers.get(header::AUTHORIZATION).is_none());
+        let auth_header = result_headers.get(header::AUTHORIZATION).unwrap();
+        assert_eq!(auth_header, "Bearer test_key");
     }
 
     #[test]
@@ -339,30 +316,20 @@ mod tests {
         original_headers.insert("x-goog-api-key", HeaderValue::from_static("client_key"));
         original_headers.insert("x-custom-header", HeaderValue::from_static("custom_value"));
 
-        let result_headers = build_forward_headers(&original_headers).unwrap();
+        let result_headers = build_forward_headers(&original_headers, "some_key").unwrap();
 
-        assert!(result_headers.get(header::AUTHORIZATION).is_none());
         assert!(result_headers.get("x-goog-api-key").is_none());
         assert_eq!(
             result_headers.get("x-custom-header").unwrap(),
             "custom_value"
         );
-        assert_eq!(result_headers.len(), 1);
+        assert_eq!(result_headers.len(), 2);
     }
 
     // Removed test: test_build_forward_headers_invalid_key_chars
 
     #[test]
     fn test_build_response_headers_filters_hop_by_hop() {
-
-
-
-
-
-
-
-
-
 
 
 
