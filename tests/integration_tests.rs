@@ -76,10 +76,11 @@ async fn test_forward_request_openai_compat_success_no_proxy() {
     let server = MockServer::start().await;
     let test_api_key = "test-key-123";
     let test_path = "/v1/models";
+    let expected_path = "/v1beta/openai/models";
     // let _expected_bearer = format!("Bearer {}", test_api_key); // Unused now
 
     Mock::given(method("GET"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", test_api_key)) // Match key in query param
         // Removed header matchers
         .respond_with(
@@ -129,10 +130,11 @@ async fn test_handler_retries_on_429_and_succeeds() {
     let key1 = "key-limited";
     let key2 = "key-working";
     let test_path = "/v1/generateContent";
+    let expected_path = "/v1beta/openai/generateContent";
 
     // Mock for the first key (key1) - returns 429
     Mock::given(method("POST")) // Assuming POST for generateContent
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", key1)) // Match key in query param
         // Removed header matcher
         .respond_with(ResponseTemplate::new(429).set_body_string("Rate limit exceeded"))
@@ -141,7 +143,7 @@ async fn test_handler_retries_on_429_and_succeeds() {
 
     // Mock for the second key (key2) - returns 200
     Mock::given(method("POST"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", key2)) // Match key in query param
         // Removed header matcher
         .respond_with(ResponseTemplate::new(200).set_body_string("{\"candidates\": []}")) // Example success response
@@ -202,10 +204,11 @@ async fn test_handler_returns_last_429_on_exhaustion() {
     let key1 = "key-exhausted-1";
     let key2 = "key-exhausted-2";
     let test_path = "/v1/models"; // Using GET for simplicity here
+    let expected_path = "/v1beta/openai/models";
 
     // Mock for the first key (key1) - returns 429
     Mock::given(method("GET"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", key1)) // Match key in query param
         // Removed header matcher
         .respond_with(ResponseTemplate::new(429).set_body_string("Rate limit 1"))
@@ -214,7 +217,7 @@ async fn test_handler_returns_last_429_on_exhaustion() {
 
     // Mock for the second key (key2) - also returns 429
     Mock::given(method("GET"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", key2)) // Match key in query param
         // Removed header matcher
         .respond_with(ResponseTemplate::new(429).set_body_string("Rate limit 2")) // Different body to check which 429 is returned
@@ -268,6 +271,7 @@ async fn test_handler_group_round_robin() {
     // 1. Setup Mock Server
     let server = MockServer::start().await;
     let test_path = "/v1/models";
+    let expected_path = "/v1beta/openai/models";
 
     let g1_key1 = "g1-key-1";
     let g1_key2 = "g1-key-2";
@@ -277,7 +281,7 @@ async fn test_handler_group_round_robin() {
     // Mock successful responses for all keys initially
     for key in [g1_key1, g1_key2, g2_key1, g3_key1] {
         Mock::given(method("GET"))
-            .and(path_regex(format!("^{}.*", test_path))) // Match any path starting with test_path
+            .and(path_regex(format!("^{}.*", expected_path))) // Match any path starting with test_path
             .and(query_param("key", key))
             .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{}\"}}", key)))
             .mount(&server)
@@ -361,7 +365,7 @@ async fn test_handler_group_round_robin() {
     // Reset mocks and set g2_key1 to return 429, others to 200
     server.reset().await;
     Mock::given(method("GET"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", g2_key1))
         .respond_with(ResponseTemplate::new(429))
         .mount(&server)
@@ -369,7 +373,7 @@ async fn test_handler_group_round_robin() {
     // Remount mocks for other keys to return 200
     for key in [g1_key1, g1_key2, g3_key1] { // Exclude g2_key1
         Mock::given(method("GET"))
-            .and(path(test_path))
+            .and(path(expected_path))
             .and(query_param("key", key))
             .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{}\"}}", key)))
             .mount(&server)
@@ -413,11 +417,12 @@ async fn test_openai_top_p_injection_correctly() {
     let server = MockServer::start().await;
     let test_api_key = "openai-top-p-key";
     let test_path = "/v1/chat/completions";
+    let expected_path = "/v1beta/openai/chat/completions";
     let top_p_value = 0.88f32;
 
     // Mock to verify the body modification
     Mock::given(method("POST"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", test_api_key))
         .and(move |req: &wiremock::Request| {
             // Custom matcher to inspect the body for a top-level "top_p"
@@ -538,6 +543,7 @@ async fn test_content_length_is_updated_after_top_p_injection() {
     let server = MockServer::start().await;
     let test_api_key = "content-length-key";
     let test_path = "/v1/chat/completions";
+    let expected_path = "/v1beta/openai/chat/completions";
     let top_p_value = 0.88f32;
 
     // The original body without top_p
@@ -554,7 +560,7 @@ async fn test_content_length_is_updated_after_top_p_injection() {
 
     // Mock to verify the body and the Content-Length header
     Mock::given(method("POST"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", test_api_key))
         .and(move |req: &wiremock::Request| {
             // Check Content-Length header first
@@ -624,12 +630,13 @@ async fn test_top_p_client_precedence() {
     let server = MockServer::start().await;
     let test_api_key = "client-precedence-key";
     let test_path = "/v1/models:generateContent";
+    let expected_path = "/v1beta/openai/models:generateContent";
     let server_top_p = 0.5; // Server-side config
     let client_top_p = 0.99; // Client-side value, should win
 
     // Mock to verify that the client's top_p is what arrives
     Mock::given(method("POST"))
-        .and(path(test_path))
+        .and(path(expected_path))
         .and(query_param("key", test_api_key))
         .and(move |req: &wiremock::Request| {
             // Custom matcher to inspect the body
@@ -687,4 +694,113 @@ async fn test_top_p_client_precedence() {
         StatusCode::OK,
         "Expected status OK (200) when client top_p takes precedence"
     );
+}
+
+#[tokio::test]
+async fn test_url_translation_for_v1_path() {
+    // Goal: Verify that a request to a `/v1/...` path is translated to `/v1beta/openai/...`
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let test_api_key = "translation-key-v1";
+    let incoming_path = "/v1/chat/completions";
+    let expected_translated_path = "/v1beta/openai/chat/completions";
+
+    // Mock to expect the *translated* path
+    Mock::given(method("POST"))
+        .and(path(expected_translated_path))
+        .and(query_param("key", test_api_key))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "ok" })))
+        .mount(&server)
+        .await;
+
+    // 2. Setup Config and State
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    let test_group = KeyGroup {
+        name: "translation-group".to_string(),
+        api_keys: vec![test_api_key.to_string()],
+        target_url: server.uri(),
+        proxy_url: None,
+        top_p: None,
+    };
+    let config = create_test_config(vec![test_group], 9990);
+    let app_state = Arc::new(
+        AppState::new(&config, &dummy_config_path)
+            .await
+            .expect("AppState failed"),
+    );
+
+    // 3. Call handler with the original `/v1/...` path
+    let response = call_proxy_handler(
+        app_state,
+        Method::POST,
+        incoming_path,
+        axum::body::Body::empty(),
+    )
+    .await;
+
+    // 4. Assertions
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected status OK (200) for translated v1 path"
+    );
+    // The mock server implicitly verifies that the path was translated correctly.
+    // If the request had gone to the original path, the mock would not have matched,
+    // and wiremock would have returned a 404, failing the test.
+}
+
+#[tokio::test]
+async fn test_url_translation_for_non_v1_path() {
+    // Goal: Verify that a request to a path NOT starting with `/v1/` is NOT translated.
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let test_api_key = "translation-key-non-v1";
+    let incoming_path = "/health"; // A non-v1 path
+
+    // Mock to expect the *original* path, unchanged
+    Mock::given(method("GET"))
+        .and(path(incoming_path))
+        .and(query_param("key", test_api_key))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "healthy" })))
+        .mount(&server)
+        .await;
+
+    // 2. Setup Config and State
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    let test_group = KeyGroup {
+        name: "non-translation-group".to_string(),
+        api_keys: vec![test_api_key.to_string()],
+        target_url: server.uri(),
+        proxy_url: None,
+        top_p: None,
+    };
+    let config = create_test_config(vec![test_group], 9989);
+    let app_state = Arc::new(
+        AppState::new(&config, &dummy_config_path)
+            .await
+            .expect("AppState failed"),
+    );
+
+    // 3. Call handler with the non-v1 path
+    let response = call_proxy_handler(
+        app_state,
+        Method::GET,
+        incoming_path,
+        axum::body::Body::empty(),
+    )
+    .await;
+
+    // 4. Assertions
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected status OK (200) for non-v1 path"
+    );
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(body_str.contains("healthy"));
 }
