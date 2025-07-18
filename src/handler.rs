@@ -2,13 +2,12 @@
 
 use crate::{
     error::{AppError, Result},
-    key_manager::FlattenedKeyInfo,
     proxy, // Import the proxy module
     state::AppState,
 };
 use axum::{
     extract::{Request, State},
-    http::{StatusCode, Uri},
+    http::StatusCode,
     response::Response,
 };
 use chrono::Duration as ChronoDuration;
@@ -127,27 +126,55 @@ pub async fn proxy_handler(
             );
 
             // --- URL Translation ---
-            let final_target_url =
-                match build_translated_gemini_url(&key_info, &uri).await {
-                    Ok(url) => url,
-                    Err(e) => {
-                        error!("Failed to build translated Gemini URL: {}. This is a non-retriable client error.", e);
-                        return Err(e);
-                    }
-                };
-            // --- End URL Translation ---
+            // --- URL Construction ---
+            let mut base_url = Url::parse(&key_info.target_url).map_err(|e| {
+                error!(
+                    target_base_url = %key_info.target_url,
+                    group.name = %key_info.group_name,
+                    error = %e,
+                    "Failed to parse target_base_url from configuration for group"
+                );
+                AppError::Internal(format!("Invalid base URL in config: {e}"))
+            })?;
+
+            // Translate specific health check path
+            let path_to_join = if uri.path() == "/health/detailed" {
+                "/v1beta/models"
+            } else {
+                uri.path()
+            };
+
+            let mut final_target_url = base_url.join(path_to_join).map_err(|e| {
+                error!(
+                    base_url = %base_url,
+                    path = %uri.path(),
+                    error = %e,
+                    "Failed to join path to base URL"
+                );
+                AppError::UrlJoinError(e.to_string())
+            })?;
+
+            if let Some(query) = uri.query() {
+                final_target_url.set_query(Some(query));
+            }
+
+            final_target_url
+                .query_pairs_mut()
+                .append_pair("key", &key_info.key);
+                
+            debug!(target.url = %final_target_url, "Constructed final target URL for request");
+            // --- End URL Construction ---
 
             let forward_result = proxy::forward_request(
                 &state,
                 &key_info,
                 method.clone(),
-                final_target_url, // Pass the translated URL
+                final_target_url, // Pass the constructed URL
                 headers.clone(),
                 body_bytes.clone(),
-            )
-            .await;
+            );
 
-            let response = match forward_result {
+            let response = match forward_result.await {
                 Ok(resp) => resp,
                 Err(err) => {
                     error!(error = ?err, "Request forwarding failed. Not retrying.");
@@ -250,41 +277,5 @@ pub async fn proxy_handler(
 
 
 
-/// Builds the final Gemini URL, including the API key.
-/// This function encapsulates the logic that was previously inside `proxy::forward_request`.
-async fn build_translated_gemini_url(
-    key_info: &FlattenedKeyInfo,
-    original_uri: &Uri,
-) -> Result<Url> {
-    let target_base_url_str = &key_info.target_url;
-    let base_url = Url::parse(target_base_url_str).map_err(|e| {
-        error!(
-            target_base_url = %target_base_url_str,
-            group.name = %key_info.group_name,
-            error = %e,
-            "Failed to parse target_base_url from configuration for group"
-        );
-        AppError::Internal(format!("Invalid base URL in config: {e}"))
-    })?;
-
-    let mut final_target_url = base_url;
-    let original_path = original_uri.path().trim_start_matches('/');
-    if !original_path.is_empty() {
-        final_target_url
-            .path_segments_mut()
-            .map_err(|_| AppError::UrlJoinError("URL cannot be a base".to_string()))?
-            .extend(original_path.split('/'));
-    }
-
-    if let Some(query) = original_uri.query() {
-        final_target_url.set_query(Some(query));
-    }
-
-    final_target_url
-        .query_pairs_mut()
-        .append_pair("key", &key_info.key);
-        
-    debug!(target.url = %final_target_url, "Constructed final target URL with key for request");
-
-    Ok(final_target_url)
-}
+// Removed the incorrect build_translated_gemini_url function.
+// The logic is now correctly handled inside the proxy_handler.

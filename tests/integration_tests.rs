@@ -407,55 +407,57 @@ async fn test_handler_group_round_robin() {
 // - Test SOCKS5 proxy scenario (more complex setup needed)
 
 #[tokio::test]
-async fn test_top_p_injection() {
+async fn test_openai_top_p_injection_correctly() {
+    // Goal: Verify that top_p is injected at the top level for OpenAI compatibility.
     // 1. Setup Mock Server
     let server = MockServer::start().await;
-    let test_api_key = "top-p-key";
-    let test_path = "/v1/models:generateContent";
-    let top_p_value = 0.95;
+    let test_api_key = "openai-top-p-key";
+    let test_path = "/v1/chat/completions";
+    let top_p_value = 0.88f32;
 
     // Mock to verify the body modification
     Mock::given(method("POST"))
         .and(path(test_path))
         .and(query_param("key", test_api_key))
         .and(move |req: &wiremock::Request| {
-            // Custom matcher to inspect the body
+            // Custom matcher to inspect the body for a top-level "top_p"
             if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&req.body) {
-                if let Some(config) = body_json.get("generationConfig") {
-                    if let Some(top_p) = config.get("topP") {
-                        return top_p.as_f64().map_or(false, |v| (v - top_p_value as f64).abs() < f64::EPSILON);
-                    }
+                if let Some(top_p) = body_json.get("top_p") {
+                    return top_p.as_f64().map_or(false, |v| (v as f32 - top_p_value).abs() < f32::EPSILON);
                 }
             }
             false
         })
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "candidates": [] })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "chatcmpl-123", "object": "chat.completion" })))
         .mount(&server)
         .await;
 
     // 2. Setup Config and State
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
-    let test_group = KeyGroup {
-        name: "top-p-group".to_string(),
-        api_keys: vec![test_api_key.to_string()],
-        target_url: server.uri(),
-        proxy_url: None,
-        top_p: Some(top_p_value),
-    };
-    let config = create_test_config(vec![test_group], 9995);
+    
+    // Create a new AppConfig with top_p at the server level for this test
+    let mut config = create_test_config(vec![
+        KeyGroup {
+            name: "openai-top-p-group".to_string(),
+            api_keys: vec![test_api_key.to_string()],
+            target_url: server.uri(),
+            proxy_url: None,
+            top_p: None, // Group level top_p is not used for this path
+        }
+    ], 9993);
+    config.server.top_p = Some(top_p_value); // Set top_p at the server level
+
     let app_state = Arc::new(
         AppState::new(&config, &dummy_config_path)
             .await
             .expect("AppState failed"),
     );
 
-    // 3. Call handler with a body that needs modification
+    // 3. Call handler with a standard OpenAI body
     let original_body = serde_json::json!({
-        "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
-        "generationConfig": {
-            "temperature": 0.7
-        }
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "Hello!"}]
     });
     let body_bytes = serde_json::to_vec(&original_body).unwrap();
     let response = call_proxy_handler(
@@ -470,9 +472,152 @@ async fn test_top_p_injection() {
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "Expected status OK (200) with top_p injected"
+        "Expected status OK (200) with top_p injected for openai compat"
     );
 }
+
+#[tokio::test]
+async fn test_health_detailed_maps_to_models_endpoint() {
+    // Goal: Verify that /health/detailed calls the upstream /v1beta/models endpoint.
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let test_api_key = "health-check-key";
+    let models_path = "/v1beta/models";
+    let mock_response_body = serde_json::json!({ "data": ["model1"] });
+
+    // Mock for the upstream models endpoint
+    Mock::given(method("GET"))
+        .and(path(models_path))
+        .and(query_param("key", test_api_key))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response_body))
+        .mount(&server)
+        .await;
+
+    // 2. Setup Config and State
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    let test_group = KeyGroup {
+        name: "health-group".to_string(),
+        api_keys: vec![test_api_key.to_string()],
+        target_url: server.uri(),
+        proxy_url: None,
+        top_p: None,
+    };
+    let config = create_test_config(vec![test_group], 9992);
+    let app_state = Arc::new(
+        AppState::new(&config, &dummy_config_path)
+            .await
+            .expect("AppState failed"),
+    );
+
+    // 3. Call handler for the /health/detailed path
+    let response = call_proxy_handler(
+        app_state,
+        Method::GET,
+        "/health/detailed",
+        axum::body::Body::empty(),
+    ).await;
+
+    // 4. Assertions
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected status OK (200) for /health/detailed"
+    );
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("Failed to read response body");
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+    assert_eq!(body_json, mock_response_body, "Response body from /health/detailed did not match expected models list");
+}
+
+#[tokio::test]
+async fn test_content_length_is_updated_after_top_p_injection() {
+    // Goal: Verify Content-Length is recalculated after body modification.
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let test_api_key = "content-length-key";
+    let test_path = "/v1/chat/completions";
+    let top_p_value = 0.88f32;
+
+    // The original body without top_p
+    let original_body = serde_json::json!({
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "Hello!"}]
+    });
+
+    // The expected body *after* injection
+    let mut expected_body_json = original_body.clone();
+    expected_body_json["top_p"] = serde_json::json!(top_p_value);
+    let expected_body_bytes = serde_json::to_vec(&expected_body_json).unwrap();
+    let expected_content_length = expected_body_bytes.len().to_string();
+
+    // Mock to verify the body and the Content-Length header
+    Mock::given(method("POST"))
+        .and(path(test_path))
+        .and(query_param("key", test_api_key))
+        .and(move |req: &wiremock::Request| {
+            // Check Content-Length header first
+            let has_correct_content_length = req
+                .headers
+                .get("Content-Length")
+                .map_or(false, |val| val.to_str().unwrap() == expected_content_length);
+
+            if !has_correct_content_length {
+                return false;
+            }
+
+            // Check body content
+            if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&req.body) {
+                if let Some(top_p) = body_json.get("top_p") {
+                    return top_p.as_f64().map_or(false, |v| (v as f32 - top_p_value).abs() < f32::EPSILON);
+                }
+            }
+            false
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "chatcmpl-456", "object": "chat.completion" })))
+        .mount(&server)
+        .await;
+
+    // 2. Setup Config and State
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    
+    let mut config = create_test_config(vec![
+        KeyGroup {
+            name: "content-length-group".to_string(),
+            api_keys: vec![test_api_key.to_string()],
+            target_url: server.uri(),
+            proxy_url: None,
+            top_p: None,
+        }
+    ], 9991);
+    config.server.top_p = Some(top_p_value);
+
+    let app_state = Arc::new(
+        AppState::new(&config, &dummy_config_path)
+            .await
+            .expect("AppState failed"),
+    );
+
+    // 3. Call handler
+    let body_bytes = serde_json::to_vec(&original_body).unwrap();
+    let response = call_proxy_handler(
+        app_state,
+        Method::POST,
+        test_path,
+        axum::body::Body::from(body_bytes),
+    )
+    .await;
+
+    // 4. Assertions
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected status OK (200) with correct content-length"
+    );
+}
+
 #[tokio::test]
 async fn test_top_p_client_precedence() {
     // 1. Setup Mock Server

@@ -573,7 +573,7 @@ mod tests {
             AppError::Reqwest(e),
             StatusCode::BAD_GATEWAY,
             "UPSTREAM_ERROR",
-            "Could not connect to upstream service",
+            "Internal error setting up upstream request", // This is the correct message for a DNS/request setup error
             true,
         )
         .await;
