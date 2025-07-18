@@ -24,3 +24,6 @@ config.yaml
 # Kilocode internal state
 # This should be ignored to avoid committing user-specific IDE state.
 /.kilocode/
+
+# Ignore Memory Bank
+memory-bank/
