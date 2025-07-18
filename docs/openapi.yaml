@@ -141,27 +141,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/KeyInfo'
-
-  /admin/cache:
-    get:
-      summary: Get cache statistics
-      description: Returns current cache statistics
-      operationId: getCacheStats
-      responses:
-        '200':
-          description: Cache statistics
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CacheStats'
-    delete:
-      summary: Clear cache
-      description: Clears all cached responses
-      operationId: clearCache
-      responses:
-        '200':
-          description: Cache cleared successfully
-
   /admin/metrics:
     get:
       summary: Get metrics summary
@@ -300,8 +279,7 @@ components:
           $ref: '#/components/schemas/ServerInfo'
         key_status:
           $ref: '#/components/schemas/KeyStatus'
-        cache_status:
-          $ref: '#/components/schemas/CacheStats'
+        
 
     ServerInfo:
       type: object
@@ -349,21 +327,6 @@ components:
           type: string
           format: date-time
           nullable: true
-
-    CacheStats:
-      type: object
-      properties:
-        total_entries:
-          type: integer
-        expired_entries:
-          type: integer
-        active_entries:
-          type: integer
-        max_size:
-          type: integer
-        default_ttl_seconds:
-          type: integer
-
     MetricsSummary:
       type: object
       properties:
@@ -371,12 +334,6 @@ components:
           type: integer
         total_retries:
           type: integer
-        total_cache_hits:
-          type: integer
-        total_cache_misses:
-          type: integer
-        cache_hit_rate:
-          type: number
         active_keys:
           type: integer
         limited_keys:

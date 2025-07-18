@@ -190,12 +190,7 @@
                 <h2>Request Metrics</h2>
                 <div id="request-metrics" class="loading">Loading...</div>
             </div>
-            
-            <div class="card">
-                <h2>Cache Statistics</h2>
-                <div id="cache-stats" class="loading">Loading...</div>
-            </div>
-        </div>
+                    </div>
         
         <div class="card">
             <h2>API Keys Status</h2>
@@ -280,34 +275,7 @@
                 </div>
             `;
         }
-        
-        function renderCacheStats(data) {
-            const container = document.getElementById('cache-stats');
-            const cache = data.cache_status;
-            const hitRate = cache.total_entries > 0 ? 
-                ((cache.active_entries / cache.total_entries) * 100).toFixed(1) : 0;
-            
-            container.innerHTML = `
-                <div class="metric">
-                    <span class="metric-label">Total Entries</span>
-                    <span class="metric-value">${cache.total_entries}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Active Entries</span>
-                    <span class="metric-value">${cache.active_entries}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Hit Rate</span>
-                    <span class="metric-value">${hitRate}%</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Max Size</span>
-                    <span class="metric-value">${cache.max_size}</span>
-                </div>
-            `;
-        }
-        
-        async function renderKeysStatus() {
+                async function renderKeysStatus() {
             const container = document.getElementById('keys-status');
             
             try {
@@ -358,7 +326,7 @@
                 const healthData = await fetchData('/admin/health');
                 renderSystemStatus(healthData);
                 renderRequestMetrics(healthData);
-                renderCacheStats(healthData);
+                
                 await renderKeysStatus();
             } catch (error) {
                 console.error('Failed to refresh data:', error);

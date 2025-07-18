@@ -6,13 +6,7 @@ server:
   port: 8081
   # Optional: Default top_p value for generation, must be between 0.0 and 1.0.
   # This value will be injected into the request body if it's not already present.
-  top_p: 0.95
-  # Optional: Time-to-live for cached responses in seconds.
-  cache_ttl_secs: 300
-  # Optional: Maximum number of entries in the cache.
-  cache_max_size: 100
-
-# API key groups. The proxy will rotate through keys in a round-robin fashion.
+  # API key groups. The proxy will rotate through keys in a round-robin fashion.
 groups:
   # Default group. You can have multiple groups.
   - name: "Default"
