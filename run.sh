@@ -13,6 +13,20 @@ else
 fi
 echo "Using $CONTAINER_RUNTIME as container runtime."
 
+# --- Configuration Setup ---
+CONFIG_FILE="config.yaml"
+EXAMPLE_CONFIG_FILE="config.example.yaml"
+
+# Check if config.yaml exists, if not, copy from example
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Configuration file $CONFIG_FILE not found. Copying from $EXAMPLE_CONFIG_FILE..."
+    cp "$EXAMPLE_CONFIG_FILE" "$CONFIG_FILE"
+    echo "Please edit $CONFIG_FILE to add your Gemini API keys."
+    # Optional: Interactive prompt for API keys
+    # read -p "Enter your Gemini API Key (e.g., your-gemini-api-key-1): " API_KEY_1
+    # sed -i "s/your-gemini-api-key-1/$API_KEY_1/" "$CONFIG_FILE"
+    # echo "API key added to $CONFIG_FILE. You can add more keys by editing the file."
+fi
 
 IMAGE_NAME="localhost/gemini-proxy-key-rotation:latest"
 CONTAINER_NAME="gemini-proxy-container"
@@ -22,9 +36,13 @@ echo "Stopping and removing existing container..."
 $CONTAINER_RUNTIME stop $CONTAINER_NAME >/dev/null 2>&1 || true
 $CONTAINER_RUNTIME rm $CONTAINER_NAME >/dev/null 2>&1 || true
 
-# Build the Docker image
-echo "Building Docker image: $IMAGE_NAME"
-$CONTAINER_RUNTIME build -t $IMAGE_NAME .
+# Check if the Docker image exists. If not, build it.
+if [ -z "$($CONTAINER_RUNTIME images -q $IMAGE_NAME)" ]; then
+    echo "Docker image $IMAGE_NAME not found. Building it now..."
+    $CONTAINER_RUNTIME build -t $IMAGE_NAME .
+else
+    echo "Docker image $IMAGE_NAME already exists. Skipping build."
+fi
 
 # Read port from config.yaml
 PORT=$(grep 'port:' config.yaml | sed 's/.*: //')

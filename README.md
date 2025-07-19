@@ -66,7 +66,7 @@ graph TD
 
 ### Running with Docker (Recommended)
 
-This method uses a simple script to run the proxy in a Docker container, mounting the necessary configuration file.
+This is the easiest and fastest way to get the proxy running. The provided `run.sh` script automates everything.
 
 1.  **Clone the Repository:**
     ```bash
@@ -74,39 +74,30 @@ This method uses a simple script to run the proxy in a Docker container, mountin
     cd gemini-proxy-key-rotation-rust
     ```
 
-2.  **Build the Docker image:**
-    ```bash
-    docker build -t gemini-proxy-key-rotation:latest .
-    ```
+2.  **Configure the Proxy:**
+    *   The script will automatically create `config.yaml` from `config.example.yaml` on the first run.
+    *   **Your only manual step:** Edit `config.yaml` and add your Gemini API keys.
 
-3.  **Configure the proxy:**
-    *   Copy the example configuration file:
-        ```bash
-        cp config.example.yaml config.yaml
-        ```
-    *   Edit `config.yaml` to add your Gemini API keys.
-
-4.  **Run the Proxy:**
-    *   The provided `run.sh` script handles everything: it stops any old container, builds the image if needed, reads the port from your `config.yaml`, and starts a new container.
+3.  **Run the Proxy:**
+    *   The `run.sh` script handles the rest: it stops any old container, builds the image if it doesn't exist, reads the port from your `config.yaml`, and starts a new container.
     ```bash
     ./run.sh
     ```
 
-5.  **Verify:**
-    *   Check the output of the script. It should say `Container gemini-proxy-container started successfully.`.
+4.  **Verify:**
+    *   Check the script's output. It should say `Container gemini-proxy-container started successfully.`.
     *   Check logs: `docker logs -f gemini-proxy-container`.
     *   Check health: `curl http://localhost:YOUR_PORT/health` (use the port you set in `config.yaml`).
     *   Test with an OpenAI client pointed to `http://localhost:YOUR_PORT`.
 
-6.  **Applying `config.yaml` Changes:**
-    *   If you modify `config.yaml` after the container is running, you **must restart** the container for the changes to take effect.
+5.  **Applying `config.yaml` Changes:**
+    *   If you modify `config.yaml` while the container is running, you **must restart** it for the changes to take effect.
     *   Simply run the script again:
         ```bash
         ./run.sh
         ```
 
-7.  **Stopping:**
-    ```bash
+6.  **Stopping:**
     ```bash
     docker stop gemini-proxy-container
     ```
