@@ -6,8 +6,9 @@ use crate::{
     state::AppState,
 };
 use axum::{
+    body::Bytes,
     extract::{Request, State},
-    http::{StatusCode, Uri},
+    http::{HeaderMap, StatusCode, Uri},
     response::Response,
 };
 use chrono::Duration as ChronoDuration;
@@ -81,7 +82,7 @@ pub async fn proxy_handler(
         }
     };
 
-    let mut last_error: Option<Response> = None;
+    let mut last_error: Option<(StatusCode, HeaderMap, Bytes)> = None;
     let mut attempt_count = 0;
 
     loop {
@@ -94,7 +95,10 @@ pub async fn proxy_handler(
                 attempts = attempt_count,
                 "No available API keys remaining after retries."
             );
-            return if let Some(response) = last_error {
+            return if let Some((status, headers, body)) = last_error {
+                let mut response = Response::new(axum::body::Body::from(body));
+                *response.status_mut() = status;
+                *response.headers_mut() = headers;
                 Ok(response)
             } else {
                 Err(AppError::NoAvailableKeys)
@@ -202,7 +206,19 @@ pub async fn proxy_handler(
                         .key_manager
                         .mark_key_as_invalid(&api_key_to_mark)
                         .await;
-                    last_error = Some(response);
+                    // Deconstruct the response, buffer the body, and store it.
+                    let (parts, body) = response.into_parts();
+                    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            error!(error = ?e, "Failed to buffer error response body");
+                            // If we can't even buffer the error response, return a generic internal error.
+                            return Err(AppError::Internal(
+                                "Failed to process error response".to_string(),
+                            ));
+                        }
+                    };
+                    last_error = Some((parts.status, parts.headers, body_bytes));
                     break; // Break internal loop to get next key
                 }
                 // --- Rate Limit Error (429) ---
@@ -215,7 +231,18 @@ pub async fn proxy_handler(
                         .key_manager
                         .mark_key_as_limited(&api_key_to_mark)
                         .await;
-                    last_error = Some(response);
+                    // Deconstruct the response, buffer the body, and store it.
+                    let (parts, body) = response.into_parts();
+                    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            error!(error = ?e, "Failed to buffer error response body");
+                            return Err(AppError::Internal(
+                                "Failed to process error response".to_string(),
+                            ));
+                        }
+                    };
+                    last_error = Some((parts.status, parts.headers, body_bytes));
                     break; // Break internal loop to get next key
                 }
                 // --- Retriable Server Errors (500, 503) ---
@@ -240,7 +267,17 @@ pub async fn proxy_handler(
                         // like 429 (rate-limited) or 403 (invalid key). This ensures
                         // we return the most relevant error to the client upon exhaustion.
                         if last_error.is_none() {
-                            last_error = Some(response);
+                            let (parts, body) = response.into_parts();
+                            let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+                                Ok(bytes) => bytes,
+                                Err(e) => {
+                                    error!(error = ?e, "Failed to buffer error response body");
+                                    return Err(AppError::Internal(
+                                        "Failed to process error response".to_string(),
+                                    ));
+                                }
+                            };
+                            last_error = Some((parts.status, parts.headers, body_bytes));
                         }
                         break; // Break internal loop to get next key
                     }
