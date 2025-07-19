@@ -107,11 +107,34 @@ This method uses a simple script to run the proxy in a Docker container, mountin
 
 7.  **Stopping:**
     ```bash
+    ```bash
     docker stop gemini-proxy-container
     ```
 
-### Building and Running Locally (for Development)
+### Personal Persistent Development Container (for Active Development)
 
+This method starts a single, persistent, and isolated container for your development work. It will not be affected by other agents or standard `make` commands.
+
+1.  **Start the Container:**
+    *   Run the following command. It will build the image and start a container with a unique name and a random, free port on your local machine.
+    ```bash
+    make start-dev
+    ```
+
+2.  **Check the Output:**
+    *   The script will print the container ID and the exact address (e.g., `127.0.0.1:49155`) you can use to connect to your personal proxy.
+
+3.  **Stopping Your Personal Container:**
+    *   Since the container has a unique name, you'll need to find it first and then stop it.
+    ```bash
+    # Find your container
+    docker ps | grep "gemini-proxy-dev"
+
+    # Stop it using its ID or name
+    docker stop <container_id_or_name>
+    ```
+
+### Building and Running Locally (for Development)
 Use this primarily for development.
 
 1.  **Clone Repository:** (If needed)

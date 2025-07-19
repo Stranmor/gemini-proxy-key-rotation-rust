@@ -2,7 +2,7 @@
 
 # Use .PHONY to declare targets that are not actual files.
 # This prevents conflicts with files of the same name and improves performance.
-.PHONY: all build up down logs restart test lint clean
+.PHONY: all build up down logs restart test lint clean start-dev
 
 # Default target that runs when `make` is called without arguments.
 all: build up
@@ -40,3 +40,9 @@ lint:
 # Clean up the project by removing the build artifacts.
 clean:
 	rm -rf target
+
+# --- Personal Developer Container ---
+
+# Start a persistent, isolated development container with a unique name and random port.
+start-dev:
+	./start-dev-container.sh
