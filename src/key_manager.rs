@@ -635,6 +635,15 @@ impl KeyManager {
             .flat_map(|(_, keys)| keys.clone())
             .collect()
     }
+
+    pub async fn is_key_invalid(&self, api_key: &str) -> bool {
+        let key_states_guard = self.key_states.read().await;
+        if let Some(key_state) = key_states_guard.get(api_key) {
+            key_state.status == KeyStatus::Invalid
+        } else {
+            false
+        }
+    }
 }
 
 /// Helper function to load key states from the JSON file, with recovery attempt from temp file.

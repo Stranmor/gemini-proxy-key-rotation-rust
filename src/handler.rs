@@ -184,19 +184,19 @@ pub async fn proxy_handler(
                     info!(status = s.as_u16(), "Request successful.");
                     return Ok(response);
                 }
-                // --- Terminal Client Errors (400, 404, 504) ---
-                StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::GATEWAY_TIMEOUT => {
+                // --- Terminal Client Errors (404, 504) ---
+                StatusCode::NOT_FOUND | StatusCode::GATEWAY_TIMEOUT => {
                     warn!(
                         status = status.as_u16(),
                         "Received terminal client error. Not retrying."
                     );
                     return Ok(response);
                 }
-                // --- Key Invalid Error (403) ---
-                StatusCode::FORBIDDEN => {
+                // --- Key Invalid Errors (400, 403) ---
+                StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN => {
                     warn!(
                         status = status.as_u16(),
-                        "Received 403 Forbidden. Marking key as invalid and retrying with next key."
+                        "Received key error, marking key as invalid and retrying."
                     );
                     state
                         .key_manager
