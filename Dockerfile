@@ -10,7 +10,7 @@ FROM rust:1.82-alpine AS builder
 ARG APP_NAME
 
 # Install build dependencies for static linking (musl) and vendored OpenSSL.
-RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig openssl-dev
+RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig
 
 # Create a workspace to cache dependencies, leveraging Docker's layer caching.
 # This layer is rebuilt only when Cargo.toml or Cargo.lock changes.
@@ -24,10 +24,17 @@ RUN cargo build --release --target x86_64-unknown-linux-musl --features reqwest/
 # This build will be fast as dependencies are already cached.
 COPY src ./src
 COPY static ./static
+COPY tests ./tests
+
+# Run tests automatically on every build.
+# If tests fail, the build will stop here.
+RUN cargo test -- --nocapture
+
 # The `rm` ensures we do a clean build of the actual application code.
 RUN rm -f target/x86_64-unknown-linux-musl/release/deps/app_cache* && \
     cargo build --release --target x86_64-unknown-linux-musl --features reqwest/native-tls-vendored && \
     strip target/x86_64-unknown-linux-musl/release/${APP_NAME}
+
 
 # Stage 2: Create the final minimal image
 # Use a specific version of Alpine for reproducible builds.
@@ -57,3 +64,4 @@ EXPOSE 8080
 
 # Define the command to run the application, using shell form to allow variable substitution.
 CMD ./${APP_NAME}
+

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, io, path::Path};
 use tracing::{debug, error, info, warn};
 use url::Url;
+use uuid::Uuid;
 
 use crate::error::{AppError, Result};
 
@@ -39,6 +40,10 @@ pub struct AppConfig {
     pub groups: Vec<KeyGroup>,
     #[serde(default)]
     pub rate_limit_behavior: RateLimitBehavior,
+    #[serde(default = "default_internal_retries")]
+    pub internal_retries: u32,
+    #[serde(default = "default_temporary_block_minutes")]
+    pub temporary_block_minutes: i64,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
@@ -48,6 +53,8 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default)]
     pub top_p: Option<f32>,
+    #[serde(default)]
+    pub admin_token: Option<String>,
 }
 
 // --- Default Implementations ---
@@ -57,12 +64,22 @@ impl Default for ServerConfig {
         Self {
             port: default_server_port(),
             top_p: None,
+            admin_token: None,
         }
     }
 }
 const fn default_server_port() -> u16 {
     8080
 }
+
+const fn default_internal_retries() -> u32 {
+    2
+}
+
+const fn default_temporary_block_minutes() -> i64 {
+    5
+}
+
 fn default_target_url() -> String {
     "https://generativelanguage.googleapis.com/".to_string()
 }
@@ -130,7 +147,7 @@ fn validate_proxy_url(g: &str, url: &str) -> bool {
 }
 
 #[tracing::instrument(level = "debug", skip(cfg, source), fields(cfg.source = %source))]
-fn validate_config(cfg: &mut AppConfig, source: &str) -> bool {
+pub fn validate_config(cfg: &mut AppConfig, source: &str) -> bool {
     let mut errors = 0;
     if !validate_server_config(&cfg.server) {
         errors += 1;
@@ -264,6 +281,63 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
     Ok(config)
 }
 
+/// Asynchronously saves the application configuration to a YAML file atomically.
+///
+/// # Arguments
+/// * `config` - A reference to the `AppConfig` to be saved.
+/// * `path` - The path to the target configuration YAML file.
+///
+/// # Errors
+/// Returns an `AppError` if:
+/// - The configuration cannot be serialized to YAML.
+/// - The parent directory of the path does not exist.
+/// - The temporary file cannot be written.
+/// - The temporary file cannot be renamed to the final path.
+#[tracing::instrument(level = "info", skip(config, path), fields(config.path = %path.display()))]
+pub async fn save_config(config: &AppConfig, path: &Path) -> Result<()> {
+    let yaml_data = serde_yaml::to_string(config).map_err(|e| {
+        error!(error = %e, "Failed to serialize AppConfig to YAML");
+        AppError::Config(format!("Failed to serialize config: {e}"))
+    })?;
+
+    let parent_dir = path.parent().ok_or_else(|| {
+        error!("Config file path has no parent directory");
+        AppError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Config file path has no parent directory",
+        ))
+    })?;
+
+    tokio::fs::create_dir_all(parent_dir).await?;
+
+    let base_filename = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp_filename = format!(".{}.{}.tmp", base_filename, Uuid::new_v4());
+    let temp_path = parent_dir.join(&temp_filename);
+
+    tokio::fs::write(&temp_path, yaml_data).await?;
+
+    if let Err(e) = tokio::fs::rename(&temp_path, path).await {
+        error!(
+            from = %temp_path.display(),
+            to = %path.display(),
+            error = ?e,
+            "Failed to atomically rename temporary config file"
+        );
+        // Attempt to clean up the temp file on rename failure
+        if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {
+            warn!(
+                temp_file.path = %temp_path.display(),
+                error = ?rm_err,
+                "Failed to remove temporary file after rename failure"
+            );
+        }
+        return Err(e.into());
+    }
+
+    info!("Successfully saved configuration.");
+    Ok(())
+}
+
 // --- Tests ---
 #[cfg(test)]
 mod tests {
@@ -291,6 +365,7 @@ mod tests {
         assert!(!validate_server_config(&ServerConfig {
             port: 0,
             top_p: None,
+            admin_token: None,
         }));
     }
     #[test]

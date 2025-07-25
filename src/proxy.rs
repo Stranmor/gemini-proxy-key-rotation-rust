@@ -63,9 +63,11 @@ pub async fn forward_request(
     let mut outgoing_headers = build_forward_headers(&headers, api_key)?;
 
     // --- Body Modification ---
-    let body_to_send =
-        if let Some(top_p_value) = state.config.server.top_p {
-            // Attempt to modify the body only if top_p is configured.
+    let body_to_send = {
+        let config_guard = state.config.read().await;
+        if let Some(top_p_value) = config_guard.server.top_p {
+            // Drop the read lock as soon as we have the value
+            drop(config_guard);
             // The logic is wrapped in a closure to easily return the original bytes on any failure.
             let modified_body_bytes = (|| {
                 if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
@@ -92,17 +94,17 @@ pub async fn forward_request(
                 debug!(old_len = body_bytes.len(), new_len = new_length, "Updating Content-Length due to body modification");
                 outgoing_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(new_length));
             }
-
-            modified_body_bytes
-        } else {
-            body_bytes
-        };
+modified_body_bytes
+} else {
+body_bytes
+}
+};
 
     let outgoing_reqwest_body = reqwest::Body::from(body_to_send);
     // --- End Body Modification ---
     // --- Get Client ---
-    let http_client = state.get_client(proxy_url_option)?; // Error handled within
-                                                           // ---
+    let http_client = state.get_client(proxy_url_option).await?; // Error handled within
+                                                                 // ---
 
     // Log before sending the request
     info!(
@@ -250,7 +252,7 @@ fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_requ
 #[tracing::instrument(level="debug")] // Removed skip attribute
 // Now takes api_key to add the Bearer token
 fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
-    let auth_value_str = format!("Bearer {}", api_key);
+    let auth_value_str = format!("Bearer {api_key}");
     match HeaderValue::from_str(&auth_value_str) {
         Ok(auth_value) => {
             headers.insert(header::AUTHORIZATION, auth_value);

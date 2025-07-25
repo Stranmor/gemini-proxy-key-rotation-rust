@@ -28,9 +28,12 @@ fn create_test_config(groups: Vec<KeyGroup>, server_port: u16) -> AppConfig {
         server: ServerConfig {
             port: server_port,
             top_p: None,
+            admin_token: Some("test_token".to_string()),
         },
         groups,
         rate_limit_behavior: Default::default(),
+        internal_retries: 3,
+        temporary_block_minutes: 1,
     }
 }
 
@@ -863,12 +866,8 @@ async fn test_handler_retries_on_400_and_succeeds() {
         StatusCode::OK,
         "Expected status OK (200) after retry on 400"
     );
-
     // Verify that the first key is now marked as invalid
-    let is_invalid = app_state
-        .key_manager
-        .is_key_invalid(key1_invalid)
-        .await;
+    let is_invalid = app_state.key_manager.read().await.is_key_invalid(key1_invalid);
     assert!(
         is_invalid,
         "Expected the first key to be marked as invalid after a 400 response"

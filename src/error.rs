@@ -84,6 +84,12 @@ pub enum AppError {
     #[error("Invalid API key provided by client")]
     InvalidClientApiKey, // If client-side key validation is added
 
+    #[error("Unauthorized")]
+    Unauthorized,
+
+    #[error("Not Found: {0}")]
+    NotFound(String),
+
     #[error("Internal server error: {0}")]
     Internal(String), // Catch-all for unexpected errors
 
@@ -98,6 +104,15 @@ pub enum AppError {
 
     #[error("Failed to join URL components: {0}")]
     UrlJoinError(String),
+
+    #[error("CSRF token invalid")]
+    Csrf,
+
+    #[error("Axum error: {0}")]
+    Axum(#[from] axum::Error),
+
+    #[error("URL parsing error: {0}")]
+    UrlParse(#[from] url::ParseError),
 }
 
 // Removed manual `impl From<reqwest::Error> for AppError` to resolve conflict
@@ -287,8 +302,52 @@ impl IntoResponse for AppError {
                     details: None,
                 },
             ),
-            // Deprecated/Removed:
-            // AppError::UrlParse(e) => { ... } // Now part of ProxyConfigError usually
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                ErrorDetails {
+                    error_type: "UNAUTHORIZED".to_string(),
+                    message: "Authentication token is missing or invalid".to_string(),
+                    details: None,
+                },
+            ),
+            Self::NotFound(resource) => (
+                StatusCode::NOT_FOUND,
+                ErrorDetails {
+                    error_type: "NOT_FOUND".to_string(),
+                    message: format!("Resource not found: {resource}"),
+                    details: None,
+                },
+            ),
+            Self::Csrf => (
+                StatusCode::FORBIDDEN,
+                ErrorDetails {
+                    error_type: "CSRF_TOKEN_INVALID".to_string(),
+                    message: "CSRF token is missing or invalid.".to_string(),
+                    details: None,
+                },
+            ),
+            Self::Axum(e) => {
+                error!("Internal Axum error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorDetails {
+                        error_type: "AXUM_INTERNAL_ERROR".to_string(),
+                        message: "An internal server error occurred".to_string(),
+                        details: Some(e.to_string()),
+                    },
+                )
+            }
+            Self::UrlParse(e) => {
+                error!("Internal URL parsing error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorDetails {
+                        error_type: "URL_PARSE_ERROR".to_string(),
+                        message: "An internal error occurred while parsing a URL".to_string(),
+                        details: Some(e.to_string()),
+                    },
+                )
+            }
         };
 
         let body = Json(ErrorResponse {

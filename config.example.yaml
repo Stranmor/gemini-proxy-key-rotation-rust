@@ -25,3 +25,11 @@ groups:
   #     - "your-other-gemini-key-A"
   #     - "your-other-gemini-key-B"
   #   proxy_url: "http://proxy.example.com:8080"
+
+# Number of times to retry a request to the upstream service with the SAME key
+# if a retriable server error (5xx) occurs. Defaults to 2.
+internal_retries: 2
+
+# Number of minutes to temporarily block a key after it has exhausted all
+# internal_retries on a 5xx error. Defaults to 5.
+temporary_block_minutes: 5

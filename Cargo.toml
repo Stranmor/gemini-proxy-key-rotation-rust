@@ -9,6 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 axum = { version = "0.7.5", features = ["macros"] }
+cookie = { version = "0.18.0", features = ["private", "signed"] }
+tower-cookies = { version = "0.10.0", features = ["private"] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12.4", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -29,12 +31,13 @@ http-body-util = "0.1.1"
 hyper = "1.3.1"
 hyper-util = { version = "0.1.3", features = ["full"] }
 http = "1.1.0"
-axum-extra = { version = "0.9.3", features = ["tracing"] }
+axum-extra = { version = "0.9.6", features = ["tracing", "typed-header", "cookie", "cookie-private"] }
 uuid = { version = "1.8.0", features = ["v4"] }
 sysinfo = { version = "0.30.12", features = ["serde"] }
 md5 = "0.7.0"
 thiserror = "1.0"
 futures-util = "0.3"
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 wiremock = "0.6.0"

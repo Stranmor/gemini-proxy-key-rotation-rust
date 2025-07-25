@@ -13,7 +13,7 @@ target/
 .env
 
 # Ignore test files if not needed in the final image
-tests/
+# tests/
 
 # Ignore example files not needed in the final image (unless copied explicitly)
 # examples/ # Keep examples out unless needed inside the container

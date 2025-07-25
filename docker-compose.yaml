@@ -11,3 +11,6 @@ services:
     environment:
       - RUST_BACKTRACE=1
     restart: unless-stopped
+    # Ограничения ресурсов для non-swarm режима
+    cpus: 2.0
+    mem_limit: 4g

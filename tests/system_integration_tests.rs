@@ -35,9 +35,12 @@ async fn create_test_system() -> (Arc<AppState>, MockServer, tempfile::TempDir) 
         server: ServerConfig {
             port: 8080,
             top_p: None,
+            admin_token: Some("test_token".to_string()),
         },
         groups: vec![test_group],
         rate_limit_behavior: Default::default(),
+        internal_retries: 3,
+        temporary_block_minutes: 1,
     };
     
     let app_state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
@@ -82,7 +85,7 @@ async fn test_error_handling_and_recovery() {
     Mock::given(method("GET"))
         .and(path("/v1beta/openai/models"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-        .expect(4) // Expect 2 internal retries for each of the 2 keys
+        .expect(6) // Expect 3 internal retries for each of the 2 keys
         .mount(&server)
         .await;
     
