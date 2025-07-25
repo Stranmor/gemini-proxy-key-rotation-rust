@@ -14,3 +14,16 @@ services:
     # Ограничения ресурсов для non-swarm режима
     cpus: 2.0
     mem_limit: 4g
+
+  coverage-report:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: coverage
+    volumes:
+      - ./coverage_report:/app/coverage_report
+    # Предоставляем контейнеру необходимые привилегии для использования ptrace (требуется для tarpaulin)
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
