@@ -13,4 +13,19 @@ pub mod admin;
 pub use config::AppConfig;
 pub use error::{AppError, Result};
 pub use state::AppState;
-// Add other re-exports if needed
+use std::sync::Arc;
+use axum::{
+    routing::{any, get},
+    Router,
+};
+use tower_cookies::CookieManagerLayer;
+
+
+pub async fn run(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(handler::health_check))
+        .merge(admin::admin_routes())
+        .route("/*path", any(handler::proxy_handler))
+        .layer(CookieManagerLayer::new())
+        .with_state(state)
+}

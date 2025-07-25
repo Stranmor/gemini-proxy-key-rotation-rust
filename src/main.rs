@@ -8,11 +8,8 @@ use axum::{
     http::Request as AxumRequest,       // Import Request explicitly
     middleware::{self, Next},           // Import Axum middleware utilities
     response::Response as AxumResponse, // Import Response
-    routing::{any, get},
     serve,
-    Router,
 };
-use tower_cookies::CookieManagerLayer;
 // AppConfig, AppState etc. are now brought into scope via the library use statement
 use std::{net::SocketAddr, path::PathBuf, process, sync::Arc, time::Instant}; // Added Instant for middleware timing
 use tokio::net::TcpListener;
@@ -142,15 +139,10 @@ async fn main() {
 
     // --- Server Setup ---
     // Apply the tracing middleware
-    let app = Router::new()
-        .route("/health", get(handler::health_check)) // Add health check route
-        .merge(admin::admin_routes()) // Add admin routes
-        .route("/*path", any(handler::proxy_handler)) // Catch-all proxy route
-        .layer(CookieManagerLayer::new())
-        .layer(middleware::from_fn(trace_requests))
-        .with_state(app_state.clone());
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], app_state.config.read().await.server.port));
+    let app = run(app_state.clone()).await
+        .layer(middleware::from_fn(trace_requests));
+ 
+     let addr = SocketAddr::from(([0, 0, 0, 0], app_state.config.read().await.server.port));
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => {
             // Log with structured address field

@@ -90,7 +90,6 @@ impl Default for SystemInfoCollector {
 pub fn admin_routes() -> Router<Arc<AppState>> {
     // Routes that require CSRF protection
     let protected_routes = Router::new()
-        .route("/admin/login", post(login))
         .route("/admin/keys", post(add_keys))
         .route("/admin/keys", delete(delete_keys))
         .route("/admin/keys/:key_id/verify", post(verify_key))
@@ -106,6 +105,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/admin/config", get(get_config))
         .route("/admin/metrics", get(get_metrics_summary))
         .route("/admin/csrf-token", get(get_csrf_token))
+        .route("/admin/login", post(login)) // Moved here, outside of CSRF protection
         .merge(protected_routes)
 }
 
@@ -978,16 +978,130 @@ use tower::util::ServiceExt;
         let app = app(state);
  
          let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/")
-                    .header(header::AUTHORIZATION, "Bearer any_token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-}
+             .oneshot(
+                 Request::builder()
+                     .uri("/")
+                     .header(header::AUTHORIZATION, "Bearer any_token")
+                     .body(Body::empty())
+                     .unwrap(),
+             )
+             .await
+             .unwrap();
+ 
+         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+     }
+ 
+     // --- Tests for csrf_middleware ---
+ 
+     async fn csrf_protected_handler() -> StatusCode {
+         StatusCode::OK
+     }
+ 
+     fn csrf_app() -> Router {
+         Router::new()
+             .route("/", post(csrf_protected_handler))
+             .route_layer(middleware::from_fn(csrf_middleware))
+             .layer(CookieManagerLayer::new())
+     }
+ 
+     #[tokio::test]
+     async fn test_csrf_middleware_success() {
+         let app = csrf_app();
+         let token = "correct_csrf_token";
+ 
+         let response = app
+             .oneshot(
+                 Request::builder()
+                     .method("POST")
+                     .uri("/")
+                     .header(header::COOKIE, format!("csrf_token={}", token))
+                     .header(&X_CSRF_TOKEN, token)
+                     .body(Body::empty())
+                     .unwrap(),
+             )
+             .await
+             .unwrap();
+ 
+         assert_eq!(response.status(), StatusCode::OK);
+     }
+ 
+     #[tokio::test]
+     async fn test_csrf_middleware_no_header() {
+         let app = csrf_app();
+         let token = "correct_csrf_token";
+ 
+         let response = app
+             .oneshot(
+                 Request::builder()
+                     .method("POST")
+                     .uri("/")
+                     .header(header::COOKIE, format!("csrf_token={}", token))
+                     .body(Body::empty())
+                     .unwrap(),
+             )
+             .await
+             .unwrap();
+ 
+         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+     }
+ 
+     #[tokio::test]
+     async fn test_csrf_middleware_no_cookie() {
+         let app = csrf_app();
+         let token = "correct_csrf_token";
+ 
+         let response = app
+             .oneshot(
+                 Request::builder()
+                     .method("POST")
+                     .uri("/")
+                     .header(&X_CSRF_TOKEN, token)
+                     .body(Body::empty())
+                     .unwrap(),
+             )
+             .await
+             .unwrap();
+ 
+         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+     }
+ 
+     #[tokio::test]
+     async fn test_csrf_middleware_mismatch() {
+         let app = csrf_app();
+ 
+         let response = app
+             .oneshot(
+                 Request::builder()
+                     .method("POST")
+                     .uri("/")
+                     .header(header::COOKIE, "csrf_token=token_in_cookie")
+                     .header(&X_CSRF_TOKEN, "token_in_header")
+                     .body(Body::empty())
+                     .unwrap(),
+             )
+             .await
+             .unwrap();
+ 
+         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+     }
+ 
+     #[tokio::test]
+     async fn test_csrf_middleware_empty_tokens() {
+         let app = csrf_app();
+ 
+         let response = app
+             .oneshot(
+                 Request::builder()
+                     .method("POST")
+                     .uri("/")
+                     .header(header::COOKIE, "csrf_token=")
+                     .header(&X_CSRF_TOKEN, "")
+                     .body(Body::empty())
+                     .unwrap(),
+             )
+             .await
+             .unwrap();
+ 
+         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+     }
+ }
