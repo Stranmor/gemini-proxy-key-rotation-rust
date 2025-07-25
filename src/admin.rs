@@ -750,3 +750,244 @@ async fn require_admin_token(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ServerConfig;
+    use crate::key_manager::{KeyState, KeyStatus as KmKeyStatus};
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+        middleware::from_fn_with_state,
+        routing::get,
+        Router,
+    };
+    use axum_extra::headers::Authorization;
+    use chrono::{Duration, Utc};
+    use std::sync::Arc;
+use tower::util::ServiceExt;
+    use tower_cookies::CookieManagerLayer;
+    use tempfile::TempDir;
+ 
+     // Handler that will be protected by the middleware
+     async fn protected_handler() -> StatusCode {
+        StatusCode::OK
+    }
+
+    // Middleware test wrapper
+    async fn auth_middleware_wrapper(
+        State(state): State<Arc<AppState>>,
+        jar: Cookies,
+        auth_header: Option<TypedHeader<Authorization<Bearer>>>,
+        req: Request<Body>,
+        next: Next,
+    ) -> Response {
+        match require_admin_token(&state, &jar, auth_header, "test").await {
+            Ok(_) => next.run(req).await,
+            Err(e) => e.into_response(),
+        }
+    }
+
+    #[test]
+    fn test_get_key_status_str() {
+        let now = Utc::now();
+        let past = now - Duration::seconds(10);
+        let future = now + Duration::seconds(10);
+
+        // 1. No state (None) -> should be "available"
+        let (status, reset_time) = get_key_status_str(None, now);
+        assert_eq!(status, "available");
+        assert_eq!(reset_time, None);
+
+        // 2. Available state
+        let state_available = KeyState {
+            status: KmKeyStatus::Available,
+            reset_time: None,
+        };
+        let (status, reset_time) = get_key_status_str(Some(&state_available), now);
+        assert_eq!(status, "available");
+        assert_eq!(reset_time, None);
+
+        // 3. RateLimited, not expired
+        let state_limited_pending = KeyState {
+            status: KmKeyStatus::RateLimited,
+            reset_time: Some(future),
+        };
+        let (status, reset_time) = get_key_status_str(Some(&state_limited_pending), now);
+        assert_eq!(status, "limited");
+        assert_eq!(reset_time, Some(future));
+
+        // 4. RateLimited, expired
+        let state_limited_expired = KeyState {
+            status: KmKeyStatus::RateLimited,
+            reset_time: Some(past),
+        };
+        let (status, reset_time) = get_key_status_str(Some(&state_limited_expired), now);
+        assert_eq!(status, "available");
+        assert_eq!(reset_time, Some(past));
+
+        // 5. Invalid
+        let state_invalid = KeyState {
+            status: KmKeyStatus::Invalid,
+            reset_time: None,
+        };
+        let (status, reset_time) = get_key_status_str(Some(&state_invalid), now);
+        assert_eq!(status, "invalid");
+        assert_eq!(reset_time, None);
+
+        // 6. TemporarilyUnavailable, not expired
+        let state_unavailable_pending = KeyState {
+            status: KmKeyStatus::TemporarilyUnavailable,
+            reset_time: Some(future),
+        };
+        let (status, reset_time) = get_key_status_str(Some(&state_unavailable_pending), now);
+        assert_eq!(status, "unavailable");
+        assert_eq!(reset_time, Some(future));
+
+        // 7. TemporarilyUnavailable, expired
+        let state_unavailable_expired = KeyState {
+            status: KmKeyStatus::TemporarilyUnavailable,
+            reset_time: Some(past),
+        };
+        let (status, reset_time) = get_key_status_str(Some(&state_unavailable_expired), now);
+        assert_eq!(status, "available");
+        assert_eq!(reset_time, Some(past));
+    }
+
+    // --- Tests for require_admin_token ---
+ 
+    async fn setup_state(admin_token: Option<String>) -> (Arc<AppState>, TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().to_path_buf();
+        let mut config = AppConfig {
+            server: ServerConfig {
+                admin_token,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let app_state = Arc::new(
+            AppState::new(&mut config, &config_path)
+                .await
+                .unwrap(),
+        );
+        (app_state, temp_dir)
+    }
+ 
+     fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/", get(protected_handler))
+            .route_layer(from_fn_with_state(state.clone(), auth_middleware_wrapper))
+            .layer(CookieManagerLayer::new())
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn test_require_admin_token_no_token_provided() {
+        let (state, _temp_dir) = setup_state(Some("secret_token".to_string())).await;
+        let app = app(state);
+ 
+         let response = app
+             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_require_admin_token_bearer_valid() {
+        let (state, _temp_dir) = setup_state(Some("secret_token".to_string())).await;
+        let app = app(state);
+ 
+         let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::AUTHORIZATION, "Bearer secret_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_require_admin_token_cookie_valid() {
+        let (state, _temp_dir) = setup_state(Some("secret_token".to_string())).await;
+        let app = app(state);
+ 
+         let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::COOKIE, "admin_token=secret_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_require_admin_token_bearer_invalid() {
+        let (state, _temp_dir) = setup_state(Some("secret_token".to_string())).await;
+        let app = app(state);
+ 
+         let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::AUTHORIZATION, "Bearer wrong_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_require_admin_token_cookie_invalid() {
+        let (state, _temp_dir) = setup_state(Some("secret_token".to_string())).await;
+        let app = app(state);
+ 
+         let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::COOKIE, "admin_token=wrong_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_require_admin_token_no_token_configured() {
+        let (state, _temp_dir) = setup_state(Some("".to_string())).await;
+        let app = app(state);
+ 
+         let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::AUTHORIZATION, "Bearer any_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}

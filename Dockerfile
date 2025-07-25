@@ -1,67 +1,82 @@
-# Stage 1: Builder
-# This stage compiles the Rust application into a static binary.
-# We use Alpine Linux for a small final image size.
-# We use a specific Rust version for reproducibility.
-# The --target x86_64-unknown-linux-musl flag is crucial for creating a static binary
-# that can run on any Linux distribution without needing system dependencies.
-FROM rust:1.82-alpine AS builder
+# Stage 0: Dependencies Builder
+# This stage is dedicated to caching Rust dependencies.
+# It only rebuilds when Cargo.toml or Cargo.lock change.
+FROM rust:1.82-alpine AS dependencies_builder
 
 # Install build dependencies for Rust and OpenSSL (for static linking).
-# musl-dev is for static compilation on Alpine.
-# build-base, perl, linux-headers, make, pkgconfig are common build dependencies.
 RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig
 
-# Set the working directory inside the container.
+# Set the working directory.
 WORKDIR /app
 
-# Copy the Cargo configuration file first. This allows Docker to cache dependencies
-# and avoid re-downloading them on every build if they haven't changed.
+# Copy only the Cargo configuration files.
 COPY Cargo.toml Cargo.lock ./
 
-# Create a dummy src/main.rs to allow `cargo build --release -Z unstable-options --out-dir` to work
-# This is a trick to pre-build dependencies before copying the actual source code.
+# Create a dummy main.rs to allow `cargo build` to resolve dependencies.
+# This ensures that this layer is only invalidated when Cargo.toml/Cargo.lock change.
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 
-# Build only the dependencies to leverage Docker layer caching.
-RUN cargo build --release --target x86_64-unknown-linux-musl
+# Build only the dependencies. This will download and compile all crates.
+RUN cargo build --release --target x86_64-unknown-linux-musl --locked
 
-# Now, copy the actual source code into the container.
-COPY src ./src
-COPY tests ./tests
+# ---
+
+# Stage 1: Application Builder
+# This stage compiles the actual application, leveraging cached dependencies.
+FROM rust:1.82-alpine AS builder
+
+# Install build dependencies (already cached from dependencies_builder, but good practice)
+RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig
+
+# Set the working directory.
+WORKDIR /app
+
+# Copy the cached registry and target directory from the dependencies_builder.
+# This significantly speeds up subsequent builds as dependencies are pre-compiled.
+COPY --from=dependencies_builder /usr/local/cargo/registry /usr/local/cargo/registry
+COPY --from=dependencies_builder /app/target /app/target
+
+# Copy the entire source code. This layer is invalidated only when source code changes.
+COPY . .
 
 # Build the final application binary.
-# The --features reqwest/native-tls-vendored is used to statically link OpenSSL,
-# avoiding runtime dependency issues on the final image.
-RUN cargo build --release --target x86_64-unknown-linux-musl --features reqwest/native-tls-vendored
+# This will be much faster as dependencies are already compiled.
+RUN cargo build --release --target x86_64-unknown-linux-musl --locked
 
 # ---
 
 # Stage 2: Coverage Report Generator
 # This stage is dedicated to generating the code coverage report using cargo-tarpaulin.
-# We use a specific tarpaulin image which has all the necessary tools pre-installed.
-# This stage is only run when explicitly targeted (e.g., `docker-compose build coverage-report`).
-FROM xd009642/tarpaulin:develop-nightly AS coverage
+# We use a base Rust image and install tarpaulin manually for more control.
+FROM rust:1.82-alpine AS coverage
 
-# Install build dependencies required by some of our crates' build scripts.
-# Even though tarpaulin image is Debian-based, some dependencies might need these.
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential libssl-dev pkg-config
+# Install dependencies required for tarpaulin and our project.
+# musl-dev, build-base, perl, linux-headers, make, pkgconfig are for Rust compilation.
+# openssl-dev is for OpenSSL support.
+RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig openssl-dev
 
 # Set the working directory.
 WORKDIR /app
 
-# Copy the entire project context into the container.
+# Install cargo-tarpaulin.
+# We use --version to ensure reproducibility and avoid unexpected breaking changes.
+RUN cargo install cargo-tarpaulin --version 0.28.0
+
+# Copy the cached registry and target from the builder stage.
+COPY --from=builder /usr/local/cargo/registry /usr/local/cargo/registry
+COPY --from=builder /app/target /app/target
+
+# Copy the source code.
 COPY . .
 
 # Set the default command for the container to run tarpaulin.
-# This allows us to inject security privileges at runtime via docker-compose.
-CMD ["cargo", "tarpaulin", "--all-targets", "--workspace", "--out", "Html", "--output-dir", "./coverage_report"]
-
+# --skip-clean is CRITICAL to prevent tarpaulin from wiping our cached dependencies.
+CMD ["cargo", "tarpaulin", "--all-targets", "--workspace", "--out", "Html", "--output-dir", "./coverage_report", "--skip-clean"]
 
 # ---
 
 # Stage 3: Final Image
 # This is the final, small, and secure image that will be run in production.
-# It starts from a minimal Alpine base image.
 FROM alpine:3.19
 
 # Install ca-certificates, which are required for making HTTPS requests.
@@ -71,9 +86,9 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 
 # Copy the compiled binary from the 'builder' stage.
-# Also copy the default configuration file.
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/gemini-proxy-key-rotation-rust .
-COPY --from=builder /app/config.example.yaml .
+COPY config.example.yaml .
+COPY static ./static
 
 # Expose the port the application will run on.
 EXPOSE 8080
