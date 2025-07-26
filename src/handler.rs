@@ -6,7 +6,7 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    body::{to_bytes, Bytes},
+    body::{to_bytes, Body, Bytes},
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     response::Response,
@@ -74,24 +74,40 @@ async fn handle_upstream_response(
         s if s.is_client_error() => {
             let (parts, body) = response.into_parts();
             let body_bytes = to_bytes(body, usize::MAX).await?;
-            *last_error = Some((parts.status, parts.headers, body_bytes));
+            let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
-            if s == StatusCode::TOO_MANY_REQUESTS {
-                warn!("Marking key as rate-limited and retrying with next key.");
-                apply_key_action(state, api_key_to_mark, |km, key| {
-                    km.mark_key_as_limited(key)
-                })
-                .await
+            // By default, we will return the error response to the client.
+            // We only retry if specific conditions are met.
+            let mut should_retry = false;
+            let mut key_action: Option<Box<dyn FnOnce(&mut crate::key_manager::KeyManager, &str) -> bool + Send>> = None;
+
+            if s == StatusCode::BAD_REQUEST && body_str.contains("API_KEY_INVALID") {
+                warn!("Client error 400 with 'API_KEY_INVALID'. Marking key as invalid and retrying.");
+                should_retry = true;
+                key_action = Some(Box::new(|km, key| km.mark_key_as_invalid(key)));
+            } else if s == StatusCode::TOO_MANY_REQUESTS {
+                warn!("Client error 429. Marking key as rate-limited and retrying.");
+                should_retry = true;
+                key_action = Some(Box::new(|km, key| km.mark_key_as_limited(key)));
+            } else if s != StatusCode::BAD_REQUEST {
+                // For other client errors (like 401, 403, etc.), we also invalidate and retry.
+                // We exclude BAD_REQUEST here because it's handled above; only the API_KEY_INVALID case should trigger a retry.
+                warn!("Client error {}. Marking key as invalid and retrying.", s);
+                should_retry = true;
+                key_action = Some(Box::new(|km, key| km.mark_key_as_invalid(key)));
+            }
+
+            if should_retry {
+                *last_error = Some((parts.status, parts.headers, body_bytes));
+                if let Some(action) = key_action {
+                    return apply_key_action(state, api_key_to_mark, action).await;
+                }
+                Ok(NextAction::BreakLoop)
             } else {
-                let body_str = String::from_utf8_lossy(&last_error.as_ref().unwrap().2);
-                warn!(
-                    "Client error {}. Body: '{}'. Marking key as invalid and retrying with next key.",
-                    s, body_str
-                );
-                apply_key_action(state, api_key_to_mark, |km, key| {
-                    km.mark_key_as_invalid(key)
-                })
-                .await
+                // This handles the case for a 400 Bad Request without "API_KEY_INVALID"
+                warn!("Client error {}. Body: '{}'. Returning response to client without retry.", s, body_str);
+                let response = Response::from_parts(parts, Body::from(body_bytes));
+                Ok(NextAction::ReturnResponse(response))
             }
         }
         s if s.is_server_error() => {

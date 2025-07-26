@@ -99,6 +99,12 @@ modified_body_bytes
 body_bytes
 }
 };
+    // Log the body at debug level for diagnostics, converting to lossy string
+    // in case of non-UTF8 content, BEFORE it's moved.
+    debug!(
+        http.request.body = %String::from_utf8_lossy(&body_to_send),
+        "Full request body"
+    );
 
     let outgoing_reqwest_body = reqwest::Body::from(body_to_send);
     // --- End Body Modification ---

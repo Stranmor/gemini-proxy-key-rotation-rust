@@ -807,22 +807,22 @@ async fn test_url_translation_for_non_v1_path() {
 }
 
 #[tokio::test]
-async fn test_handler_retries_on_400_and_succeeds() {
-    // This test verifies that if a key returns a 400 Bad Request,
-    // the handler marks it as invalid and successfully retries with the next key.
+async fn test_rotates_on_400_with_api_key_invalid_body() {
+    // Verifies that if a key returns 400 with "API_KEY_INVALID",
+    // the handler marks it as invalid and retries with the next key.
 
     // 1. Setup Mock Server
     let server = MockServer::start().await;
-    let key1_invalid = "key-invalid-400";
-    let key2_valid = "key-valid-200";
+    let key1_invalid = "key-invalid-400-special";
+    let key2_valid = "key-valid-after-400";
     let test_path = "/v1/chat/completions";
     let expected_path = "/v1beta/openai/chat/completions";
 
-    // Mock for the first key (key1_invalid) - returns 400
+    // Mock for the first key (key1_invalid) - returns 400 with specific body
     Mock::given(method("POST"))
         .and(path(expected_path))
         .and(query_param("key", key1_invalid))
-        .respond_with(ResponseTemplate::new(400).set_body_string("Invalid API key"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("API key not valid. Please pass a valid API key. API_KEY_INVALID"))
         .mount(&server)
         .await;
 
@@ -838,38 +838,76 @@ async fn test_handler_retries_on_400_and_succeeds() {
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
     let test_group = KeyGroup {
-        name: "retry-400-group".to_string(),
+        name: "retry-400-invalid-group".to_string(),
         api_keys: vec![key1_invalid.to_string(), key2_valid.to_string()],
         target_url: server.uri(),
-        proxy_url: None,
-        top_p: None,
+        proxy_url: None, top_p: None,
     };
-    let config = create_test_config(vec![test_group], 9996); // Different port
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let config = create_test_config(vec![test_group], 9988);
+    let app_state = Arc::new(AppState::new(&config, &dummy_config_path).await.expect("AppState failed"));
 
     // 3. Call handler
-    let response = call_proxy_handler(
-        app_state.clone(), // Clone for the call
-        Method::POST,
-        test_path,
-        axum::body::Body::empty(),
-    )
-    .await;
+    let response = call_proxy_handler(app_state.clone(), Method::POST, test_path, axum::body::Body::empty()).await;
 
     // 4. Assertions
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "Expected status OK (200) after retry on 400"
-    );
+    assert_eq!(response.status(), StatusCode::OK, "Expected status OK (200) after retry on 400 with API_KEY_INVALID");
+    
     // Verify that the first key is now marked as invalid
     let is_invalid = app_state.key_manager.read().await.is_key_invalid(key1_invalid);
-    assert!(
-        is_invalid,
-        "Expected the first key to be marked as invalid after a 400 response"
-    );
+    assert!(is_invalid, "Expected the first key to be marked as invalid");
+}
+
+#[tokio::test]
+async fn test_returns_immediately_on_400_with_other_body() {
+    // Verifies that if a key returns 400 without "API_KEY_INVALID",
+    // the handler immediately returns the 400 response without retrying.
+
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let key1 = "key-400-other-error";
+    let key2 = "key-should-not-be-used";
+    let test_path = "/v1/chat/completions";
+    let expected_path = "/v1beta/openai/chat/completions";
+    let error_body = "Some other bad request error";
+
+    // Mock for the first key - returns 400 with a generic body
+    Mock::given(method("POST"))
+        .and(path(expected_path))
+        .and(query_param("key", key1))
+        .respond_with(ResponseTemplate::new(400).set_body_string(error_body))
+        .mount(&server)
+        .await;
+
+    // A mock for the second key that should NEVER be called.
+    // If it is called, the test will fail because wiremock will report an unhandled request.
+    Mock::given(method("POST"))
+        .and(path(expected_path))
+        .and(query_param("key", key2))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    // 2. Setup Config and State
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    let test_group = KeyGroup {
+        name: "no-retry-400-group".to_string(),
+        api_keys: vec![key1.to_string(), key2.to_string()],
+        target_url: server.uri(),
+        proxy_url: None, top_p: None,
+    };
+    let config = create_test_config(vec![test_group], 9987);
+    let app_state = Arc::new(AppState::new(&config, &dummy_config_path).await.expect("AppState failed"));
+
+    // 3. Call handler
+    let response = call_proxy_handler(app_state.clone(), Method::POST, test_path, axum::body::Body::empty()).await;
+
+    // 4. Assertions
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "Expected status 400 to be returned directly");
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body_bytes), error_body);
+    
+    // Verify that the first key was NOT marked as invalid
+    let is_invalid = app_state.key_manager.read().await.is_key_invalid(key1);
+    assert!(!is_invalid, "Expected the key NOT to be marked as invalid for a generic 400 error");
 }
