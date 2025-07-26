@@ -173,7 +173,7 @@ pub struct SystemInfo {
 }
 
 /// Key management request/response types
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct KeysUpdateRequest {
     pub group_name: String,
     pub api_keys: Vec<String>,
@@ -207,9 +207,9 @@ pub struct LoginRequest {
     token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CsrfTokenResponse {
-    csrf_token: String,
+    pub csrf_token: String,
 }
 
 /// Detailed health check endpoint
@@ -385,21 +385,22 @@ pub async fn verify_key(
     let mut key_manager_guard = state.key_manager.write().await;
 
     // 1. Get key info under the write lock
-    let (key_to_verify, proxy_url) =
+    let (key_to_verify, proxy_url, target_url) =
         match key_manager_guard.get_key_info_by_id(&key_id) {
-            Some(info) => (info.key.clone(), info.proxy_url.clone()),
+            Some(info) => (
+                info.key.clone(),
+                info.proxy_url.clone(),
+                info.target_url.clone(),
+            ),
             None => {
-                return Err(AppError::NotFound(format!(
-                    "Key with ID '{}' not found",
-                    key_id
-                )));
+                return Err(AppError::NotFound(format!("Key with ID '{key_id}' not found")));
             }
         };
 
     // 2. Perform verification and update status within the single write lock
     let client = state.get_client(proxy_url.as_deref()).await?;
     let verification_result = key_manager_guard
-        .perform_key_verification(&key_to_verify, &client)
+        .perform_key_verification(&key_to_verify, &target_url, &client)
         .await;
 
     if key_manager_guard.update_key_status_from_verification(&key_to_verify, verification_result) {

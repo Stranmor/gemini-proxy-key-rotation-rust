@@ -83,9 +83,10 @@ async fn handle_upstream_response(
                 })
                 .await
             } else {
+                let body_str = String::from_utf8_lossy(&last_error.as_ref().unwrap().2);
                 warn!(
-                    "Client error {}. Marking key as invalid and retrying with next key.",
-                    s
+                    "Client error {}. Body: '{}'. Marking key as invalid and retrying with next key.",
+                    s, body_str
                 );
                 apply_key_action(state, api_key_to_mark, |km, key| {
                     km.mark_key_as_invalid(key)

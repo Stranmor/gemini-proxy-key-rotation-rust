@@ -23,6 +23,18 @@ pub struct KeyGroup {
     pub top_p: Option<f32>,
 }
 
+impl Default for KeyGroup {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            api_keys: Vec::new(),
+            proxy_url: None,
+            target_url: default_target_url(),
+            top_p: None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RateLimitBehavior {
@@ -93,9 +105,9 @@ fn clean_target_url(url_str: &str) -> String {
 // --- Configuration Validation Functions ---
 fn validate_server_config(server: &ServerConfig) -> bool {
     let mut errors = 0;
-    if server.port == 0 {
-        error!(p = server.port, e = "bad server port");
-        errors += 1;
+    // Port 0 is valid, it means the OS will assign a random available port.
+    if server.port != 0 && (server.port < 1024) {
+        warn!(p = server.port, w = "low server port warning");
     }
     if let Some(tp) = server.top_p {
         if !(0.0..=1.0).contains(&tp) {
@@ -361,8 +373,10 @@ mod tests {
     }
     #[test]
     fn test_val_srv() {
+        // Default config should be valid
         assert!(validate_server_config(&ServerConfig::default()));
-        assert!(!validate_server_config(&ServerConfig {
+        // Port 0 is now considered valid for testing purposes (OS assigns a random port)
+        assert!(validate_server_config(&ServerConfig {
             port: 0,
             top_p: None,
             admin_token: None,

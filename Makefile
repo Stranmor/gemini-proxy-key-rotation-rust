@@ -2,7 +2,7 @@
 
 # Use .PHONY to declare targets that are not actual files.
 # This prevents conflicts with files of the same name and improves performance.
-.PHONY: all build up down logs restart test lint clean start-dev
+.PHONY: all build up down logs restart test lint clean start-dev install-coverage-tool test-coverage
 
 # Default target that runs when `make` is called without arguments.
 all: build up
@@ -27,19 +27,26 @@ logs:
 restart:
 	docker compose restart
 
-# Run the tests inside a new container.
-# The `--rm` flag ensures the container is removed after the tests complete.
+# Run tests locally.
 test:
-	docker compose run --rm gemini-proxy cargo test
+	cargo test
 
-# Run the linter (clippy) inside a new container.
+# Run the linter (clippy) locally.
 # `-- -D warnings` escalates all warnings to errors, ensuring high code quality.
 lint:
-	docker compose run --rm gemini-proxy cargo clippy -- -D warnings
+	cargo clippy -- -D warnings
+
+# Install the code coverage tool (cargo-tarpaulin) locally.
+install-coverage-tool:
+	cargo install cargo-tarpaulin --version 0.28.0
+
+# Generate the code coverage report locally.
+test-coverage:
+	cargo tarpaulin --all-targets --workspace --out Html --output-dir ./coverage_report --skip-clean
 
 # Clean up the project by removing the build artifacts.
 clean:
-	rm -rf target
+	rm -rf target coverage_report
 
 # --- Personal Developer Container ---
 

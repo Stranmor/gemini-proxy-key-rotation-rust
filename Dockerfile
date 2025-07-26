@@ -45,37 +45,7 @@ RUN cargo build --release --target x86_64-unknown-linux-musl --locked
 
 # ---
 
-# Stage 2: Coverage Report Generator
-# This stage is dedicated to generating the code coverage report using cargo-tarpaulin.
-# We use a base Rust image and install tarpaulin manually for more control.
-FROM rust:1.82-alpine AS coverage
-
-# Install dependencies required for tarpaulin and our project.
-# musl-dev, build-base, perl, linux-headers, make, pkgconfig are for Rust compilation.
-# openssl-dev is for OpenSSL support.
-RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig openssl-dev
-
-# Set the working directory.
-WORKDIR /app
-
-# Install cargo-tarpaulin.
-# We use --version to ensure reproducibility and avoid unexpected breaking changes.
-RUN cargo install cargo-tarpaulin --version 0.28.0
-
-# Copy the cached registry and target from the builder stage.
-COPY --from=builder /usr/local/cargo/registry /usr/local/cargo/registry
-COPY --from=builder /app/target /app/target
-
-# Copy the source code.
-COPY . .
-
-# Set the default command for the container to run tarpaulin.
-# --skip-clean is CRITICAL to prevent tarpaulin from wiping our cached dependencies.
-CMD ["cargo", "tarpaulin", "--all-targets", "--workspace", "--out", "Html", "--output-dir", "./coverage_report", "--skip-clean"]
-
-# ---
-
-# Stage 3: Final Image
+# Stage 2: Final Image
 # This is the final, small, and secure image that will be run in production.
 FROM alpine:3.19
 

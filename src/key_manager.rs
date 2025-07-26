@@ -436,7 +436,7 @@ impl KeyManager {
     }
 
     pub fn is_key_invalid(&self, api_key: &str) -> bool {
-        self.key_states.get(api_key).map_or(false, |s| s.status == KeyStatus::Invalid)
+        self.key_states.get(api_key).is_some_and(|s| s.status == KeyStatus::Invalid)
     }
 
     fn reset_key_state_to_available(&mut self, api_key: &str) -> bool {
@@ -471,21 +471,20 @@ impl KeyManager {
     pub async fn perform_key_verification(
         &self,
         api_key: &str,
+        target_url_base: &str,
         client: &Client,
     ) -> std::result::Result<String, (StatusCode, String)> {
         info!("Verifying key with Gemini API");
 
-        let target_url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={}",
-            api_key
-        );
+        // Construct the full URL for verification
+        let target_url = format!("{target_url_base}/v1beta/models/gemini-pro:generateContent?key={api_key}");
 
         let request_body = serde_json::json!({
             "contents": [{"parts":[ {"text": "Hi"}]}]
         });
 
         match client
-            .post(target_url)
+            .post(&target_url)
             .header(CONTENT_TYPE, "application/json")
             .json(&request_body)
             .send()
