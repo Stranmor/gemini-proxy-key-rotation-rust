@@ -24,7 +24,7 @@ use cookie::{time::Duration, SameSite};
 use http::HeaderName;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use sysinfo::System;
 use tokio::sync::Mutex;
@@ -90,8 +90,8 @@ impl Default for SystemInfoCollector {
 pub fn admin_routes() -> Router<Arc<AppState>> {
     // Routes that require CSRF protection
     let protected_routes = Router::new()
-        .route("/admin/keys", post(add_keys))
-        .route("/admin/keys", delete(delete_keys))
+        .route("/admin/keys", post(add_keys)) // New endpoint for adding
+        .route("/admin/keys", delete(delete_keys)) // New endpoint for deleting
         .route("/admin/keys/:key_id/verify", post(verify_key))
         .route("/admin/keys/:key_id/reset", post(reset_key))
         .route("/admin/config", put(update_config))
@@ -102,6 +102,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/admin", get(serve_dashboard))
         .route("/admin/health", get(detailed_health))
         .route("/admin/keys", get(list_keys))
+        .route("/admin/keys-page", get(serve_keys_management_page))
         .route("/admin/config", get(get_config))
         .route("/admin/metrics", get(get_metrics_summary))
         .route("/admin/csrf-token", get(get_csrf_token))
@@ -173,8 +174,14 @@ pub struct SystemInfo {
 }
 
 /// Key management request/response types
-#[derive(Debug, Deserialize, Serialize)]
-pub struct KeysUpdateRequest {
+#[derive(Debug, Deserialize)]
+pub struct AddKeysRequest {
+    pub group_name: String,
+    pub api_keys: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteKeysRequest {
     pub group_name: String,
     pub api_keys: Vec<String>,
 }
@@ -431,107 +438,6 @@ pub async fn reset_key(
 
     Ok(StatusCode::OK)
 }
-///
-///
-/// # Errors
-///
-/// Returns 401 if unauthorized, 404 if group not found, 500 on other errors.
-#[axum::debug_handler]
-pub async fn add_keys(
-    State(state): State<Arc<AppState>>,
-    jar: Cookies,
-    auth_header: Option<TypedHeader<Authorization<Bearer>>>,
-    Json(request): Json<KeysUpdateRequest>,
-) -> Result<StatusCode> {
-    // 1. Authentication
-    require_admin_token(&state, &jar, auth_header, "add_keys").await?;
-
-    // Hold write lock for the entire operation to ensure atomicity
-    let mut config_write_guard = state.config.write().await;
-
-    // 2. Modify in-memory config
-    let group_name = request.group_name;
-    let keys_to_add = request.api_keys;
-
-    let group = config_write_guard
-        .groups
-        .iter_mut()
-        .find(|g| g.name == group_name)
-        .ok_or_else(|| AppError::NotFound(format!("Group '{group_name}' not found")))?;
-
-    for key in keys_to_add {
-        if !key.trim().is_empty() && !group.api_keys.contains(&key) {
-            group.api_keys.push(key);
-        }
-    }
-
-    // 3. Validate before saving
-    if !config::validate_config(&mut config_write_guard, "admin_add_keys") {
-        return Err(AppError::Config(
-            "Validation failed after adding keys; changes not saved.".to_string(),
-        ));
-    }
-
-    // 4. Persist to file
-    config::save_config(&config_write_guard, &state.config_path).await?;
-
-    // Release lock before reloading to avoid deadlock
-    drop(config_write_guard);
-
-    // 5. Reload State
-    state.reload_state_from_config().await?;
-
-    Ok(StatusCode::OK)
-}
-
-/// Remove API keys from a group
-///
-/// # Errors
-///
-/// Returns 401 if unauthorized, 404 if group not found, 500 on other errors.
-#[axum::debug_handler]
-pub async fn delete_keys(
-    State(state): State<Arc<AppState>>,
-    jar: Cookies,
-    auth_header: Option<TypedHeader<Authorization<Bearer>>>,
-    Json(request): Json<KeysUpdateRequest>,
-) -> Result<StatusCode> {
-    // 1. Authentication
-    require_admin_token(&state, &jar, auth_header, "delete_keys").await?;
-
-    // Hold write lock for the entire operation to ensure atomicity
-    let mut config_write_guard = state.config.write().await;
-
-    // 2. Modify in-memory config
-    let group_name = request.group_name;
-    let keys_to_delete: std::collections::HashSet<_> = request.api_keys.into_iter().collect();
-
-    let group = config_write_guard
-        .groups
-        .iter_mut()
-        .find(|g| g.name == group_name)
-        .ok_or_else(|| AppError::NotFound(format!("Group '{group_name}' not found")))?;
-
-    group.api_keys.retain(|k| !keys_to_delete.contains(k));
-
-    // 3. Validate before saving
-    if !config::validate_config(&mut config_write_guard, "admin_delete_keys") {
-        return Err(AppError::Config(
-            "Validation failed after deleting keys; changes not saved.".to_string(),
-        ));
-    }
-
-    // 4. Persist to file
-    config::save_config(&config_write_guard, &state.config_path).await?;
-
-    // Release lock before reloading to avoid deadlock
-    drop(config_write_guard);
-
-    // 5. Reload State
-    state.reload_state_from_config().await?;
-
-    Ok(StatusCode::OK)
-}
 
 /// Get current configuration
 ///
@@ -580,6 +486,88 @@ pub async fn update_config(
     Ok(StatusCode::OK)
 }
 
+/// Add API keys to a group, avoiding duplicates.
+///
+/// # Errors
+///
+/// Returns 401 if unauthorized, 404 if group not found, 400 on validation failure.
+#[axum::debug_handler]
+pub async fn add_keys(
+    State(state): State<Arc<AppState>>,
+    jar: Cookies,
+    auth_header: Option<TypedHeader<Authorization<Bearer>>>,
+    Json(request): Json<AddKeysRequest>,
+) -> Result<StatusCode> {
+    require_admin_token(&state, &jar, auth_header, "add_keys").await?;
+
+    let mut config_write_guard = state.config.write().await;
+
+    let group = config_write_guard
+        .groups
+        .iter_mut()
+        .find(|g| g.name == request.group_name)
+        .ok_or_else(|| AppError::NotFound(format!("Group '{}' not found", request.group_name)))?;
+
+    for key in request.api_keys {
+        if !key.trim().is_empty() && !group.api_keys.contains(&key) {
+            group.api_keys.push(key);
+        }
+    }
+
+    if !config::validate_config(&mut config_write_guard, "admin_add_keys") {
+        return Err(AppError::Config(
+            "Validation failed after adding keys; changes not saved.".to_string(),
+        ));
+    }
+
+    config::save_config(&config_write_guard, &state.config_path).await?;
+
+    drop(config_write_guard);
+
+    state.reload_state_from_config().await?;
+
+    Ok(StatusCode::OK)
+}
+
+/// Remove API keys from a group.
+///
+/// # Errors
+///
+/// Returns 401 if unauthorized, 404 if group not found.
+#[axum::debug_handler]
+pub async fn delete_keys(
+    State(state): State<Arc<AppState>>,
+    jar: Cookies,
+    auth_header: Option<TypedHeader<Authorization<Bearer>>>,
+    Json(request): Json<DeleteKeysRequest>,
+) -> Result<StatusCode> {
+    require_admin_token(&state, &jar, auth_header, "delete_keys").await?;
+
+    let mut config_write_guard = state.config.write().await;
+
+    let group = config_write_guard
+        .groups
+        .iter_mut()
+        .find(|g| g.name == request.group_name)
+        .ok_or_else(|| AppError::NotFound(format!("Group '{}' not found", request.group_name)))?;
+
+    let keys_to_delete: HashSet<_> = request.api_keys.into_iter().collect();
+    group.api_keys.retain(|k| !keys_to_delete.contains(k));
+
+    if !config::validate_config(&mut config_write_guard, "admin_delete_keys") {
+        return Err(AppError::Config(
+            "Validation failed after deleting keys; changes not saved.".to_string(),
+        ));
+    }
+
+    config::save_config(&config_write_guard, &state.config_path).await?;
+
+    drop(config_write_guard);
+
+    state.reload_state_from_config().await?;
+
+    Ok(StatusCode::OK)
+}
 /// Get metrics summary
 ///
 /// # Errors
@@ -635,6 +623,13 @@ pub async fn serve_dashboard(State(state): State<Arc<AppState>>) -> Html<String>
     let final_content = content.replace("<!-- SYSINFO_PLACEHOLDER -->", &system_info_html);
 
     Html(final_content)
+}
+
+/// Serve the key management page
+#[axum::debug_handler]
+pub async fn serve_keys_management_page() -> Html<String> {
+    let content = include_str!("../static/keys_management.html").to_string();
+    Html(content)
 }
 
 /// Generates a CSRF token, sets it as a cookie, and returns it in the response body.

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Key Management - Gemini Proxy</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="header">
+        <h1>🔑 Key Management</h1>
+        <nav>
+            <a href="/admin">Dashboard</a>
+        </nav>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <h2>Add Keys</h2>
+            <form id="add-keys-form" class="key-form">
+                <div class="form-group">
+                    <label for="add-group-select">Select Group:</label>
+                    <select id="add-group-select" name="group_name" required>
+                        <!-- Options will be populated by JS -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="add-keys-textarea">API Keys (one per line):</label>
+                    <textarea id="add-keys-textarea" rows="5" placeholder="Enter API keys here..." required></textarea>
+                </div>
+                <button type="submit">Add Keys</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>Delete Keys</h2>
+            <form id="delete-keys-form" class="key-form">
+                <div class="form-group">
+                    <label for="delete-group-select">Select Group:</label>
+                    <select id="delete-group-select" name="group_name" required>
+                        <!-- Options will be populated by JS -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="delete-keys-textarea">API Keys (one per line):</label>
+                    <textarea id="delete-keys-textarea" rows="5" placeholder="Enter API keys to delete..." required></textarea>
+                </div>
+                <button type="submit">Delete Keys</button>
+            </form>
+        </div>
+        <div id="response-message" class="message-container"></div>
+    </div>
+
+    <script>
+        let csrfToken = null;
+
+        async function loginAndReload() {
+            const token = prompt('Admin token is required. Please enter it:');
+            if (!token) {
+                alert('No token provided. Access is limited.');
+                return;
+            }
+            try {
+                const response = await fetch('/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                });
+                if (response.ok) {
+                    alert('Login successful. The page will now reload.');
+                    location.reload();
+                } else {
+                    alert('Login failed. Please check the token and try again.');
+                }
+            } catch (error) {
+                alert(`An error occurred during login: ${error.message}`);
+            }
+        }
+
+        async function fetchWithAuth(endpoint, options = {}) {
+            const headers = { ...options.headers };
+            if (['POST', 'DELETE', 'PUT'].includes(options.method) && csrfToken) {
+                headers['X-CSRF-Token'] = csrfToken;
+            }
+
+            try {
+                const response = await fetch(endpoint, { ...options, headers });
+                
+                if (response.status === 401) {
+                    await loginAndReload();
+                    throw new Error('Unauthorized');
+                }
+
+                if (response.status === 403) {
+                    alert('Security token expired. Please try again.');
+                    await getCsrfTokenAndInit();
+                    throw new Error('CSRF Token Expired');
+                }
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
+                }
+
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    return response.json();
+                } else {
+                    return; 
+                }
+            } catch (error) {
+                 console.error(`Fetch error for ${endpoint}:`, error);
+                 throw error;
+            }
+        }
+
+        function showMessage(message, isError = false) {
+            const messageContainer = document.getElementById('response-message');
+            messageContainer.textContent = message;
+            messageContainer.className = 'message-container'; // Reset classes
+            if (message) {
+                messageContainer.classList.add(isError ? 'error-message' : 'success-message');
+                messageContainer.classList.add('visible');
+                setTimeout(() => {
+                    messageContainer.classList.remove('visible');
+                }, 5000);
+            }
+        }
+
+        async function populateGroupSelects() {
+            try {
+                const config = await fetchWithAuth('/admin/config');
+                const addSelect = document.getElementById('add-group-select');
+                const deleteSelect = document.getElementById('delete-group-select');
+                
+                addSelect.innerHTML = '';
+                deleteSelect.innerHTML = '';
+
+                if (config.groups && config.groups.length > 0) {
+                    config.groups.forEach(group => {
+                        const option = document.createElement('option');
+                        option.value = group.name;
+                        option.textContent = group.name;
+                        addSelect.appendChild(option.cloneNode(true));
+                        deleteSelect.appendChild(option);
+                    });
+                } else {
+                     const option = document.createElement('option');
+                     option.textContent = 'No groups found';
+                     option.disabled = true;
+                     addSelect.appendChild(option.cloneNode(true));
+                     deleteSelect.appendChild(option);
+                }
+            } catch (error) {
+                showMessage(`Failed to load groups: ${error.message}`, true);
+            }
+        }
+
+        async function handleKeyFormSubmit(event, method) {
+            event.preventDefault();
+            const form = event.target;
+            const groupName = form.querySelector('select').value;
+            const keysText = form.querySelector('textarea').value;
+            const button = form.querySelector('button');
+
+            const keys = keysText.split('\n').map(k => k.trim()).filter(k => k.length > 0);
+
+            if (!groupName || keys.length === 0) {
+                showMessage('Group and at least one key are required.', true);
+                return;
+            }
+
+            const originalButtonText = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Processing...';
+
+            try {
+                await fetchWithAuth('/admin/keys', {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group_name: groupName, api_keys: keys })
+                });
+                showMessage(`Keys successfully ${method === 'POST' ? 'added' : 'deleted'}.`, false);
+                form.querySelector('textarea').value = '';
+            } catch (error) {
+                showMessage(`Operation failed: ${error.message}`, true);
+            } finally {
+                button.disabled = false;
+                button.textContent = originalButtonText;
+            }
+        }
+
+        async function getCsrfTokenAndInit() {
+            try {
+                const tokenResponse = await fetch('/admin/csrf-token');
+                if (!tokenResponse.ok) throw new Error('Could not fetch CSRF token');
+                const tokenData = await tokenResponse.json();
+                csrfToken = tokenData.csrf_token;
+                
+                await populateGroupSelects();
+
+                document.getElementById('add-keys-form').addEventListener('submit', (e) => handleKeyFormSubmit(e, 'POST'));
+                document.getElementById('delete-keys-form').addEventListener('submit', (e) => handleKeyFormSubmit(e, 'DELETE'));
+
+            } catch (error) {
+                 console.error('Initialization failed:', error);
+                 showMessage(`Page initialization failed: ${error.message}`, true);
+            }
+        }
+        
+        // Initial load
+        getCsrfTokenAndInit();
+    </script>
+</body>
+</html>
