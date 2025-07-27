@@ -1,67 +1,74 @@
-# Stage 0: Dependencies Builder
-# This stage is dedicated to caching Rust dependencies.
-# It only rebuilds when Cargo.toml or Cargo.lock change.
-FROM rust:1.82-alpine AS dependencies_builder
+# Этап 0: Сборщик зависимостей (deps)
+# Этот этап кеширует зависимости Rust. Пересобирается только при изменении Cargo.toml/lock.
+# Используем конкретную slim-версию для воспроизводимости и меньшего размера.
+FROM rust:1.78-slim-bookworm AS deps
 
-# Install build dependencies for Rust and OpenSSL (for static linking).
-RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig
+# Устанавливаем зависимости для статической линковки с musl и очищаем кеш apt в одном слое.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    musl-tools \
+    build-essential \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory.
+# Добавляем musl target для статической сборки.
+RUN rustup target add x86_64-unknown-linux-musl
+
 WORKDIR /app
 
-# Copy only the Cargo configuration files.
+# Копируем только файлы манифеста.
 COPY Cargo.toml Cargo.lock ./
 
-# Create a dummy main.rs to allow `cargo build` to resolve dependencies.
-# This ensures that this layer is only invalidated when Cargo.toml/Cargo.lock change.
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-
-# Build only the dependencies. This will download and compile all crates.
-RUN cargo build --release --target x86_64-unknown-linux-musl --locked
+# Создаем "пустышку" для сборки только зависимостей.
+# Это позволяет кешировать этот слой, пока Cargo.toml/lock не изменятся.
+RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release --target x86_64-unknown-linux-musl --locked
 
 # ---
 
-# Stage 1: Application Builder
-# This stage compiles the actual application, leveraging cached dependencies.
-FROM rust:1.82-alpine AS builder
+# Этап 1: Сборщик приложения (builder)
+# Этот этап компилирует приложение, используя кешированные зависимости.
+# Наследуемся от `deps`, чтобы не переустанавливать все инструменты.
+FROM deps AS builder
 
-# Install build dependencies (already cached from dependencies_builder, but good practice)
-RUN apk add --no-cache musl-dev build-base perl linux-headers make pkgconfig
-
-# Set the working directory.
 WORKDIR /app
 
-# Copy the cached registry and target directory from the dependencies_builder.
-# This significantly speeds up subsequent builds as dependencies are pre-compiled.
-COPY --from=dependencies_builder /usr/local/cargo/registry /usr/local/cargo/registry
-COPY --from=dependencies_builder /app/target /app/target
+# Копируем уже скомпилированные зависимости из предыдущего этапа.
+COPY --from=deps /app/target ./target
+# Копируем исходный код. Этот слой будет пересобираться только при изменении кода в `src`.
+COPY src ./src
 
-# Copy the entire source code. This layer is invalidated only when source code changes.
-COPY . .
-
-# Build the final application binary.
-# This will be much faster as dependencies are already compiled.
+# Собираем финальный бинарный файл.
+# Это будет очень быстро, так как все зависимости уже скомпилированы.
 RUN cargo build --release --target x86_64-unknown-linux-musl --locked
 
 # ---
 
-# Stage 2: Final Image
-# This is the final, small, and secure image that will be run in production.
-FROM alpine:3.19
+# Этап 2: Финальный образ
+# Это минимальный и безопасный образ для запуска в production.
+FROM alpine:3.19.1
 
-# Install ca-certificates, which are required for making HTTPS requests.
+# Устанавливаем ca-certificates для HTTPS-запросов и сразу очищаем кеш.
 RUN apk --no-cache add ca-certificates
 
-# Set the working directory.
 WORKDIR /app
 
-# Copy the compiled binary from the 'builder' stage.
+# Создаем пользователя и группу без root-прав для запуска приложения.
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Копируем скомпилированный бинарный файл из этапа 'builder'.
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/gemini-proxy-key-rotation-rust .
+# Копируем необходимые статические файлы и конфигурацию.
 COPY config.example.yaml .
 COPY static ./static
 
-# Expose the port the application will run on.
+# Устанавливаем владельца для всех файлов приложения.
+RUN chown -R appuser:appgroup /app
+
+# Переключаемся на пользователя без root-прав.
+USER appuser
+
+# Открываем порт, на котором будет работать приложение.
 EXPOSE 8080
 
-# Set the command to run the application.
+# Команда для запуска приложения.
 CMD ["./gemini-proxy-key-rotation-rust"]

@@ -5,12 +5,11 @@ use axum::{
     http::{header, HeaderMap, Method, Request, StatusCode},
 };
 use gemini_proxy_key_rotation_rust::{
-    admin::{CsrfTokenResponse, KeysUpdateRequest},
+    admin::{AddKeysRequest, CsrfTokenResponse, DeleteKeysRequest},
     config::{AppConfig, KeyGroup},
     run,
 };
 use http_body_util::BodyExt;
-use md5;
 use serde_json::json;
 use tempfile::TempDir;
 use std::sync::Once;
@@ -94,7 +93,7 @@ impl TestApp {
                     .method("POST")
                     .uri("/admin/login")
                     .header("Content-Type", "application/json")
-                    .body(Body::from(format!(r#"{{"token": "{}"}}"#, token)))
+                    .body(Body::from(format!(r#"{{"token": "{token}"}}"#)))
                     .unwrap(),
             )
             .await
@@ -238,7 +237,7 @@ async fn test_add_keys_unauthorized() {
     let config = get_default_config();
     let app = TestApp::new(config).await;
 
-    let body = Body::from(serde_json::to_string(&KeysUpdateRequest {
+    let body = Body::from(serde_json::to_string(&AddKeysRequest {
         group_name: "default".to_string(),
         api_keys: vec!["new_key".to_string()],
     }).unwrap());
@@ -267,7 +266,7 @@ async fn test_add_keys_no_csrf() {
     let mut app = TestApp::new(config).await;
     app.login("secret_admin_token").await;
 
-    let body = Body::from(serde_json::to_string(&KeysUpdateRequest {
+    let body = Body::from(serde_json::to_string(&AddKeysRequest {
         group_name: "default".to_string(),
         api_keys: vec!["new_key".to_string()],
     }).unwrap());
@@ -301,7 +300,7 @@ async fn test_add_keys_success() {
     app.get_csrf_token().await;
 
     // 2. Prepare and send request
-    let body = Body::from(serde_json::to_string(&KeysUpdateRequest {
+    let body = Body::from(serde_json::to_string(&AddKeysRequest {
         group_name: "default".to_string(),
         api_keys: vec!["new_key_1".to_string(), "new_key_2".to_string()],
     }).unwrap());
@@ -369,7 +368,7 @@ async fn test_verify_key_success() {
     let response = app
         .authed_request(
             Method::POST,
-            &format!("/admin/keys/{}/verify", key_id),
+            &format!("/admin/keys/{key_id}/verify"),
             Body::empty(),
         )
         .await;
@@ -405,7 +404,7 @@ async fn test_reset_key_success() {
     let verify_response = app
         .authed_request(
             Method::POST,
-            &format!("/admin/keys/{}/verify", key_id),
+            &format!("/admin/keys/{key_id}/verify"),
             Body::empty(),
         )
         .await;
@@ -434,7 +433,7 @@ async fn test_reset_key_success() {
     let reset_response = app
         .authed_request(
             Method::POST,
-            &format!("/admin/keys/{}/reset", key_id),
+            &format!("/admin/keys/{key_id}/reset"),
             Body::empty(),
         )
         .await;
@@ -468,7 +467,7 @@ async fn test_delete_keys_success() {
     app.get_csrf_token().await;
 
     // 2. Send request to delete one of the keys
-    let body = Body::from(serde_json::to_string(&KeysUpdateRequest {
+    let body = Body::from(serde_json::to_string(&DeleteKeysRequest {
         group_name: "default".to_string(),
         api_keys: vec!["key_to_delete".to_string()],
     }).unwrap());

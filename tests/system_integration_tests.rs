@@ -124,7 +124,7 @@ async fn test_concurrent_requests() {
         let handle = tokio::spawn(async move {
             let request = axum::extract::Request::builder()
                 .method(Method::GET)
-                .uri(format!("/v1/models?req={}", i))
+                .uri(format!("/v1/models?req={i}"))
                 .body(axum::body::Body::empty())
                 .unwrap();
             

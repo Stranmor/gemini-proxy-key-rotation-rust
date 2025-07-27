@@ -1,20 +1,19 @@
 // src/state.rs
 
+use crate::admin::SystemInfoCollector;
 use crate::config::AppConfig;
-use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result}; // Ensured Proxy types are imported
+use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
 use crate::key_manager::KeyManager;
 use reqwest::{Client, ClientBuilder, Proxy};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use crate::admin::SystemInfoCollector;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::Instrument;
-use tracing::{debug, error, info, instrument, warn}; // Base tracing macros // Explicitly import the Instrument trait
-
+use tracing::{debug, error, info, instrument, warn, Instrument};
 use url::Url;
-/// Represents the shared application state that is accessible by all Axum handlers.
+
+/// Представляет общее состояние приложения, доступное для всех обработчиков Axum.
 #[derive(Debug)]
 pub struct AppState {
     pub key_manager: Arc<RwLock<KeyManager>>,
@@ -25,183 +24,178 @@ pub struct AppState {
     pub config_path: PathBuf,
 }
 
-impl AppState {
-    /// Creates a new `AppState`. Initializes KeyManager and pre-builds HTTP clients.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if:
-    /// - The base HTTP client (no proxy) fails to build, which is a fatal error.
-    /// - A proxy URL has a syntactically invalid format or an unsupported scheme.
-    /// - An unexpected I/O or other error occurs during client initialization.
-    #[instrument(level = "info", skip(config, config_path), fields(config.path = %config_path.display()))]
-    pub async fn new(config: &AppConfig, config_path: &Path) -> Result<Self> {
-        info!("Creating shared AppState: Initializing KeyManager and HTTP clients...");
-        let key_manager = KeyManager::new(config, config_path).await; // KeyManager init logs its progress
-        let mut http_clients = HashMap::new();
+/// Создает `HashMap` HTTP-клиентов на основе предоставленной конфигурации.
+///
+/// Эта функция инкапсулирует логику для:
+/// 1. Создания базового клиента (без прокси).
+/// 2. Поиска уникальных URL-адресов прокси в конфигурации.
+/// 3. Создания отдельного клиента для каждого уникального прокси.
+///
+/// # Errors
+///
+/// Возвращает `Err`, если:
+/// - Не удается создать базовый HTTP-клиент (фатальная ошибка).
+/// - URL-адрес прокси имеет синтаксически неверный формат или неподдерживаемую схему.
+/// - Происходит другая непредвиденная ошибка во время сборки клиента.
+#[instrument(level = "info", skip_all, name = "build_http_clients")]
+async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>, Arc<Client>>> {
+    info!("Building HTTP clients based on configuration...");
+    let mut http_clients = HashMap::new();
 
-        // Determine connection pool size based on key count, with a minimum floor
-        let total_key_count: usize = config
-            .groups
-            .iter()
-            .flat_map(|g| &g.api_keys)
-            .filter(|k| !k.trim().is_empty())
-            .count()
-            .max(10); // Ensure at least 10 connections possible even with few keys
-        debug!(
-            pool.max_idle_per_host = total_key_count,
-            "Calculated max idle connections per host"
-        );
+    // Определяем размер пула соединений на основе количества ключей, с минимальным порогом
+    let total_key_count: usize = config
+        .groups
+        .iter()
+        .flat_map(|g| &g.api_keys)
+        .filter(|k| !k.trim().is_empty())
+        .count()
+        .max(10); // Гарантируем не менее 10 возможных соединений даже при малом количестве ключей
+    debug!(
+        pool.max_idle_per_host = total_key_count,
+        "Calculated max idle connections per host"
+    );
 
-        // Centralized client configuration function
-        let configure_builder = |builder: ClientBuilder| -> ClientBuilder {
-            builder
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(300)) // Overall request timeout
-                .pool_idle_timeout(Duration::from_secs(90)) // Keep idle connections open for 90s
-                .pool_max_idle_per_host(total_key_count) // Adjust pool size based on keys
-                .tcp_keepalive(Some(Duration::from_secs(60))) // Enable TCP keepalive
-                                                              // Add user-agent?
-                                                              // .user_agent(format!("gemini-proxy/{}", env!("CARGO_PKG_VERSION")))
-        };
+    // Централизованная функция конфигурации клиента
+    let configure_builder = |builder: ClientBuilder| -> ClientBuilder {
+        builder
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300)) // Общий таймаут запроса
+            .pool_idle_timeout(Duration::from_secs(90)) // Держать неактивные соединения открытыми 90с
+            .pool_max_idle_per_host(total_key_count) // Настроить размер пула на основе ключей
+            .tcp_keepalive(Some(Duration::from_secs(60))) // Включить TCP keepalive
+    };
 
-        // 1. Create the base client (no proxy) - this MUST succeed
-        let base_client_result = configure_builder(Client::builder()).build();
-        let base_client = match base_client_result {
-            Ok(client) => client,
-            Err(e) => {
-                // Structured error for base client failure - this is fatal
-                error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required. Exiting.");
-                // Map error explicitly, including None proxy context
-                return Err(AppError::HttpClientBuildError {
-                    source: e,
-                    proxy_url: None,
-                });
+    // 1. Создаем базовый клиент (без прокси) - это ДОЛЖНО получиться
+    let base_client = configure_builder(Client::builder())
+        .build()
+        .map_err(|e| {
+            // Структурированная ошибка для сбоя базового клиента - это фатально
+            error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
+            AppError::HttpClientBuildError {
+                source: e,
+                proxy_url: None,
             }
-        };
-        http_clients.insert(None, Arc::new(base_client));
-        info!(client.type = "base", "Base HTTP client (no proxy) created successfully.");
+        })?;
+    http_clients.insert(None, Arc::new(base_client));
+    info!(client.type = "base", "Base HTTP client (no proxy) created successfully.");
 
-        // 2. Collect unique proxy URLs from the configuration
-        let unique_proxy_urls: HashSet<String> = config
-            .groups
-            .iter()
-            .filter_map(|g| g.proxy_url.as_ref()) // Get Option<&String>
-            .filter(|url_str| !url_str.trim().is_empty()) // Filter out empty strings
-            .cloned() // Clone the String
-            .collect();
-        debug!(
-            proxy.count = unique_proxy_urls.len(),
-            ?unique_proxy_urls,
-            "Found unique proxy URLs for client creation"
-        );
+    // 2. Собираем уникальные URL-адреса прокси из конфигурации
+    let unique_proxy_urls: HashSet<String> = config
+        .groups
+        .iter()
+        .filter_map(|g| g.proxy_url.as_ref()) // Получаем Option<&String>
+        .filter(|url_str| !url_str.trim().is_empty()) // Отфильтровываем пустые строки
+        .cloned() // Клонируем String
+        .collect();
+    debug!(
+        proxy.count = unique_proxy_urls.len(),
+        ?unique_proxy_urls,
+        "Found unique proxy URLs for client creation"
+    );
 
-        // 3. Create clients for each unique proxy URL
-        for proxy_url_str in unique_proxy_urls {
-            // Create a span for each proxy client creation attempt
-            let proxy_span = tracing::info_span!("create_proxy_client", proxy.url = %proxy_url_str);
-            let client_result: Result<Client> = async {
-                 // Parse URL first, map error to specific ProxyConfigErrorKind
-                 let parsed_proxy_url = Url::parse(&proxy_url_str).map_err(|e| {
-                     // Structured error log for URL parsing
-                     error!(error = %e, "Failed to parse proxy URL string.");
-                     AppError::ProxyConfigError(ProxyConfigErrorData {
-                         url: proxy_url_str.clone(),
-                         kind: ProxyConfigErrorKind::UrlParse(e),
-                     })
-                 })?;
+    // 3. Создаем клиенты для каждого уникального URL-адреса прокси
+    for proxy_url_str in unique_proxy_urls {
+        let proxy_span = tracing::info_span!("create_proxy_client", proxy.url = %proxy_url_str);
+        let client_result: Result<Client> = async {
+            // Сначала парсим URL, сопоставляем ошибку с конкретным ProxyConfigErrorKind
+            let parsed_proxy_url = Url::parse(&proxy_url_str).map_err(|e| {
+                error!(error = %e, "Failed to parse proxy URL string.");
+                AppError::ProxyConfigError(ProxyConfigErrorData {
+                    url: proxy_url_str.clone(),
+                    kind: ProxyConfigErrorKind::UrlParse(e),
+                })
+            })?;
 
-                let scheme = parsed_proxy_url.scheme().to_lowercase();
-                debug!(proxy.scheme = %scheme, "Parsed proxy scheme");
+            let scheme = parsed_proxy_url.scheme().to_lowercase();
+            debug!(proxy.scheme = %scheme, "Parsed proxy scheme");
 
-                 // Create proxy object, map errors to specific ProxyConfigErrorKind
-                 let proxy = match scheme.as_str() {
-                     "http" => Proxy::http(&proxy_url_str).map_err(|e| {
-                         // Log error detail
-                         error!(error = %e, proxy.scheme = %scheme, "Invalid HTTP proxy definition");
-                         AppError::ProxyConfigError(ProxyConfigErrorData {
-                             url: proxy_url_str.clone(),
-                             kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
-                         })
-                     }),
-                     "https" => Proxy::https(&proxy_url_str).map_err(|e| {
-                          // Log error detail
-                          error!(error = %e, proxy.scheme = %scheme, "Invalid HTTPS proxy definition");
-                          AppError::ProxyConfigError(ProxyConfigErrorData {
-                             url: proxy_url_str.clone(),
-                             kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
-                         })
-                     }),
-                     "socks5" => Proxy::all(&proxy_url_str).map_err(|e| {
-                          // Log error detail
-                          error!(error = %e, proxy.scheme = %scheme, "Invalid SOCKS5 proxy definition");
-                          AppError::ProxyConfigError(ProxyConfigErrorData {
-                             url: proxy_url_str.clone(),
-                             kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
-                         })
-                     }),
-                     _ => {
-                          // Log unsupported scheme error
-                          error!(proxy.scheme = %scheme, "Unsupported proxy scheme");
-                          Err(AppError::ProxyConfigError(ProxyConfigErrorData {
-                             url: proxy_url_str.clone(),
-                             kind: ProxyConfigErrorKind::UnsupportedScheme(scheme.to_string()),
-                         }))
-                     },
-                 }?;
-                 debug!("Proxy object created successfully");
-
-                 // Build the client with the proxy
-                 configure_builder(Client::builder())
-                    .proxy(proxy)
-                    .build()
-                     // Map build error with proxy context
-                     .map_err(|e| {
-                         // Structured error log for client build failure
-                         error!(proxy.scheme = %scheme, error = ?e, "Failed to build reqwest client for proxy.");
-                         AppError::HttpClientBuildError { source: e, proxy_url: Some(proxy_url_str.clone()) }
-                     })
-            }.instrument(proxy_span).await; // Instrument the async block
-
-            // Handle the result of client creation
-            match client_result {
-                Ok(proxy_client) => {
-                    // Structured success log
-                    info!(proxy.url = %proxy_url_str, "HTTP client created successfully for proxy.");
-                    http_clients.insert(Some(proxy_url_str.clone()), Arc::new(proxy_client));
+            // Создаем объект прокси, сопоставляем ошибки с конкретным ProxyConfigErrorKind
+            let proxy = match scheme.as_str() {
+                "http" => Proxy::http(&proxy_url_str),
+                "https" => Proxy::https(&proxy_url_str),
+                "socks5" => Proxy::all(&proxy_url_str),
+                _ => {
+                    error!(proxy.scheme = %scheme, "Unsupported proxy scheme");
+                    return Err(AppError::ProxyConfigError(ProxyConfigErrorData {
+                        url: proxy_url_str.clone(),
+                        kind: ProxyConfigErrorKind::UnsupportedScheme(scheme.to_string()),
+                    }));
                 }
-                Err(e) => {
-                    // Log errors based on their type, ensuring proxy_url is included
-                    match e {
-                        AppError::ProxyConfigError(_) => {
-                            // Already logged within the async block, re-log as critical error for AppState
-                            error!(proxy.url = %proxy_url_str, error = ?e, "Critical proxy configuration error. Aborting AppState creation.");
-                            return Err(e); // Fail fast on config errors
-                        }
-                        AppError::HttpClientBuildError {
-                            ref source,
-                            proxy_url: Some(ref url),
-                        } => {
-                            // Match specific error
-                            // Already logged within the async block, re-log as warning for skipping
-                            warn!(proxy.url = %url, error = ?source, "Skipping client creation for this proxy due to build error. Groups using this proxy might fail.");
-                            // Log and continue for build errors
-                        }
-                        _ => {
-                            // Catch-all for unexpected errors during creation for this proxy
-                            error!(proxy.url = %proxy_url_str, error = ?e, "Unexpected error during proxy client creation. Aborting AppState creation.");
-                            return Err(e); // Fail on other unexpected errors
-                        }
+            }
+            .map_err(|e| {
+                error!(error = %e, proxy.scheme = %scheme, "Invalid proxy definition");
+                AppError::ProxyConfigError(ProxyConfigErrorData {
+                    url: proxy_url_str.clone(),
+                    kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
+                })
+            })?;
+            debug!("Proxy object created successfully");
+
+            // Собираем клиент с прокси
+            configure_builder(Client::builder())
+                .proxy(proxy)
+                .build()
+                .map_err(|e| {
+                    error!(proxy.scheme = %scheme, error = ?e, "Failed to build reqwest client for proxy.");
+                    AppError::HttpClientBuildError {
+                        source: e,
+                        proxy_url: Some(proxy_url_str.clone()),
+                    }
+                })
+        }
+        .instrument(proxy_span)
+        .await;
+
+        // Обрабатываем результат создания клиента
+        match client_result {
+            Ok(proxy_client) => {
+                info!(proxy.url = %proxy_url_str, "HTTP client created successfully for proxy.");
+                http_clients.insert(Some(proxy_url_str.clone()), Arc::new(proxy_client));
+            }
+            Err(e) => {
+                match e {
+                    AppError::ProxyConfigError(_) => {
+                        error!(proxy.url = %proxy_url_str, error = ?e, "Critical proxy configuration error. Aborting client creation process.");
+                        return Err(e); // Быстрый выход при ошибках конфигурации
+                    }
+                    AppError::HttpClientBuildError {
+                        ref source,
+                        proxy_url: Some(ref url),
+                    } => {
+                        warn!(proxy.url = %url, error = ?source, "Skipping client creation for this proxy due to build error. Groups using this proxy might fail.");
+                        // Логируем и продолжаем при ошибках сборки
+                    }
+                    _ => {
+                        error!(proxy.url = %proxy_url_str, error = ?e, "Unexpected error during proxy client creation. Aborting.");
+                        return Err(e); // Выход при других непредвиденных ошибках
                     }
                 }
             }
         }
+    }
 
-        // Log final client count
-        info!(
-            client.count = http_clients.len(),
-            "Finished initializing HTTP clients."
-        );
+    info!(
+        client.count = http_clients.len(),
+        "Finished building HTTP clients."
+    );
+    Ok(http_clients)
+}
+
+impl AppState {
+    /// Создает новый `AppState`. Инициализирует KeyManager и предварительно создает HTTP-клиенты.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает `Err`, если не удается создать `KeyManager` или `http_clients`.
+    #[instrument(level = "info", skip(config, config_path), fields(config.path = %config_path.display()))]
+    pub async fn new(config: &AppConfig, config_path: &Path) -> Result<Self> {
+        info!("Creating shared AppState...");
+
+        // Сначала инициализируем KeyManager
+        let key_manager = KeyManager::new(config, config_path).await;
+
+        // Создаем все HTTP-клиенты с помощью вспомогательной функции
+        let http_clients = build_http_clients(config).await?;
 
         Ok(Self {
             key_manager: Arc::new(RwLock::new(key_manager)),
@@ -212,106 +206,48 @@ impl AppState {
             config_path: config_path.to_path_buf(),
         })
     }
-/// Reloads the `KeyManager` from the current configuration within `AppState`.
-    /// Reloads the `KeyManager` and `http_clients` from the current configuration.
-    /// This allows for hot-reloading of API keys and proxy configurations without restarting the server.
+
+    /// Перезагружает `KeyManager` и `http_clients` из текущей конфигурации.
+    /// Это позволяет выполнять горячую перезагрузку API-ключей и конфигураций прокси без перезапуска сервера.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if any part of the state reconstruction fails.
+    /// Возвращает `Err`, если какая-либо часть реконструкции состояния завершается неудачно.
     #[instrument(level = "info", skip(self))]
     pub async fn reload_state_from_config(&self) -> Result<()> {
         info!("Attempting to reload full application state (KeyManager, HttpClients) from configuration...");
         let config_guard = self.config.read().await;
-    
-        // --- Create new KeyManager ---
+
+        // --- Создаем новый KeyManager ---
         let new_key_manager = KeyManager::new(&config_guard, &self.config_path).await;
-    
-        // --- Create new HttpClients (logic identical to AppState::new) ---
-        let mut new_http_clients = HashMap::new();
-        let total_key_count: usize = config_guard.groups.iter().flat_map(|g| &g.api_keys).filter(|k| !k.trim().is_empty()).count().max(10);
-    
-        let configure_builder = |builder: ClientBuilder| -> ClientBuilder {
-            builder
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(300))
-                .pool_idle_timeout(Duration::from_secs(90))
-                .pool_max_idle_per_host(total_key_count)
-                .tcp_keepalive(Some(Duration::from_secs(60)))
-        };
-    
-        let base_client = configure_builder(Client::builder()).build().map_err(|e| {
-            error!(error = ?e, "Failed to build base HTTP client during reload. This is a critical error.");
-            AppError::HttpClientBuildError { source: e, proxy_url: None }
-        })?;
-        new_http_clients.insert(None, Arc::new(base_client));
-    
-        let unique_proxy_urls: HashSet<String> = config_guard.groups.iter().filter_map(|g| g.proxy_url.as_ref()).filter(|url_str| !url_str.trim().is_empty()).cloned().collect();
-    
-        for proxy_url_str in unique_proxy_urls {
-            let proxy_span = tracing::info_span!("create_proxy_client_reload", proxy.url = %proxy_url_str);
-            let client_result: Result<Client> = async {
-                let parsed_proxy_url = Url::parse(&proxy_url_str).map_err(|e| {
-                    AppError::ProxyConfigError(ProxyConfigErrorData {
-                        url: proxy_url_str.clone(),
-                        kind: ProxyConfigErrorKind::UrlParse(e),
-                    })
-                })?;
-                let scheme = parsed_proxy_url.scheme().to_lowercase();
-                let proxy = match scheme.as_str() {
-                    "http" => Proxy::http(&proxy_url_str),
-                    "https" => Proxy::https(&proxy_url_str),
-                    "socks5" => Proxy::all(&proxy_url_str),
-                    _ => return Err(AppError::ProxyConfigError(ProxyConfigErrorData {
-                        url: proxy_url_str.clone(),
-                        kind: ProxyConfigErrorKind::UnsupportedScheme(scheme),
-                    })),
-                }.map_err(|e| AppError::ProxyConfigError(ProxyConfigErrorData {
-                    url: proxy_url_str.clone(),
-                    kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
-                }))?;
-    
-                configure_builder(Client::builder())
-                    .proxy(proxy)
-                    .build()
-                    .map_err(|e| AppError::HttpClientBuildError {
-                        source: e,
-                        proxy_url: Some(proxy_url_str.clone()),
-                    })
-            }.instrument(proxy_span).await;
-    
-            match client_result {
-                Ok(proxy_client) => {
-                    info!(proxy.url = %proxy_url_str, "HTTP client recreated successfully during reload.");
-                    new_http_clients.insert(Some(proxy_url_str.clone()), Arc::new(proxy_client));
-                }
-                Err(e) => {
-                    warn!(proxy.url = %proxy_url_str, error = ?e, "Failed to recreate client for proxy during reload. Groups using this proxy may fail.");
-                }
-            }
-        }
-    
+
+        // --- Создаем новые HttpClients с помощью вспомогательной функции ---
+        // Вспомогательная функция содержит надежную обработку ошибок, которую мы хотим использовать.
+        let new_http_clients = build_http_clients(&config_guard).await?;
+
+        // Освобождаем блокировку чтения перед получением блокировок записи
         drop(config_guard);
-    
+
+        // --- Атомарно обновляем состояние ---
         *self.key_manager.write().await = new_key_manager;
         *self.http_clients.write().await = new_http_clients;
-    
+
         info!("Application state (KeyManager, HttpClients) reloaded successfully.");
         Ok(())
     }
 
-    /// Returns a reference to the appropriate HTTP client.
+    /// Возвращает ссылку на соответствующий HTTP-клиент.
     ///
     /// # Errors
     ///
-    /// Returns an `AppError::Internal` if the requested client (identified by the `proxy_url` Option)
-    /// was not found in the pre-built client map. This indicates a logic error, as all required
-    /// clients should have been initialized at startup.
+    /// Возвращает `AppError::Internal`, если запрошенный клиент (определяемый `proxy_url` Option)
+    /// не был найден в предварительно созданном отображении клиентов. Это указывает на логическую ошибку,
+    /// так как все необходимые клиенты должны были быть инициализированы при запуске.
     #[instrument(level = "debug", skip(self), fields(proxy.url = ?proxy_url))]
     pub async fn get_client(&self, proxy_url: Option<&str>) -> Result<Arc<Client>> {
         let clients_guard = self.http_clients.read().await;
         let key = proxy_url.map(String::from);
-        
+
         clients_guard.get(&key).cloned().ok_or_else(|| {
             let msg = proxy_url.map_or_else(
                 || "Requested base HTTP client (None proxy) was unexpectedly missing.".to_string(),
@@ -354,8 +290,8 @@ mod tests {
         file_path
     }
 
-        #[tokio::test]
-        async fn test_appstate_new_no_proxies() {
+    #[tokio::test]
+    async fn test_appstate_new_no_proxies() {
         let dir = tempdir().unwrap();
         let dummy_path = create_dummy_config_path(&dir);
 
@@ -556,13 +492,19 @@ mod tests {
                 let clients_guard = state.http_clients.read().await;
                 assert!(clients_guard.contains_key(&None)); // Base client
                 let http_key = Some("http://127.0.0.1:34569".to_string());
-                let socks_key = Some("socks5://invalid-host-that-causes-build-error:1080".to_string());
+                let socks_key =
+                    Some("socks5://invalid-host-that-causes-build-error:1080".to_string());
                 let http_created = clients_guard.contains_key(&http_key);
                 let socks_created = clients_guard.contains_key(&socks_key);
                 assert!(http_created, "Valid HTTP client should have been created");
-                
-                let expected_clients = 1 + (if http_created { 1 } else { 0 }) + (if socks_created { 1 } else { 0 });
-                assert_eq!(clients_guard.len(), expected_clients, "Unexpected number of clients created");
+
+                let expected_clients =
+                    1 + (if http_created { 1 } else { 0 }) + (if socks_created { 1 } else { 0 });
+                assert_eq!(
+                    clients_guard.len(),
+                    expected_clients,
+                    "Unexpected number of clients created"
+                );
                 drop(clients_guard);
 
                 assert!(state.get_client(http_key.as_deref()).await.is_ok());
@@ -575,15 +517,16 @@ mod tests {
             }
             Err(AppError::ProxyConfigError(data)) => {
                 // If the "invalid" URL actually caused a config error (likely InvalidDefinition), this is an acceptable outcome.
-                warn!(error=?data, "Test URL caused ProxyConfigError instead of HttpClientBuildError. Treating as acceptable test outcome.");
-                assert_eq!(data.url, "socks5://invalid-host-that-causes-build-error:1080");
+                warn!(error = ?data, "Test URL caused ProxyConfigError instead of HttpClientBuildError. Treating as acceptable test outcome.");
+                assert_eq!(
+                    data.url,
+                    "socks5://invalid-host-that-causes-build-error:1080"
+                );
             }
             Err(e) => {
                 // Any other error type is unexpected and should fail the test
-                panic!("AppState::new failed with unexpected error type: {:?}", e);
+                panic!("AppState::new failed with unexpected error type: {e:?}");
             }
         }
-
-
     }
-} // end tests module
+}

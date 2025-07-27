@@ -12,5 +12,9 @@ services:
       - RUST_BACKTRACE=1
     restart: unless-stopped
     # Ограничения ресурсов для non-swarm режима
-    cpus: 2.0
-    - seccomp=unconfined
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+    security_opt:
+      - seccomp=unconfined

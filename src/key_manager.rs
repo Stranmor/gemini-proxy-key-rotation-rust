@@ -735,7 +735,7 @@ mod tests {
  # No groups needed here, KeyManager uses AppConfig directly
  "#;
         let mut file = File::create(&file_path).unwrap();
-        writeln!(file, "{}", content).unwrap();
+        writeln!(file, "{content}").unwrap();
         file_path
     }
 
@@ -866,7 +866,7 @@ mod tests {
             let path = entry.unwrap().path();
             if path.is_file() {
                 if let Some(filename) = path.file_name().map(|n| n.to_string_lossy()) {
-                    if filename.starts_with(&format!(".{}.", base_filename))
+                    if filename.starts_with(&format!(".{base_filename}."))
                         && filename.ends_with(".tmp")
                     {
                         error!("Found unexpected temp file: {}", path.display());

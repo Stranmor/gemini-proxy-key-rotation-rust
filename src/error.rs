@@ -113,6 +113,9 @@ pub enum AppError {
 
     #[error("URL parsing error: {0}")]
     UrlParse(#[from] url::ParseError),
+
+    #[error("HTTP response builder error: {0}")]
+    HttpResponseBuilder(#[from] http::Error),
 }
 
 // Removed manual `impl From<reqwest::Error> for AppError` to resolve conflict
@@ -347,6 +350,18 @@ impl IntoResponse for AppError {
                         details: Some(e.to_string()),
                     },
                 )
+            },
+            Self::HttpResponseBuilder(e) => {
+                error!("HTTP response builder error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorDetails {
+                        error_type: "HTTP_RESPONSE_BUILD_ERROR".to_string(),
+                        message: "An internal error occurred while building an HTTP response"
+                            .to_string(),
+                        details: Some(e.to_string()),
+                    },
+                )
             }
         };
 
@@ -404,9 +419,7 @@ mod tests {
             .expect("JSON 'error.message' field is not a string or missing");
         assert!(
             error_msg.contains(expected_message_substring),
-            "Expected error message '{}' to contain '{}'",
-            error_msg,
-            expected_message_substring
+            "Expected error message '{error_msg}' to contain '{expected_message_substring}'"
         );
 
         if expect_details {
@@ -605,14 +618,12 @@ mod tests {
         // This requires mocking or a feature flag for testing, skipping for now.
         // let e = create_mock_reqwest_timeout_error();
         // check_response(AppError::Reqwest(e), StatusCode::GATEWAY_TIMEOUT, "UPSTREAM_ERROR", "Upstream request timed out", true).await;
-        assert!(true); // Placeholder
     }
 
     #[tokio::test]
     async fn test_into_response_reqwest_connect() {
         // Simulate a connect error
         // Skipping for now due to complexity of creating reqwest::Error
-        assert!(true); // Placeholder
     }
 
     #[tokio::test]

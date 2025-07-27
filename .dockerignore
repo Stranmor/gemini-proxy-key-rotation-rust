@@ -31,3 +31,4 @@ Dockerfile
 # Ignore any local configuration and state files not intended for the image
 config.yaml
 key_states.json
+

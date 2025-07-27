@@ -6,7 +6,7 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{to_bytes, Bytes},
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     response::Response,
@@ -74,28 +74,30 @@ async fn handle_upstream_response(
         s if s.is_client_error() => {
             let (parts, body) = response.into_parts();
             let body_bytes = to_bytes(body, usize::MAX).await?;
-            // Log the full body for any 4xx error to improve debuggability.
-            // We convert to a string first to ensure we log valid UTF-8.
+            // By calling .to_string(), we create a new owned String, which breaks the borrow on body_bytes.
             let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
             warn!(
                 "Upstream API returned 4xx error. Status: {}. Body: {}. Marking key and retrying.",
                 s, body_str
             );
-
-            // Store the last error details to be returned to the client if all retries fail.
             *last_error = Some((parts.status, parts.headers, body_bytes));
 
-            // Define the action to take on the key based on the status code.
-            let key_action: Box<dyn FnOnce(&mut crate::key_manager::KeyManager, &str) -> bool + Send> =
-                if s == StatusCode::TOO_MANY_REQUESTS {
-                    Box::new(|km, key| km.mark_key_as_limited(key))
-                } else {
-                    // For any other 4xx error, we mark the key as invalid.
-                    Box::new(|km, key| km.mark_key_as_invalid(key))
-                };
-            
-            // Apply the action and break the loop to retry with the next key.
-            apply_key_action(state, api_key_to_mark, key_action).await
+            // If the body indicates an invalid API key, we treat it as a permanent failure for that key.
+            if s == StatusCode::BAD_REQUEST && body_str.contains("API_KEY_INVALID") {
+                warn!("API key is invalid. Marking as Invalid.");
+                apply_key_action(state, api_key_to_mark, |km, key| {
+                    km.mark_key_as_invalid(key)
+                })
+                .await
+            } else {
+                // For other 4xx errors (like 429 or other 400s), mark the key as limited and retry.
+                warn!("API key is rate-limited or request is malformed. Marking as Limited.");
+                apply_key_action(state, api_key_to_mark, |km, key| {
+                    km.mark_key_as_limited(key)
+                })
+                .await
+            }
         }
         s if s.is_server_error() => {
             let (parts, body) = response.into_parts();
