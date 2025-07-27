@@ -33,7 +33,7 @@ hyper-util = { version = "0.1.3", features = ["full"] }
 http = "1.1.0"
 axum-extra = { version = "0.9.6", features = ["tracing", "typed-header", "cookie", "cookie-private"] }
 uuid = { version = "1.8.0", features = ["v4"] }
-sysinfo = { version = "0.30.12", features = ["serde"] }
+sysinfo = { version = "0.36.1", features = ["serde"] }
 md5 = "0.7.0"
 thiserror = "1.0"
 futures-util = "0.3"

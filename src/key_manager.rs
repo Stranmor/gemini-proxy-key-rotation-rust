@@ -439,7 +439,7 @@ impl KeyManager {
         self.key_states.get(api_key).is_some_and(|s| s.status == KeyStatus::Invalid)
     }
 
-    fn reset_key_state_to_available(&mut self, api_key: &str) -> bool {
+    pub(crate) fn reset_key_state_to_available(&mut self, api_key: &str) -> bool {
         if let Some(key_state) = self.key_states.get_mut(api_key) {
             if key_state.status != KeyStatus::Available || key_state.reset_time.is_some() {
                 info!(api_key.preview = %Self::preview(api_key), "Resetting key status to Available");
