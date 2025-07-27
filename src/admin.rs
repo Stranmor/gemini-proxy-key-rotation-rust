@@ -388,14 +388,14 @@ pub async fn list_keys(
 
     let keys = all_key_info
         .iter()
-        .filter(|key_info| query.group.as_ref().map_or(true, |g| g == &key_info.group_name))
+        .filter(|key_info| query.group.as_ref().is_none_or(|g| g == &key_info.group_name))
         .filter_map(|key_info| {
             let key_state = key_states.get(&key_info.key);
             let api_key_info = KeyInfo::new(key_info, key_state, now);
             if query
                 .status
                 .as_ref()
-                .map_or(true, |s| s == &api_key_info.status)
+                .is_none_or(|s| s == &api_key_info.status)
             {
                 Some(api_key_info)
             } else {
@@ -829,7 +829,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/")
-                    .header(header::COOKIE, &format!("{CSRF_TOKEN_COOKIE}={token}"))
+                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}={token}"))
                     .header(&X_CSRF_TOKEN, token)
                     .body(Body::empty())
                     .unwrap(),
@@ -849,7 +849,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/")
-                    .header(header::COOKIE, &format!("{CSRF_TOKEN_COOKIE}={token}"))
+                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}={token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -886,7 +886,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/")
-                    .header(header::COOKIE, &format!("{CSRF_TOKEN_COOKIE}=token_in_cookie"))
+                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}=token_in_cookie"))
                     .header(&X_CSRF_TOKEN, "token_in_header")
                     .body(Body::empty())
                     .unwrap(),
@@ -905,7 +905,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/")
-                    .header(header::COOKIE, &format!("{CSRF_TOKEN_COOKIE}="))
+                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}="))
                     .header(&X_CSRF_TOKEN, "")
                     .body(Body::empty())
                     .unwrap(),
@@ -1007,9 +1007,9 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/admin/keys")
-                    .header(header::AUTHORIZATION, format!("Bearer {}", admin_token))
+                    .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
                     .header(&X_CSRF_TOKEN, "dummy_csrf_token")
-                    .header(header::COOKIE, &format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"))
+                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(serde_json::to_vec(&add_request).unwrap()))
                     .unwrap(),
@@ -1042,9 +1042,9 @@ mod tests {
                 Request::builder()
                     .method("DELETE")
                     .uri("/admin/keys")
-                    .header(header::AUTHORIZATION, format!("Bearer {}", admin_token))
+                    .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
                     .header(&X_CSRF_TOKEN, "dummy_csrf_token")
-                    .header(header::COOKIE, &format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"))
+                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(serde_json::to_vec(&delete_request).unwrap()))
                     .unwrap(),
