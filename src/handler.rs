@@ -11,9 +11,25 @@ use axum::{
     response::Response,
 };
 use chrono::Duration;
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};
 use url::Url;
+
+#[derive(Deserialize, Debug)]
+struct ErrorInfo {
+    reason: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct ErrorDetails {
+    details: Vec<ErrorInfo>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ErrorResponse {
+    error: ErrorDetails,
+}
 
 #[instrument(name = "health_check", skip_all)]
 pub async fn health_check() -> StatusCode {
@@ -113,12 +129,32 @@ async fn retry_with_key(
                 warn!(%status, key = %key_info.key, "Received terminal error, not retrying with another key.");
                 return Ok(Some(Response::from_parts(parts, Body::from(bytes))));
             }
-            StatusCode::BAD_REQUEST if String::from_utf8_lossy(&bytes).contains("API_KEY_INVALID") => {
-                warn!(key = %key_info.key, "Marking key as invalid");
-                mutate_key(state, &key_info.key, |km, k| km.mark_key_as_invalid(k)).await?;
-                return Ok(None); // Ключ невалиден, пробуем следующий
+            StatusCode::TOO_MANY_REQUESTS => {
+                warn!(key = %key_info.key, "Received 429 Too Many Requests. Marking key as limited and stopping retries.");
+                mutate_key(state, &key_info.key, |km, k| km.mark_key_as_limited(k)).await?;
+                // Немедленно возвращаем ошибку, не пробуя другие ключи
+                return Err(AppError::RateLimited(Response::from_parts(
+                    parts,
+                    Body::from(bytes),
+                )));
             }
             s if s.is_client_error() => {
+                if s == StatusCode::BAD_REQUEST {
+                    if let Ok(error_response) = serde_json::from_slice::<ErrorResponse>(&bytes) {
+                        if error_response
+                            .error
+                            .details
+                            .iter()
+                            .any(|d| d.reason == "API_KEY_INVALID")
+                        {
+                            warn!(key = %key_info.key, "Marking key as invalid due to API_KEY_INVALID reason");
+                            mutate_key(state, &key_info.key, |km, k| km.mark_key_as_invalid(k))
+                                .await?;
+                            return Ok(None); // Ключ невалиден, пробуем следующий
+                        }
+                    }
+                }
+                // Если это не API_KEY_INVALID или не удалось распарсить, считаем это обычной ошибкой клиента
                 warn!(%s, key = %key_info.key, "Client error, marking key as limited");
                 mutate_key(state, &key_info.key, |km, k| km.mark_key_as_limited(k)).await?;
                 *last_error = Some((s, parts.headers, bytes));
