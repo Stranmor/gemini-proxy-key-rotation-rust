@@ -10,41 +10,46 @@
 all: build run
 
 # Build the Docker images for the services.
+# Build the Docker images for the services.
 build:
-	docker-compose build
+	podman-compose build
 
 # Start the services in the foreground.
 run:
-	docker-compose up
+	podman-compose up
 
 # Start the services in detached mode.
 run-detached:
-	docker-compose up -d
+	podman-compose up -d
 
 # Stop and remove the services.
 stop:
-	docker-compose down
+	podman-compose down
 
 # Follow the logs of the services.
 logs:
-	docker-compose logs -f
+	podman-compose logs -f
 
 # Restart the services.
 restart:
-	docker-compose restart
+	podman-compose restart
 
 # Run tests inside the container.
-# Run tests using a dedicated Docker build stage.
+# This command builds the tester image (if needed) and runs the tests.
 test:
-	docker build --target tester .
+	podman-compose run --rm tester
 
 # Run the linter (clippy) using a dedicated Docker build stage.
 lint:
-	docker build --target linter .
+	podman build --target linter .
 
 # Generate the code coverage report using a dedicated Docker build stage.
 coverage:
-	docker build --target coverage_runner .
+	# Запускаем сервис coverage_runner через docker-compose.
+	# Флаг --rm удалит контейнер после выполнения.
+	# Отчет будет сохранен в ./coverage_report благодаря привязке тома.
+	podman-compose run --rm coverage_runner
+
 # Clean up Docker resources.
 clean:
-	docker-compose down -v --rmi all
+	podman-compose down -v --rmi all

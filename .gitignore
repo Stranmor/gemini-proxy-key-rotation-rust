@@ -27,3 +27,6 @@ config.yaml
 
 # Ignore Memory Bank
 memory-bank/
+
+# Build artifacts
+clippy_report.txt

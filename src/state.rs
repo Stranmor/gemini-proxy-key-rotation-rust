@@ -278,7 +278,6 @@ mod tests {
                 admin_token: None,
             },
             groups,
-            rate_limit_behavior: Default::default(),
             internal_retries: 2,
             temporary_block_minutes: 5,
         }

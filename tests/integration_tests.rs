@@ -31,7 +31,6 @@ fn create_test_config(groups: Vec<KeyGroup>, server_port: u16) -> AppConfig {
             admin_token: Some("test_token".to_string()),
         },
         groups,
-        rate_limit_behavior: Default::default(),
         internal_retries: 3,
         temporary_block_minutes: 1,
     }

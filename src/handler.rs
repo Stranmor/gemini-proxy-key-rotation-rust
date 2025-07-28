@@ -255,7 +255,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
     // Extract model from request for model-specific key management
     let model = extract_model_from_request(req_context.uri.path(), &body_bytes);
-    
+
     info!(
         model = ?model,
         path = %req_context.uri.path(),
@@ -286,7 +286,14 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
             None => break, // No more keys, break the loop
         };
 
-        let result = retry_with_key(&state, &key_info, &req_context, internal_retries, model.as_deref()).await?;
+        let result = retry_with_key(
+            &state,
+            &key_info,
+            &req_context,
+            internal_retries,
+            model.as_deref(),
+        )
+        .await?;
 
         match result {
             RetryOutcome::Success(resp) => return Ok(resp),
@@ -304,7 +311,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     } else {
         warn!("No available API keys remaining.");
     }
-    
+
     if let Some((status, headers, body)) = last_error {
         let mut resp = Response::new(Body::from(body));
         *resp.status_mut() = status;

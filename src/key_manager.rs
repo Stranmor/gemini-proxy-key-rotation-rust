@@ -77,7 +77,6 @@ pub struct KeyManager {
     state_file_path: PathBuf,
     // This mutex is for controlling writes to the state *file*, not in-memory state.
     save_mutex: Arc<Mutex<()>>,
-
 }
 
 impl KeyManager {
@@ -220,7 +219,6 @@ impl KeyManager {
             key_states: initial_key_states,
             state_file_path: state_file_path.clone(),
             save_mutex: Arc::new(Mutex::new(())),
-
         };
 
         debug!(key_state.path = %state_file_path_display, "Performing initial state save/sync after KeyManager initialization.");
@@ -231,8 +229,6 @@ impl KeyManager {
         }
         manager
     }
-
-
 
     /// Checks if a key is available for a specific model
     pub fn is_key_available_for_model(&self, api_key: &str, model: Option<&str>) -> bool {
@@ -267,7 +263,10 @@ impl KeyManager {
 
     /// Gets the next available key for a specific model
     #[tracing::instrument(level = "debug", skip(self), fields(model = ?model))]
-    pub fn get_next_available_key_info_for_model(&self, model: Option<&str>) -> Option<FlattenedKeyInfo> {
+    pub fn get_next_available_key_info_for_model(
+        &self,
+        model: Option<&str>,
+    ) -> Option<FlattenedKeyInfo> {
         if self.grouped_keys.is_empty() {
             warn!(
                 key_manager.status = "empty",
@@ -367,7 +366,7 @@ impl KeyManager {
             }
 
             let now_utc = Utc::now();
-            
+
             // Check if already blocked for this model and not expired
             if let Some(existing_block) = key_state.model_blocks.get(model) {
                 if now_utc < existing_block.blocked_until {
@@ -433,12 +432,11 @@ impl KeyManager {
             }
 
             warn!(group.name=%group_name_for_log, "Marking key as rate-limited until midnight PST");
-            
+
             // Always block until midnight PST (00:00 PST / 10:00 MSK)
             let target_tz: Tz = Los_Angeles;
             let now_in_target_tz = now_utc.with_timezone(&target_tz);
-            let tomorrow_naive_target =
-                (now_in_target_tz + ChronoDuration::days(1)).date_naive();
+            let tomorrow_naive_target = (now_in_target_tz + ChronoDuration::days(1)).date_naive();
             let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target
                 .and_hms_opt(0, 0, 0)
                 .expect("Failed to calculate next midnight");
@@ -582,7 +580,7 @@ impl KeyManager {
 
         for (api_key, key_state) in self.key_states.iter_mut() {
             let mut models_to_remove = Vec::new();
-            
+
             for (model, block_state) in &key_state.model_blocks {
                 if now >= block_state.blocked_until {
                     models_to_remove.push(model.clone());
@@ -601,7 +599,10 @@ impl KeyManager {
         }
 
         if cleaned_count > 0 {
-            info!(cleaned_blocks = cleaned_count, "Cleaned up expired model blocks");
+            info!(
+                cleaned_blocks = cleaned_count,
+                "Cleaned up expired model blocks"
+            );
         }
 
         cleaned_count
@@ -610,7 +611,7 @@ impl KeyManager {
     pub(crate) fn reset_key_state_to_available(&mut self, api_key: &str) -> bool {
         if let Some(key_state) = self.key_states.get_mut(api_key) {
             let mut changed = false;
-            
+
             if key_state.status != KeyStatus::Available || key_state.reset_time.is_some() {
                 info!(api_key.preview = %Self::preview(api_key), "Resetting key status to Available");
                 key_state.status = KeyStatus::Available;
@@ -675,7 +676,9 @@ impl KeyManager {
         for key_state in self.key_states.values() {
             for (model, block_state) in &key_state.model_blocks {
                 if now < block_state.blocked_until {
-                    let entry = model_info.entry(model.clone()).or_insert((0, block_state.blocked_until));
+                    let entry = model_info
+                        .entry(model.clone())
+                        .or_insert((0, block_state.blocked_until));
                     entry.0 += 1;
                     // Keep the earliest reset time
                     if block_state.blocked_until < entry.1 {
@@ -1280,7 +1283,7 @@ mod tests {
                 top_p: None,
             },
         ];
-        let mut config = create_test_config(groups);
+        let config = create_test_config(groups);
         // Behavior is now always block until midnight PST
         let mut manager = KeyManager::new(&config, &config_path).await;
 
@@ -1327,7 +1330,7 @@ mod tests {
                 top_p: None,
             },
         ];
-        let mut config = create_test_config(groups);
+        let config = create_test_config(groups);
         // Behavior is now always block until midnight PST
         let mut manager = KeyManager::new(&config, &config_path).await;
 
@@ -1414,7 +1417,7 @@ mod tests {
             target_url: "t1".to_string(),
             top_p: None,
         }];
-        let mut config = create_test_config(groups);
+        let config = create_test_config(groups);
         let mut manager = KeyManager::new(&config, &config_path).await;
 
         manager.mark_key_as_limited("k1");

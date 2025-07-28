@@ -35,7 +35,6 @@ async fn create_test_system() -> (Arc<AppState>, MockServer, tempfile::TempDir) 
             admin_token: Some("test_token".to_string()),
         },
         groups: vec![test_group],
-        rate_limit_behavior: Default::default(),
         internal_retries: 3,
         temporary_block_minutes: 1,
     };

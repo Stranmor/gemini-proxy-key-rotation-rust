@@ -18,5 +18,24 @@ services:
         limits:
           cpus: '2.0'
 
+  # Сервис для запуска генерации отчета о покрытии.
+  # Не запускается по умолчанию, а вызывается через `docker-compose run`.
+  coverage_runner:
+    build:
+      context: .
+      # Указываем, что нужно использовать этап 'coverage_runner' из Dockerfile.
+      target: coverage_runner
+    volumes:
+      # Привязываем локальную директорию к директории с отчетом внутри контейнера.
+      # Это позволит получить доступ к сгенерированному отчету на хост-машине.
+      - ./coverage_report:/app/coverage_report
+
+  # Сервис для запуска тестов.
+  # Вызывается через `docker-compose run`.
+  tester:
+    build:
+      context: .
+      target: tester
+
 volumes:
   key_states:

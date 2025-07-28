@@ -35,8 +35,6 @@ impl Default for KeyGroup {
     }
 }
 
-
-
 #[derive(Debug, Deserialize, Clone, PartialEq, Default, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
