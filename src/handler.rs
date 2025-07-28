@@ -34,6 +34,31 @@ pub async fn health_check() -> StatusCode {
 
 /* ---------- helpers ---------- */
 
+/// Extracts model name from request path and body
+fn extract_model_from_request(path: &str, body: &[u8]) -> Option<String> {
+    // Try to extract from path first (for generateContent endpoints)
+    if let Some(captures) = regex::Regex::new(r"/v1beta/models/([^/:]+)")
+        .ok()?
+        .captures(path)
+    {
+        return Some(captures.get(1)?.as_str().to_string());
+    }
+
+    // Try to extract from OpenAI-style path
+    if path.contains("/chat/completions") || path.contains("/embeddings") {
+        // Try to parse JSON body to get model
+        if let Ok(body_str) = std::str::from_utf8(body) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(body_str) {
+                if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
+                    return Some(model.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn translate_path(path: &str) -> String {
     if path == "/health/detailed" {
         return "/v1beta/models".into();
@@ -79,6 +104,7 @@ async fn retry_with_key(
     key_info: &FlattenedKeyInfo,
     req_context: &RequestContext<'_>,
     internal_retries: u32,
+    model: Option<&str>,
 ) -> Result<RetryOutcome> {
     for attempt in 1..=internal_retries + 1 {
         let url = build_target_url(req_context.uri, key_info)?;
@@ -137,11 +163,23 @@ async fn retry_with_key(
                 )));
             }
             StatusCode::TOO_MANY_REQUESTS => {
-                warn!(key = %key_info.key, "Received 429 Too Many Requests. Marking key as limited and trying next.");
-                mutate_key(state, &key_info.key, |km, k| {
-                    km.mark_key_as_limited(k);
-                })
-                .await?;
+                if let Some(model_name) = model {
+                    warn!(
+                        key = %key_info.key,
+                        model = %model_name,
+                        "Received 429 Too Many Requests. Blocking key for specific model and trying next."
+                    );
+                    mutate_key(state, &key_info.key, |km, k| {
+                        km.mark_key_as_limited_for_model(k, model_name);
+                    })
+                    .await?;
+                } else {
+                    warn!(key = %key_info.key, "Received 429 Too Many Requests. Marking key as generally limited and trying next.");
+                    mutate_key(state, &key_info.key, |km, k| {
+                        km.mark_key_as_limited(k);
+                    })
+                    .await?;
+                }
                 return Ok(RetryOutcome::RetryNextKey((status, parts.headers, bytes)));
             }
             s if s == StatusCode::BAD_REQUEST => {
@@ -215,6 +253,15 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         body: &body_bytes,
     };
 
+    // Extract model from request for model-specific key management
+    let model = extract_model_from_request(req_context.uri.path(), &body_bytes);
+    
+    info!(
+        model = ?model,
+        path = %req_context.uri.path(),
+        "Processing request with model-specific key management"
+    );
+
     let internal_retries = {
         let config = state.config.read().await;
         config.internal_retries
@@ -222,15 +269,24 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
     let mut last_error: Option<(StatusCode, HeaderMap, Bytes)> = None;
 
+    // Clean up expired model blocks before processing
+    {
+        let mut km = state.key_manager.write().await;
+        km.cleanup_expired_model_blocks();
+    }
+
     loop {
-        let key_info = state.key_manager.read().await.get_next_available_key_info();
+        let key_info = {
+            let km = state.key_manager.read().await;
+            km.get_next_available_key_info_for_model(model.as_deref())
+        };
 
         let key_info = match key_info {
             Some(ki) => ki,
             None => break, // No more keys, break the loop
         };
 
-        let result = retry_with_key(&state, &key_info, &req_context, internal_retries).await?;
+        let result = retry_with_key(&state, &key_info, &req_context, internal_retries, model.as_deref()).await?;
 
         match result {
             RetryOutcome::Success(resp) => return Ok(resp),
@@ -243,7 +299,12 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     }
 
     // After the loop, if we've broken out due to no keys
-    warn!("No available API keys remaining.");
+    if let Some(model_name) = &model {
+        warn!(model = %model_name, "No available API keys remaining for model.");
+    } else {
+        warn!("No available API keys remaining.");
+    }
+    
     if let Some((status, headers, body)) = last_error {
         let mut resp = Response::new(Body::from(body));
         *resp.status_mut() = status;

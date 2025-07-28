@@ -30,8 +30,16 @@
                     </div>
         
         <div class="card">
+            <h2>Model-Specific Key Blocking</h2>
+            <div id="model-stats" class="loading">Loading...</div>
+        </div>
+        
+        <div class="card">
             <h2>API Keys Status</h2>
-            <button class="refresh-btn" onclick="refreshData()">Refresh</button>
+            <div class="card-controls">
+                <button class="refresh-btn" onclick="manualRefresh()">Auto-Refresh: ON</button>
+                <button class="toggle-refresh-btn" onclick="toggleAutoRefresh()" title="Toggle auto-refresh">⏸️</button>
+            </div>
             <div id="keys-status" class="loading">Loading...</div>
         </div>
     </div>
@@ -148,6 +156,16 @@
                     <span class="metric-label">Server</span>
                     <span class="metric-value">${data.server_info.host}:${data.server_info.port}</span>
                 </div>
+                ${data.system_info ? `
+                    <div class="metric">
+                        <span class="metric-label">Memory</span>
+                        <span class="metric-value">${data.system_info.memory_usage_mb}MB / ${data.system_info.total_memory_mb}MB</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">CPU</span>
+                        <span class="metric-value">${data.system_info.cpu_usage_percent.toFixed(1)}%</span>
+                    </div>
+                ` : ''}
             `;
         }
         
@@ -155,46 +173,199 @@
             const container = document.getElementById('request-metrics');
             const keyStatus = data.key_status;
             
+            const totalKeys = keyStatus.total_keys;
+            const activePercentage = totalKeys > 0 ? Math.round((keyStatus.active_keys / totalKeys) * 100) : 0;
+            
             container.innerHTML = `
-                <div class="metric">
-                    <span class="metric-label">Total Keys</span>
-                    <span class="metric-value">${keyStatus.total_keys}</span>
+                <div class="metrics-grid">
+                    <div class="metric-card total">
+                        <div class="metric-value">${keyStatus.total_keys}</div>
+                        <div class="metric-label">Total Keys</div>
+                    </div>
+                    <div class="metric-card active">
+                        <div class="metric-value">${keyStatus.active_keys}</div>
+                        <div class="metric-label">Active Keys</div>
+                        <div class="metric-percentage">${activePercentage}%</div>
+                    </div>
+                    <div class="metric-card limited">
+                        <div class="metric-value">${keyStatus.limited_keys}</div>
+                        <div class="metric-label">Limited Keys</div>
+                    </div>
+                    <div class="metric-card invalid">
+                        <div class="metric-value">${keyStatus.invalid_keys}</div>
+                        <div class="metric-label">Invalid Keys</div>
+                    </div>
+                    ${keyStatus.temporarily_unavailable_keys > 0 ? `
+                        <div class="metric-card unavailable">
+                            <div class="metric-value">${keyStatus.temporarily_unavailable_keys}</div>
+                            <div class="metric-label">Temporarily Unavailable</div>
+                        </div>
+                    ` : ''}
                 </div>
-                <div class="metric">
-                    <span class="metric-label">Active Keys</span>
-                    <span class="metric-value">${keyStatus.active_keys}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Limited Keys</span>
-                    <span class="metric-value">${keyStatus.limited_keys}</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Invalid Keys</span>
-                    <span class="metric-value">${keyStatus.invalid_keys}</span>
-                </div>
+                ${keyStatus.groups && keyStatus.groups.length > 0 ? `
+                    <div class="groups-summary">
+                        <h4>Groups Overview</h4>
+                        ${keyStatus.groups.map(group => `
+                            <div class="group-summary">
+                                <span class="group-name">${group.name}</span>
+                                <span class="group-stats">${group.active_keys}/${group.total_keys} active</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
             `;
         }
 
-        async function handleKeyAction(keyId, button, endpoint, loadingText, defaultText) {
+        async function handleKeyAction(keyId, button, endpoint, loadingText, defaultText, successMessage) {
+            const originalText = button.textContent;
+            const keyItem = button.closest('.key-item');
+            
             button.disabled = true;
             button.textContent = loadingText;
+            button.classList.add('loading');
+            
             try {
                 await fetchWithAuth(endpoint, { method: 'POST' });
-                await refreshData();
+                
+                // Show success feedback
+                button.textContent = '✓';
+                button.classList.add('success');
+                
+                // Refresh only the keys section for better UX
+                await renderKeysStatus();
+                
+                // Show temporary success message
+                if (successMessage) {
+                    showNotification(successMessage, 'success');
+                }
+                
+                setTimeout(() => {
+                    if (button) {
+                        button.classList.remove('success');
+                        button.textContent = defaultText;
+                    }
+                }, 2000);
+                
             } catch (error) {
-                // Error alerts are handled in fetchWithAuth
+                button.textContent = '✗';
+                button.classList.add('error');
+                showNotification(`Action failed: ${error.message}`, 'error');
+                
+                setTimeout(() => {
+                    if (button) {
+                        button.classList.remove('error');
+                        button.textContent = defaultText;
+                    }
+                }, 3000);
             } finally {
                 button.disabled = false;
-                button.textContent = defaultText;
+                button.classList.remove('loading');
             }
         }
 
         async function verifyKey(keyId, button) {
-            await handleKeyAction(keyId, button, `/admin/keys/${keyId}/verify`, 'Verifying...', 'Verify');
+            await handleKeyAction(
+                keyId, 
+                button, 
+                `/admin/keys/${keyId}/verify`, 
+                'Verifying...', 
+                'Verify',
+                'Key verification completed'
+            );
         }
 
         async function resetKey(keyId, button) {
-            await handleKeyAction(keyId, button, `/admin/keys/${keyId}/reset`, 'Resetting...', 'Reset');
+            await handleKeyAction(
+                keyId, 
+                button, 
+                `/admin/keys/${keyId}/reset`, 
+                'Resetting...', 
+                'Reset',
+                'Key status reset successfully'
+            );
+        }
+
+        function showNotification(message, type = 'info') {
+            // Remove existing notifications
+            const existing = document.querySelector('.notification');
+            if (existing) existing.remove();
+            
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 5000);
+            
+            // Allow manual dismissal
+            notification.addEventListener('click', () => notification.remove());
+        }
+
+        function formatTimeUntil(targetTime) {
+            const now = new Date();
+            const diff = targetTime - now;
+            
+            if (diff <= 0) return 'expired';
+            
+            const minutes = Math.floor(diff / (1000 * 60));
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+            
+            if (days > 0) return `${days}d ${hours % 24}h`;
+            if (hours > 0) return `${hours}h ${minutes % 60}m`;
+            return `${minutes}m`;
+        }
+
+        async function renderModelStats() {
+            const container = document.getElementById('model-stats');
+            
+            try {
+                const data = await fetchData('/admin/model-stats');
+                
+                if (!data.models || data.models.length === 0) {
+                    container.innerHTML = '<div class="info">No model-specific blocks found</div>';
+                    return;
+                }
+                
+                let html = '<div class="model-stats-list">';
+                html += `<div class="stats-header">Total Keys: ${data.total_keys} | Updated: ${new Date(data.timestamp).toLocaleString()}</div>`;
+                
+                data.models.forEach(model => {
+                    const resetTime = new Date(model.next_reset_time);
+                    const timeUntilReset = formatTimeUntil(resetTime);
+                    const percentage = Math.round((model.blocked_keys_count / data.total_keys) * 100);
+                    
+                    html += `
+                        <div class="model-stat-item">
+                            <div class="model-info">
+                                <div class="model-name">${model.model}</div>
+                                <div class="model-details">
+                                    <span class="blocked-count">${model.blocked_keys_count} blocked keys</span>
+                                    <span class="reset-time">Reset: ${timeUntilReset}</span>
+                                </div>
+                            </div>
+                            <div class="model-progress">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: ${percentage}%"></div>
+                                </div>
+                                <span class="progress-text">${percentage}%</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+                container.innerHTML = html;
+                
+            } catch (error) {
+                container.innerHTML = `<div class="error">Failed to load model stats: ${error.message}</div>`;
+            }
         }
 
         async function renderKeysStatus() {
@@ -204,7 +375,7 @@
                 const keys = await fetchData('/admin/keys');
                 
                 if (keys.length === 0) {
-                    container.innerHTML = '<div class="loading">No API keys found</div>';
+                    container.innerHTML = '<div class="info">No API keys found</div>';
                     return;
                 }
                 
@@ -217,7 +388,21 @@
                 let html = '<div class="key-list">';
                 
                 for (const [groupName, groupKeys] of Object.entries(keysByGroup)) {
-                    html += `<h3 class="group-header">Group: ${groupName}</h3>`;
+                    const groupStats = calculateGroupStats(groupKeys);
+                    
+                    html += `
+                        <div class="group-section">
+                            <div class="group-header">
+                                <h3>Group: ${groupName}</h3>
+                                <div class="group-stats">
+                                    <span class="stat-item">Total: ${groupStats.total}</span>
+                                    <span class="stat-item active">Active: ${groupStats.active}</span>
+                                    <span class="stat-item limited">Limited: ${groupStats.limited}</span>
+                                    <span class="stat-item invalid">Invalid: ${groupStats.invalid}</span>
+                                </div>
+                            </div>
+                            <div class="key-group">
+                    `;
                     
                     groupKeys.forEach(key => {
                         const statusClassMap = {
@@ -228,21 +413,42 @@
                         };
                         const statusClass = statusClassMap[key.status] || 'status-quarantined';
                         const isResettable = key.status !== 'available';
+                        const hasModelBlocks = key.model_blocks && key.model_blocks.length > 0;
 
                         html += `
                             <div class="key-item ${key.status}" id="key-item-${key.id}">
                                 <div class="key-info">
                                     <div class="key-preview">${key.key_preview}</div>
                                     <small class="key-id">ID: ${key.id}</small>
+                                    ${hasModelBlocks ? `
+                                        <div class="model-blocks">
+                                            ${key.model_blocks.map(block => `
+                                                <span class="model-block" title="Blocked until ${new Date(block.blocked_until).toLocaleString()}">
+                                                    ${block.model}: ${formatTimeUntil(new Date(block.blocked_until))}
+                                                </span>
+                                            `).join('')}
+                                        </div>
+                                    ` : ''}
                                 </div>
-                                <div class="key-status ${statusClass}">${key.status}</div>
+                                <div class="key-status ${statusClass}" title="${key.status}">${key.status}</div>
                                 <div class="key-controls">
-                                    <button class="key-btn" onclick="verifyKey('${key.id}', this)">Verify</button>
-                                    <button class="key-btn" onclick="resetKey('${key.id}', this)" ${!isResettable ? 'disabled' : ''}>Reset</button>
+                                    <button class="key-btn verify-btn" onclick="verifyKey('${key.id}', this)" title="Verify key status">
+                                        Verify
+                                    </button>
+                                    <button class="key-btn reset-btn" onclick="resetKey('${key.id}', this)" 
+                                            ${!isResettable ? 'disabled' : ''} 
+                                            title="${isResettable ? 'Reset key status' : 'Key is already available'}">
+                                        Reset
+                                    </button>
                                 </div>
                             </div>
                         `;
                     });
+                    
+                    html += `
+                            </div>
+                        </div>
+                    `;
                 }
                 
                 html += '</div>';
@@ -251,6 +457,25 @@
             } catch (error) {
                 container.innerHTML = `<div class="error">Failed to load keys: ${error.message}</div>`;
             }
+        }
+
+        function calculateGroupStats(keys) {
+            return keys.reduce((stats, key) => {
+                stats.total++;
+                switch (key.status) {
+                    case 'available':
+                        stats.active++;
+                        break;
+                    case 'limited':
+                    case 'unavailable':
+                        stats.limited++;
+                        break;
+                    case 'invalid':
+                        stats.invalid++;
+                        break;
+                }
+                return stats;
+            }, { total: 0, active: 0, limited: 0, invalid: 0 });
         }
         
         async function getCsrfTokenAndInit() {
@@ -273,29 +498,151 @@
         }
 
         async function refreshData() {
+            const loadingElements = document.querySelectorAll('.loading');
+            
             try {
+                // Load health data first
                 const healthData = await fetchData('/admin/health');
                 renderSystemStatus(healthData);
                 renderRequestMetrics(healthData);
                 
-                await renderKeysStatus();
+                // Load other data in parallel for better performance
+                const [modelStatsResult, keysStatusResult] = await Promise.allSettled([
+                    renderModelStats(),
+                    renderKeysStatus()
+                ]);
+                
+                // Handle individual failures gracefully
+                if (modelStatsResult.status === 'rejected') {
+                    console.error('Failed to load model stats:', modelStatsResult.reason);
+                    const container = document.getElementById('model-stats');
+                    if (container) {
+                        container.innerHTML = `<div class="error">Failed to load model stats: ${modelStatsResult.reason.message}</div>`;
+                    }
+                }
+                
+                if (keysStatusResult.status === 'rejected') {
+                    console.error('Failed to load keys status:', keysStatusResult.reason);
+                    const container = document.getElementById('keys-status');
+                    if (container) {
+                        container.innerHTML = `<div class="error">Failed to load keys: ${keysStatusResult.reason.message}</div>`;
+                    }
+                }
+                
             } catch (error) {
-                console.error('Failed to refresh data:', error);
-                document.querySelectorAll('.loading').forEach(el => {
-                    el.innerHTML = `<div class="error">Failed to load data: ${error.message}</div>`;
+                console.error('Failed to refresh core data:', error);
+                loadingElements.forEach(el => {
+                    if (el.innerHTML.includes('Loading...')) {
+                        el.innerHTML = `<div class="error">Failed to load data: ${error.message}</div>`;
+                    }
                 });
             }
         }
         
+        // Auto-refresh management
+        let isAutoRefreshEnabled = true;
+        let lastRefreshTime = null;
+        
+        function updateRefreshStatus() {
+            const refreshBtn = document.querySelector('.refresh-btn');
+            if (refreshBtn && lastRefreshTime) {
+                const timeSince = Math.floor((Date.now() - lastRefreshTime) / 1000);
+                refreshBtn.title = `Last updated ${timeSince}s ago. Auto-refresh: ${isAutoRefreshEnabled ? 'ON' : 'OFF'}`;
+            }
+        }
+        
+        function toggleAutoRefresh() {
+            isAutoRefreshEnabled = !isAutoRefreshEnabled;
+            const refreshBtn = document.querySelector('.refresh-btn');
+            if (refreshBtn) {
+                refreshBtn.textContent = isAutoRefreshEnabled ? 'Auto-Refresh: ON' : 'Auto-Refresh: OFF';
+                refreshBtn.classList.toggle('auto-refresh-disabled', !isAutoRefreshEnabled);
+            }
+            
+            if (isAutoRefreshEnabled && !refreshInterval) {
+                refreshInterval = setInterval(() => {
+                    if (isAutoRefreshEnabled) {
+                        refreshData().then(() => {
+                            lastRefreshTime = Date.now();
+                            updateRefreshStatus();
+                        });
+                    }
+                }, 30000);
+            } else if (!isAutoRefreshEnabled && refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+        
+        // Enhanced refresh function
+        async function manualRefresh() {
+            const refreshBtn = document.querySelector('.refresh-btn');
+            if (refreshBtn) {
+                refreshBtn.disabled = true;
+                refreshBtn.textContent = 'Refreshing...';
+            }
+            
+            try {
+                await refreshData();
+                lastRefreshTime = Date.now();
+                showNotification('Dashboard refreshed successfully', 'success');
+            } catch (error) {
+                showNotification('Failed to refresh dashboard', 'error');
+            } finally {
+                if (refreshBtn) {
+                    refreshBtn.disabled = false;
+                    refreshBtn.textContent = isAutoRefreshEnabled ? 'Auto-Refresh: ON' : 'Auto-Refresh: OFF';
+                }
+                updateRefreshStatus();
+            }
+        }
+        
         // Initial load
-        getCsrfTokenAndInit();
+        getCsrfTokenAndInit().then(() => {
+            lastRefreshTime = Date.now();
+            updateRefreshStatus();
+        });
         
         // Auto-refresh every 30 seconds
-        refreshInterval = setInterval(refreshData, 30000);
+        refreshInterval = setInterval(() => {
+            if (isAutoRefreshEnabled) {
+                refreshData().then(() => {
+                    lastRefreshTime = Date.now();
+                    updateRefreshStatus();
+                });
+            }
+        }, 30000);
+        
+        // Update refresh status every 5 seconds
+        setInterval(updateRefreshStatus, 5000);
         
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
             if (refreshInterval) clearInterval(refreshInterval);
+        });
+        
+        // Handle visibility change to pause/resume auto-refresh
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                }
+            } else if (isAutoRefreshEnabled && !refreshInterval) {
+                refreshInterval = setInterval(() => {
+                    if (isAutoRefreshEnabled) {
+                        refreshData().then(() => {
+                            lastRefreshTime = Date.now();
+                            updateRefreshStatus();
+                        });
+                    }
+                }, 30000);
+                // Refresh immediately when page becomes visible
+                refreshData().then(() => {
+                    lastRefreshTime = Date.now();
+                    updateRefreshStatus();
+                });
+            }
         });
     </script>
 </body>

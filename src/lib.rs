@@ -32,7 +32,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handler::health_check))
         .merge(admin::admin_routes())
-        .route("/*path", any(handler::proxy_handler))
+        .route("/v1/*path", any(handler::proxy_handler))
+        .route("/v1beta/*path", any(handler::proxy_handler))
+        .route("/chat/*path", any(handler::proxy_handler))
+        .route("/embeddings", any(handler::proxy_handler))
+        .route("/models", any(handler::proxy_handler))
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }

@@ -156,6 +156,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
             .route("/keys-page", get(serve_keys_management_page))
             .route("/config", get(get_config))
             .route("/metrics", get(get_metrics_summary))
+            .route("/model-stats", get(get_model_stats))
             .route("/csrf-token", get(get_csrf_token))
             .route("/login", post(login))
             .merge(authed_routes),
@@ -242,6 +243,27 @@ pub struct DeleteKeysRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ModelBlockInfo {
+    pub model: String,
+    pub blocked_until: DateTime<Utc>,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelStats {
+    pub model: String,
+    pub blocked_keys_count: usize,
+    pub next_reset_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelStatsResponse {
+    pub models: Vec<ModelStats>,
+    pub total_keys: usize,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct KeyInfo {
     pub id: String,
     pub group_name: String,
@@ -249,6 +271,7 @@ pub struct KeyInfo {
     pub status: String,
     pub last_used: Option<DateTime<Utc>>,
     pub reset_time: Option<DateTime<Utc>>,
+    pub model_blocks: Vec<ModelBlockInfo>,
 }
 
 impl KeyInfo {
@@ -269,6 +292,21 @@ impl KeyInfo {
             key_info.key.clone()
         };
 
+        // Extract model blocks information
+        let model_blocks = key_state
+            .map(|ks| {
+                ks.model_blocks
+                    .iter()
+                    .filter(|(_, block_state)| now < block_state.blocked_until)
+                    .map(|(model, block_state)| ModelBlockInfo {
+                        model: model.clone(),
+                        blocked_until: block_state.blocked_until,
+                        reason: block_state.reason.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Self {
             id: format!("{:x}", md5::compute(&key_info.key)),
             group_name: key_info.group_name.clone(),
@@ -276,6 +314,7 @@ impl KeyInfo {
             status: status_str.to_string(),
             last_used: None, // TODO: Track last usage time in KeyManager
             reset_time,
+            model_blocks,
         }
     }
 }
@@ -589,6 +628,33 @@ pub async fn get_metrics_summary(
     })))
 }
 
+/// Provides statistics about model-specific key blocking.
+#[axum::debug_handler]
+pub async fn get_model_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ModelStatsResponse>> {
+    info!("Model statistics requested.");
+
+    let key_manager_guard = state.key_manager.read().await;
+    let blocked_models_info = key_manager_guard.get_blocked_models_info();
+    let total_keys = key_manager_guard.get_all_key_info().len();
+
+    let models = blocked_models_info
+        .into_iter()
+        .map(|(model, blocked_count, next_reset_time)| ModelStats {
+            model,
+            blocked_keys_count: blocked_count,
+            next_reset_time,
+        })
+        .collect();
+
+    Ok(Json(ModelStatsResponse {
+        models,
+        total_keys,
+        timestamp: Utc::now(),
+    }))
+}
+
 /// Handles admin login by setting a secure, HttpOnly cookie with the admin token.
 #[axum::debug_handler]
 pub async fn login(
@@ -835,6 +901,7 @@ mod tests {
         let state_available = KeyState {
             status: KmKeyStatus::Available,
             reset_time: None,
+            model_blocks: HashMap::new(),
         };
         assert_eq!(
             get_key_status_str(Some(&state_available), now),
@@ -844,6 +911,7 @@ mod tests {
         let state_limited_pending = KeyState {
             status: KmKeyStatus::RateLimited,
             reset_time: Some(future),
+            model_blocks: HashMap::new(),
         };
         assert_eq!(
             get_key_status_str(Some(&state_limited_pending), now),
@@ -853,6 +921,7 @@ mod tests {
         let state_limited_expired = KeyState {
             status: KmKeyStatus::RateLimited,
             reset_time: Some(past),
+            model_blocks: HashMap::new(),
         };
         assert_eq!(
             get_key_status_str(Some(&state_limited_expired), now),
@@ -862,6 +931,7 @@ mod tests {
         let state_invalid = KeyState {
             status: KmKeyStatus::Invalid,
             reset_time: None,
+            model_blocks: HashMap::new(),
         };
         assert_eq!(
             get_key_status_str(Some(&state_invalid), now),
@@ -871,6 +941,7 @@ mod tests {
         let state_unavailable_pending = KeyState {
             status: KmKeyStatus::TemporarilyUnavailable,
             reset_time: Some(future),
+            model_blocks: HashMap::new(),
         };
         assert_eq!(
             get_key_status_str(Some(&state_unavailable_pending), now),
@@ -880,6 +951,7 @@ mod tests {
         let state_unavailable_expired = KeyState {
             status: KmKeyStatus::TemporarilyUnavailable,
             reset_time: Some(past),
+            model_blocks: HashMap::new(),
         };
         assert_eq!(
             get_key_status_str(Some(&state_unavailable_expired), now),

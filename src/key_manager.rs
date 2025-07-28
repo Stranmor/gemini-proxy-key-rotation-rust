@@ -33,10 +33,20 @@ pub enum KeyStatus {
     TemporarilyUnavailable,
 }
 
+// Model-specific key blocking state
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelBlockState {
+    pub blocked_until: DateTime<Utc>,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct KeyState {
     pub status: KeyStatus,
     pub reset_time: Option<DateTime<Utc>>,
+    // Map of model name to blocking state
+    #[serde(default)]
+    pub model_blocks: HashMap<String, ModelBlockState>,
 }
 
 #[derive(Debug, Clone)]
@@ -222,8 +232,42 @@ impl KeyManager {
         manager
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn get_next_available_key_info(&self) -> Option<FlattenedKeyInfo> {
+
+
+    /// Checks if a key is available for a specific model
+    pub fn is_key_available_for_model(&self, api_key: &str, model: Option<&str>) -> bool {
+        let Some(key_state) = self.key_states.get(api_key) else {
+            return false;
+        };
+
+        let now = Utc::now();
+
+        // Check general key status first
+        let is_generally_available = match key_state.status {
+            KeyStatus::Available => true,
+            KeyStatus::RateLimited | KeyStatus::TemporarilyUnavailable => {
+                key_state.reset_time.is_some_and(|rt| now >= rt)
+            }
+            KeyStatus::Invalid => false,
+        };
+
+        if !is_generally_available {
+            return false;
+        }
+
+        // Check model-specific blocks
+        if let Some(model_name) = model {
+            if let Some(block_state) = key_state.model_blocks.get(model_name) {
+                return now >= block_state.blocked_until;
+            }
+        }
+
+        true
+    }
+
+    /// Gets the next available key for a specific model
+    #[tracing::instrument(level = "debug", skip(self), fields(model = ?model))]
+    pub fn get_next_available_key_info_for_model(&self, model: Option<&str>) -> Option<FlattenedKeyInfo> {
         if self.grouped_keys.is_empty() {
             warn!(
                 key_manager.status = "empty",
@@ -258,7 +302,7 @@ impl KeyManager {
             };
             let initial_key_index_in_group = group_key_index_atomic.load(Ordering::Relaxed);
 
-            debug!(group.index = current_group_idx, group.name = %group_name, group.key_count = num_keys_in_group, group.start_key_index = initial_key_index_in_group, "Searching within group");
+            debug!(group.index = current_group_idx, group.name = %group_name, group.key_count = num_keys_in_group, group.start_key_index = initial_key_index_in_group, "Searching within group for model");
 
             for key_offset in 0..num_keys_in_group {
                 let current_key_idx_in_group =
@@ -268,27 +312,7 @@ impl KeyManager {
                     continue;
                 };
 
-                let Some(key_state) = self.key_states.get(&key_info.key) else {
-                    error!(api_key.preview = %Self::preview(&key_info.key), group.name = %group_name, "Internal inconsistency: Key found in group but missing from state map! Skipping.");
-                    continue;
-                };
-
-                let now = Utc::now();
-                let is_expired = key_state.reset_time.is_some_and(|rt| now >= rt);
-
-                let is_available = match key_state.status {
-                    KeyStatus::Available => true,
-                    KeyStatus::RateLimited | KeyStatus::TemporarilyUnavailable if is_expired => {
-                        true
-                    }
-                    _ => false,
-                };
-
-                if is_available {
-                    if key_state.status != KeyStatus::Available {
-                        debug!(api_key.preview = %Self::preview(&key_info.key), group.name = %group_name, "Limit previously set but now expired");
-                    }
-
+                if self.is_key_available_for_model(&key_info.key, model) {
                     let next_key_idx_in_group = (current_key_idx_in_group + 1) % num_keys_in_group;
                     group_key_index_atomic.store(next_key_idx_in_group, Ordering::Relaxed);
                     let next_group_idx = (current_group_idx + 1) % num_groups;
@@ -298,7 +322,8 @@ impl KeyManager {
                     debug!(
                        api_key.preview = %Self::preview(&key_info.key),
                        group.name = %group_name,
-                       "Selected available API key using group round-robin"
+                       model = ?model,
+                       "Selected available API key for model using group round-robin"
                     );
                     return Some(key_info.clone());
                 }
@@ -306,11 +331,84 @@ impl KeyManager {
             group_key_index_atomic.store(0, Ordering::Relaxed);
         }
 
-        warn!(
-            key_manager.status = "all_limited",
-            "All API keys checked are currently rate-limited or unavailable."
-        );
+        if let Some(model_name) = model {
+            warn!(
+                key_manager.status = "all_limited_for_model",
+                model = %model_name,
+                "All API keys are currently blocked for the requested model."
+            );
+        } else {
+            warn!(
+                key_manager.status = "all_limited",
+                "All API keys checked are currently rate-limited or unavailable."
+            );
+        }
         None
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn get_next_available_key_info(&self) -> Option<FlattenedKeyInfo> {
+        self.get_next_available_key_info_for_model(None)
+    }
+
+    /// Blocks a key for a specific model until quota reset time (00:00 PST / 10:00 MSK)
+    #[tracing::instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %Self::preview(api_key), model = %model))]
+    pub fn mark_key_as_limited_for_model(&mut self, api_key: &str, model: &str) -> bool {
+        let mut group_name_for_log = "unknown".to_string();
+
+        if let Some(key_state) = self.key_states.get_mut(api_key) {
+            if let Some(found_key_info) = self
+                .grouped_keys
+                .iter()
+                .flat_map(|(_, keys)| keys.iter())
+                .find(|k| k.key == api_key)
+            {
+                group_name_for_log.clone_from(&found_key_info.group_name);
+            }
+
+            let now_utc = Utc::now();
+            
+            // Check if already blocked for this model and not expired
+            if let Some(existing_block) = key_state.model_blocks.get(model) {
+                if now_utc < existing_block.blocked_until {
+                    debug!(model = %model, "Key already blocked for this model. Ignoring.");
+                    return false;
+                }
+            }
+
+            // Calculate reset time (00:00 PST / 10:00 MSK)
+            let target_tz: Tz = Los_Angeles;
+            let now_in_target_tz = now_utc.with_timezone(&target_tz);
+            let tomorrow_naive_target = (now_in_target_tz + ChronoDuration::days(1)).date_naive();
+            let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target
+                .and_hms_opt(0, 0, 0)
+                .expect("Failed to calculate next midnight");
+            let reset_time_utc = target_tz
+                .from_local_datetime(&reset_time_naive_target)
+                .single()
+                .expect("Timezone conversion failed")
+                .with_timezone(&Utc);
+
+            warn!(
+                group.name = %group_name_for_log,
+                model = %model,
+                reset_time = %reset_time_utc,
+                "Blocking key for specific model due to 429 quota exceeded"
+            );
+
+            key_state.model_blocks.insert(
+                model.to_string(),
+                ModelBlockState {
+                    blocked_until: reset_time_utc,
+                    reason: "429 quota exceeded".to_string(),
+                },
+            );
+
+            true
+        } else {
+            error!("Attempted to mark an unknown API key as limited for model!");
+            false
+        }
     }
 
     #[tracing::instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %Self::preview(api_key)))]
@@ -466,6 +564,11 @@ impl KeyManager {
         &self.key_states
     }
 
+    /// Get mutable access to key states (for testing)
+    pub fn get_key_states_mut(&mut self) -> &mut HashMap<String, KeyState> {
+        &mut self.key_states
+    }
+
     /// Provides a flattened list of all key info for admin/debug purposes.
     pub fn get_all_key_info(&self) -> Vec<FlattenedKeyInfo> {
         self.key_id_map.values().cloned().collect()
@@ -477,16 +580,65 @@ impl KeyManager {
             .is_some_and(|s| s.status == KeyStatus::Invalid)
     }
 
+    /// Cleans up expired model blocks for all keys
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn cleanup_expired_model_blocks(&mut self) -> usize {
+        let now = Utc::now();
+        let mut cleaned_count = 0;
+
+        for (api_key, key_state) in self.key_states.iter_mut() {
+            let mut models_to_remove = Vec::new();
+            
+            for (model, block_state) in &key_state.model_blocks {
+                if now >= block_state.blocked_until {
+                    models_to_remove.push(model.clone());
+                }
+            }
+
+            for model in models_to_remove {
+                key_state.model_blocks.remove(&model);
+                cleaned_count += 1;
+                info!(
+                    api_key.preview = %Self::preview(api_key),
+                    model = %model,
+                    "Unblocked key for model - quota reset time reached"
+                );
+            }
+        }
+
+        if cleaned_count > 0 {
+            info!(cleaned_blocks = cleaned_count, "Cleaned up expired model blocks");
+        }
+
+        cleaned_count
+    }
+
     pub(crate) fn reset_key_state_to_available(&mut self, api_key: &str) -> bool {
         if let Some(key_state) = self.key_states.get_mut(api_key) {
+            let mut changed = false;
+            
             if key_state.status != KeyStatus::Available || key_state.reset_time.is_some() {
                 info!(api_key.preview = %Self::preview(api_key), "Resetting key status to Available");
                 key_state.status = KeyStatus::Available;
                 key_state.reset_time = None;
-                return true;
+                changed = true;
             }
+
+            // Also clear all model blocks
+            if !key_state.model_blocks.is_empty() {
+                info!(
+                    api_key.preview = %Self::preview(api_key),
+                    blocked_models = key_state.model_blocks.len(),
+                    "Clearing all model blocks for key"
+                );
+                key_state.model_blocks.clear();
+                changed = true;
+            }
+
+            changed
+        } else {
+            false
         }
-        false
     }
 
     #[tracing::instrument(level = "info", skip(self), fields(key.id = %key_id))]
@@ -503,6 +655,46 @@ impl KeyManager {
     /// Finds key info by its MD5 hash ID. Used to fetch data under a read lock.
     pub fn get_key_info_by_id(&self, key_id: &str) -> Option<&FlattenedKeyInfo> {
         self.key_id_map.get(key_id)
+    }
+
+    /// Gets statistics about model-specific blocks
+    pub fn get_model_block_stats(&self) -> HashMap<String, usize> {
+        let mut stats = HashMap::new();
+        let now = Utc::now();
+
+        for key_state in self.key_states.values() {
+            for (model, block_state) in &key_state.model_blocks {
+                if now < block_state.blocked_until {
+                    *stats.entry(model.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        stats
+    }
+
+    /// Gets all currently blocked models with their block counts
+    pub fn get_blocked_models_info(&self) -> Vec<(String, usize, DateTime<Utc>)> {
+        let mut model_info = HashMap::new();
+        let now = Utc::now();
+
+        for key_state in self.key_states.values() {
+            for (model, block_state) in &key_state.model_blocks {
+                if now < block_state.blocked_until {
+                    let entry = model_info.entry(model.clone()).or_insert((0, block_state.blocked_until));
+                    entry.0 += 1;
+                    // Keep the earliest reset time
+                    if block_state.blocked_until < entry.1 {
+                        entry.1 = block_state.blocked_until;
+                    }
+                }
+            }
+        }
+
+        model_info
+            .into_iter()
+            .map(|(model, (count, reset_time))| (model, count, reset_time))
+            .collect()
     }
 
     #[tracing::instrument(level = "info", skip(self, client, api_key), fields(api_key.preview = %Self::preview(api_key)))]
@@ -803,6 +995,7 @@ mod tests {
                 KeyState {
                     status: KeyStatus::RateLimited,
                     reset_time: Some(future_reset),
+                    model_blocks: HashMap::new(),
                 },
             ),
             (
@@ -810,6 +1003,7 @@ mod tests {
                 KeyState {
                     status: KeyStatus::RateLimited,
                     reset_time: Some(past_reset),
+                    model_blocks: HashMap::new(),
                 },
             ),
             (
@@ -817,6 +1011,7 @@ mod tests {
                 KeyState {
                     status: KeyStatus::Available,
                     reset_time: None,
+                    model_blocks: HashMap::new(),
                 },
             ),
             (
@@ -824,6 +1019,7 @@ mod tests {
                 KeyState {
                     status: KeyStatus::Invalid,
                     reset_time: None,
+                    model_blocks: HashMap::new(),
                 },
             ),
         ]
@@ -935,6 +1131,7 @@ mod tests {
             KeyState {
                 status: KeyStatus::RateLimited,
                 reset_time: Some(future_reset),
+                model_blocks: HashMap::new(),
             },
         )]
         .iter()
@@ -972,6 +1169,7 @@ mod tests {
                 KeyState {
                     status: KeyStatus::RateLimited,
                     reset_time: Some(past_reset),
+                    model_blocks: HashMap::new(),
                 },
             ),
             (
@@ -979,6 +1177,7 @@ mod tests {
                 KeyState {
                     status: KeyStatus::Available,
                     reset_time: None,
+                    model_blocks: HashMap::new(),
                 },
             ),
         ]
