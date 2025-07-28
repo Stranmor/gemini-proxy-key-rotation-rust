@@ -120,10 +120,7 @@ fn validate_server_config(server: &ServerConfig) -> bool {
 fn validate_target_url(g: &str, url: &str) -> bool {
     match Url::parse(url) {
         Ok(p) => {
-            if !p.has_host()
-                || p.host_str().is_none_or(str::is_empty)
-                || p.cannot_be_a_base()
-            {
+            if !p.has_host() || p.host_str().is_none_or(str::is_empty) || p.cannot_be_a_base() {
                 error!(group = g, err = "invalid/base", url = %url);
                 false
             } else {
@@ -360,10 +357,7 @@ mod tests {
     use tempfile::tempdir;
     fn create_temp_config_file(d: &tempfile::TempDir, c: &str) -> PathBuf {
         let p = d.path().join("t.yaml");
-        File::create(&p)
-            .unwrap()
-            .write_all(c.as_bytes())
-            .unwrap();
+        File::create(&p).unwrap().write_all(c.as_bytes()).unwrap();
         p
     }
     #[test]
@@ -531,7 +525,8 @@ mod tests {
         let p = create_temp_config_file(&d, "server:\n  port: 1\n");
         let r = load_config(&p);
         assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Validation failed"))
+            r.is_err()
+                && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Validation failed"))
         );
     }
 
@@ -557,7 +552,10 @@ groups:
         assert_eq!(group.name, "Group1");
         assert_eq!(group.api_keys, vec!["key1", "key2"]);
         assert_eq!(group.target_url, "https://api.example.com"); // Note trailing slash is removed
-        assert_eq!(group.proxy_url, Some("http://proxy.example.com".to_string()));
+        assert_eq!(
+            group.proxy_url,
+            Some("http://proxy.example.com".to_string())
+        );
         assert_eq!(group.top_p, Some(0.9));
     }
 
@@ -567,7 +565,8 @@ groups:
         let p = d.path().join("non_existent_config.yaml");
         let r = load_config(&p);
         assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Config file not found"))
+            r.is_err()
+                && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Config file not found"))
         );
     }
 
@@ -577,7 +576,8 @@ groups:
         let p = create_temp_config_file(&d, "");
         let r = load_config(&p);
         assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Config file is empty"))
+            r.is_err()
+                && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Config file is empty"))
         );
     }
 
@@ -587,7 +587,8 @@ groups:
         let p = create_temp_config_file(&d, "server: { port: 123,");
         let r = load_config(&p);
         assert!(
-            r.is_err() && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Failed to parse config file"))
+            r.is_err()
+                && matches!(r.err(), Some(AppError::Config(m)) if m.contains("Failed to parse config file"))
         );
     }
 } // end tests module

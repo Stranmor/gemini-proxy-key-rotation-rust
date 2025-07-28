@@ -16,10 +16,10 @@ use gemini_proxy_key_rotation_rust::{
 use std::{fs::File, path::PathBuf, sync::Arc};
 use tempfile::tempdir;
 use wiremock::{
-    matchers::{method, path, path_regex, query_param}, // Use path and query_param
     Mock,
     MockServer,
     ResponseTemplate,
+    matchers::{method, path, path_regex, query_param}, // Use path and query_param
 };
 
 // Helper function to create a basic AppConfig for testing
@@ -264,8 +264,6 @@ async fn test_handler_returns_last_429_on_exhaustion() {
     );
 }
 
-
-
 #[tokio::test]
 async fn test_handler_group_round_robin() {
     // 1. Setup Mock Server
@@ -283,7 +281,9 @@ async fn test_handler_group_round_robin() {
         Mock::given(method("GET"))
             .and(path_regex(format!("^{expected_path}.*"))) // Match any path starting with test_path
             .and(query_param("key", key))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{key}\"}}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{key}\"}}")),
+            )
             .mount(&server)
             .await;
     }
@@ -326,38 +326,81 @@ async fn test_handler_group_round_robin() {
         let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("Failed to read response body");
-        let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("Invalid JSON");
+        let body_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON");
         body_json["key_used"].as_str().unwrap().to_string()
     }
 
     // 3. Call handler multiple times and check key rotation
     // Expected sequence: g1k1, g2k1, g3k1, g1k2, g2k1, g3k1, g1k1, ...
 
-    let res1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=1"), axum::body::Body::empty()).await;
+    let res1 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=1"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res1.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res1).await, g1_key1);
 
-    let res2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=2"), axum::body::Body::empty()).await;
+    let res2 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=2"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res2.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res2).await, g2_key1);
 
-    let res3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=3"), axum::body::Body::empty()).await;
+    let res3 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=3"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res3.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res3).await, g3_key1);
 
-    let res4 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=4"), axum::body::Body::empty()).await;
+    let res4 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=4"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res4.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res4).await, g1_key2); // Next key in group1
 
-    let res5 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=5"), axum::body::Body::empty()).await;
+    let res5 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=5"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res5.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res5).await, g2_key1); // Back to group2 (only one key)
 
-    let res6 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=6"), axum::body::Body::empty()).await;
+    let res6 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=6"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res6.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res6).await, g3_key1); // Back to group3 (only one key)
 
-    let res7 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=7"), axum::body::Body::empty()).await;
+    let res7 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=7"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res7.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res7).await, g1_key1); // Back to start of group1
 
@@ -371,11 +414,14 @@ async fn test_handler_group_round_robin() {
         .mount(&server)
         .await;
     // Remount mocks for other keys to return 200
-    for key in [g1_key1, g1_key2, g3_key1] { // Exclude g2_key1
+    for key in [g1_key1, g1_key2, g3_key1] {
+        // Exclude g2_key1
         Mock::given(method("GET"))
             .and(path(expected_path))
             .and(query_param("key", key))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{key}\"}}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{key}\"}}")),
+            )
             .mount(&server)
             .await;
     }
@@ -386,20 +432,38 @@ async fn test_handler_group_round_robin() {
     // Current state: next should be group2 (index 1) according to previous calls
     // Try g2k1 -> 429 -> mark g2k1 limited -> continue search
     // Try group3 (index 2) -> g3k1 -> OK
-    let res_skip1 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=8"), axum::body::Body::empty()).await;
+    let res_skip1 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=8"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res_skip1.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res_skip1).await, g3_key1); // Expect g3_key1 because g2 is skipped
 
     // Current state: next should be group0 (index 0)
     // Try g1k2 -> OK
-    let res_skip2 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=9"), axum::body::Body::empty()).await;
+    let res_skip2 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=9"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res_skip2.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res_skip2).await, g1_key2);
 
     // Current state: next should be group1 (index 1)
     // Try g2k1 -> still 429 -> continue search
     // Try group3 (index 2) -> g3k1 -> OK
-    let res_skip3 = call_proxy_handler(Arc::clone(&app_state), Method::GET, &format!("{test_path}?req=10"), axum::body::Body::empty()).await;
+    let res_skip3 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::GET,
+        &format!("{test_path}?req=10"),
+        axum::body::Body::empty(),
+    )
+    .await;
     assert_eq!(res_skip3.status(), StatusCode::OK);
     assert_eq!(get_key_from_response(res_skip3).await, g3_key1);
 }
@@ -428,29 +492,34 @@ async fn test_openai_top_p_injection_correctly() {
             // Custom matcher to inspect the body for a top-level "top_p"
             if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&req.body) {
                 if let Some(top_p) = body_json.get("top_p") {
-                    return top_p.as_f64().is_some_and(|v| (v as f32 - top_p_value).abs() < f32::EPSILON);
+                    return top_p
+                        .as_f64()
+                        .is_some_and(|v| (v as f32 - top_p_value).abs() < f32::EPSILON);
                 }
             }
             false
         })
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "chatcmpl-123", "object": "chat.completion" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({ "id": "chatcmpl-123", "object": "chat.completion" }),
+        ))
         .mount(&server)
         .await;
 
     // 2. Setup Config and State
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
-    
+
     // Create a new AppConfig with top_p at the server level for this test
-    let mut config = create_test_config(vec![
-        KeyGroup {
+    let mut config = create_test_config(
+        vec![KeyGroup {
             name: "openai-top-p-group".to_string(),
             api_keys: vec![test_api_key.to_string()],
             target_url: server.uri(),
             proxy_url: None,
             top_p: None, // Group level top_p is not used for this path
-        }
-    ], 9993);
+        }],
+        9993,
+    );
     config.server.top_p = Some(top_p_value); // Set top_p at the server level
 
     let app_state = Arc::new(
@@ -521,7 +590,8 @@ async fn test_health_detailed_maps_to_models_endpoint() {
         Method::GET,
         "/health/detailed",
         axum::body::Body::empty(),
-    ).await;
+    )
+    .await;
 
     // 4. Assertions
     assert_eq!(
@@ -532,8 +602,12 @@ async fn test_health_detailed_maps_to_models_endpoint() {
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("Failed to read response body");
-    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
-    assert_eq!(body_json, mock_response_body, "Response body from /health/detailed did not match expected models list");
+    let body_json: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+    assert_eq!(
+        body_json, mock_response_body,
+        "Response body from /health/detailed did not match expected models list"
+    );
 }
 
 #[tokio::test]
@@ -576,28 +650,33 @@ async fn test_content_length_is_updated_after_top_p_injection() {
             // Check body content
             if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&req.body) {
                 if let Some(top_p) = body_json.get("top_p") {
-                    return top_p.as_f64().is_some_and(|v| (v as f32 - top_p_value).abs() < f32::EPSILON);
+                    return top_p
+                        .as_f64()
+                        .is_some_and(|v| (v as f32 - top_p_value).abs() < f32::EPSILON);
                 }
             }
             false
         })
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "chatcmpl-456", "object": "chat.completion" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({ "id": "chatcmpl-456", "object": "chat.completion" }),
+        ))
         .mount(&server)
         .await;
 
     // 2. Setup Config and State
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
-    
-    let mut config = create_test_config(vec![
-        KeyGroup {
+
+    let mut config = create_test_config(
+        vec![KeyGroup {
             name: "content-length-group".to_string(),
             api_keys: vec![test_api_key.to_string()],
             target_url: server.uri(),
             proxy_url: None,
             top_p: None,
-        }
-    ], 9991);
+        }],
+        9991,
+    );
     config.server.top_p = Some(top_p_value);
 
     let app_state = Arc::new(
@@ -644,13 +723,17 @@ async fn test_top_p_client_precedence() {
                 if let Some(config) = body_json.get("generationConfig") {
                     if let Some(top_p) = config.get("topP") {
                         // Check that the value is the one from the client
-                        return top_p.as_f64().is_some_and(|v| (v - client_top_p).abs() < f64::EPSILON);
+                        return top_p
+                            .as_f64()
+                            .is_some_and(|v| (v - client_top_p).abs() < f64::EPSILON);
                     }
                 }
             }
             false
         })
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "candidates": [] })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "candidates": [] })),
+        )
         .mount(&server)
         .await;
 
@@ -709,7 +792,9 @@ async fn test_url_translation_for_v1_path() {
     Mock::given(method("POST"))
         .and(path(expected_translated_path))
         .and(query_param("key", test_api_key))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "ok" })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "ok" })),
+        )
         .mount(&server)
         .await;
 
@@ -762,7 +847,9 @@ async fn test_url_translation_for_non_v1_path() {
     Mock::given(method("GET"))
         .and(path(incoming_path))
         .and(query_param("key", test_api_key))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "healthy" })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "healthy" })),
+        )
         .mount(&server)
         .await;
 
@@ -821,7 +908,10 @@ async fn test_rotates_on_400_with_api_key_invalid_body() {
     Mock::given(method("POST"))
         .and(path(expected_path))
         .and(query_param("key", key1_invalid))
-        .respond_with(ResponseTemplate::new(400).set_body_string("API key not valid. Please pass a valid API key. API_KEY_INVALID"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string("API key not valid. Please pass a valid API key. API_KEY_INVALID"),
+        )
         .mount(&server)
         .await;
 
@@ -840,19 +930,38 @@ async fn test_rotates_on_400_with_api_key_invalid_body() {
         name: "retry-400-invalid-group".to_string(),
         api_keys: vec![key1_invalid.to_string(), key2_valid.to_string()],
         target_url: server.uri(),
-        proxy_url: None, top_p: None,
+        proxy_url: None,
+        top_p: None,
     };
     let config = create_test_config(vec![test_group], 9988);
-    let app_state = Arc::new(AppState::new(&config, &dummy_config_path).await.expect("AppState failed"));
+    let app_state = Arc::new(
+        AppState::new(&config, &dummy_config_path)
+            .await
+            .expect("AppState failed"),
+    );
 
     // 3. Call handler
-    let response = call_proxy_handler(app_state.clone(), Method::POST, test_path, axum::body::Body::empty()).await;
+    let response = call_proxy_handler(
+        app_state.clone(),
+        Method::POST,
+        test_path,
+        axum::body::Body::empty(),
+    )
+    .await;
 
     // 4. Assertions
-    assert_eq!(response.status(), StatusCode::OK, "Expected status OK (200) after retry on 400 with API_KEY_INVALID");
-    
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected status OK (200) after retry on 400 with API_KEY_INVALID"
+    );
+
     // Verify that the first key is now marked as invalid
-    let is_invalid = app_state.key_manager.read().await.is_key_invalid(key1_invalid);
+    let is_invalid = app_state
+        .key_manager
+        .read()
+        .await
+        .is_key_invalid(key1_invalid);
     assert!(is_invalid, "Expected the first key to be marked as invalid");
 }
 
@@ -893,20 +1002,40 @@ async fn test_returns_immediately_on_400_with_other_body() {
         name: "no-retry-400-group".to_string(),
         api_keys: vec![key1.to_string(), key2.to_string()],
         target_url: server.uri(),
-        proxy_url: None, top_p: None,
+        proxy_url: None,
+        top_p: None,
     };
     let config = create_test_config(vec![test_group], 9987);
-    let app_state = Arc::new(AppState::new(&config, &dummy_config_path).await.expect("AppState failed"));
+    let app_state = Arc::new(
+        AppState::new(&config, &dummy_config_path)
+            .await
+            .expect("AppState failed"),
+    );
 
     // 3. Call handler
-    let response = call_proxy_handler(app_state.clone(), Method::POST, test_path, axum::body::Body::empty()).await;
+    let response = call_proxy_handler(
+        app_state.clone(),
+        Method::POST,
+        test_path,
+        axum::body::Body::empty(),
+    )
+    .await;
 
     // 4. Assertions
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "Expected status 400 to be returned directly");
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "Expected status 400 to be returned directly"
+    );
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body_bytes), error_body);
-    
+
     // Verify that the first key was NOT marked as invalid
     let is_invalid = app_state.key_manager.read().await.is_key_invalid(key1);
-    assert!(!is_invalid, "Expected the key NOT to be marked as invalid for a generic 400 error");
+    assert!(
+        !is_invalid,
+        "Expected the key NOT to be marked as invalid for a generic 400 error"
+    );
 }

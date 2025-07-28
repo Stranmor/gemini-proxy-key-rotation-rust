@@ -6,15 +6,15 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc}; // ENSURED TimeZone is imported
 use chrono_tz::America::Los_Angeles; // Use Los_Angeles timezone (PST/PDT)
 use chrono_tz::Tz; // Import Tz trait
-use reqwest::{header::CONTENT_TYPE, Client};
+use reqwest::{Client, header::CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io as std_io, // Import standard io for Error kind
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     }, // Added Arc for mutex cloning
 };
 use tokio::fs::{self as async_fs};
@@ -154,8 +154,7 @@ impl KeyManager {
 
         let mut grouped_keys: Vec<(String, Vec<FlattenedKeyInfo>)> =
             Vec::with_capacity(config.groups.len());
-        let mut key_indices_per_group: Vec<AtomicUsize> =
-            Vec::with_capacity(config.groups.len());
+        let mut key_indices_per_group: Vec<AtomicUsize> = Vec::with_capacity(config.groups.len());
 
         // Iterate through config.groups again to maintain the original order
         let mut active_group_count = 0;
@@ -183,9 +182,13 @@ impl KeyManager {
         });
 
         if processed_keys_count == 0 {
-            error!("KeyManager Initialization Error: No usable API keys found after processing configuration. Application might not function correctly.");
+            error!(
+                "KeyManager Initialization Error: No usable API keys found after processing configuration. Application might not function correctly."
+            );
         } else if active_group_count == 0 {
-            error!("KeyManager Initialization Error: Keys were processed, but no active groups were formed. Check group definitions.");
+            error!(
+                "KeyManager Initialization Error: Keys were processed, but no active groups were formed. Check group definitions."
+            );
         }
 
         info!(
@@ -235,7 +238,10 @@ impl KeyManager {
         for group_offset in 0..num_groups {
             let current_group_idx = (initial_group_index + group_offset) % num_groups;
             let Some((group_name, keys_in_group)) = self.grouped_keys.get(current_group_idx) else {
-                error!(group.index = current_group_idx, "Internal inconsistency: Group index out of bounds. Skipping.");
+                error!(
+                    group.index = current_group_idx,
+                    "Internal inconsistency: Group index out of bounds. Skipping."
+                );
                 continue;
             };
 
@@ -245,7 +251,8 @@ impl KeyManager {
             }
 
             let num_keys_in_group = keys_in_group.len();
-            let Some(group_key_index_atomic) = self.key_indices_per_group.get(current_group_idx) else {
+            let Some(group_key_index_atomic) = self.key_indices_per_group.get(current_group_idx)
+            else {
                 error!(group.index = current_group_idx, group.name=%group_name, "Internal inconsistency: Missing key index for group. Skipping.");
                 continue;
             };
@@ -271,19 +278,22 @@ impl KeyManager {
 
                 let is_available = match key_state.status {
                     KeyStatus::Available => true,
-                    KeyStatus::RateLimited | KeyStatus::TemporarilyUnavailable if is_expired => true,
+                    KeyStatus::RateLimited | KeyStatus::TemporarilyUnavailable if is_expired => {
+                        true
+                    }
                     _ => false,
                 };
 
                 if is_available {
                     if key_state.status != KeyStatus::Available {
-                         debug!(api_key.preview = %Self::preview(&key_info.key), group.name = %group_name, "Limit previously set but now expired");
+                        debug!(api_key.preview = %Self::preview(&key_info.key), group.name = %group_name, "Limit previously set but now expired");
                     }
 
                     let next_key_idx_in_group = (current_key_idx_in_group + 1) % num_keys_in_group;
                     group_key_index_atomic.store(next_key_idx_in_group, Ordering::Relaxed);
                     let next_group_idx = (current_group_idx + 1) % num_groups;
-                    self.current_group_index.store(next_group_idx, Ordering::Relaxed);
+                    self.current_group_index
+                        .store(next_group_idx, Ordering::Relaxed);
 
                     debug!(
                        api_key.preview = %Self::preview(&key_info.key),
@@ -308,7 +318,12 @@ impl KeyManager {
         let mut group_name_for_log = "unknown".to_string();
 
         if let Some(key_state) = self.key_states.get_mut(api_key) {
-            if let Some(found_key_info) = self.grouped_keys.iter().flat_map(|(_, keys)| keys.iter()).find(|k| k.key == api_key) {
+            if let Some(found_key_info) = self
+                .grouped_keys
+                .iter()
+                .flat_map(|(_, keys)| keys.iter())
+                .find(|k| k.key == api_key)
+            {
                 group_name_for_log.clone_from(&found_key_info.group_name);
             }
 
@@ -324,9 +339,16 @@ impl KeyManager {
                 RateLimitBehavior::BlockUntilMidnight => {
                     let target_tz: Tz = Los_Angeles;
                     let now_in_target_tz = now_utc.with_timezone(&target_tz);
-                    let tomorrow_naive_target = (now_in_target_tz + ChronoDuration::days(1)).date_naive();
-                    let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target.and_hms_opt(0, 0, 0).expect("Failed to calculate next midnight");
-                    let reset_time_utc = target_tz.from_local_datetime(&reset_time_naive_target).single().expect("Timezone conversion failed").with_timezone(&Utc);
+                    let tomorrow_naive_target =
+                        (now_in_target_tz + ChronoDuration::days(1)).date_naive();
+                    let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target
+                        .and_hms_opt(0, 0, 0)
+                        .expect("Failed to calculate next midnight");
+                    let reset_time_utc = target_tz
+                        .from_local_datetime(&reset_time_naive_target)
+                        .single()
+                        .expect("Timezone conversion failed")
+                        .with_timezone(&Utc);
                     key_state.status = KeyStatus::RateLimited;
                     key_state.reset_time = Some(reset_time_utc);
                 }
@@ -358,7 +380,11 @@ impl KeyManager {
     }
 
     #[tracing::instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %Self::preview(api_key)))]
-    pub fn mark_key_as_temporarily_unavailable(&mut self, api_key: &str, duration: ChronoDuration) -> bool {
+    pub fn mark_key_as_temporarily_unavailable(
+        &mut self,
+        api_key: &str,
+        duration: ChronoDuration,
+    ) -> bool {
         if let Some(key_state) = self.key_states.get_mut(api_key) {
             let reset_time = Utc::now() + duration;
             warn!(?duration, %reset_time, "Marking key as temporarily unavailable");
@@ -393,7 +419,10 @@ impl KeyManager {
     ) -> std_io::Result<()> {
         debug!("Attempting atomic save");
         let parent_dir = final_path.parent().ok_or_else(|| {
-            std_io::Error::new(std_io::ErrorKind::InvalidInput, "State file path has no parent directory")
+            std_io::Error::new(
+                std_io::ErrorKind::InvalidInput,
+                "State file path has no parent directory",
+            )
         })?;
         async_fs::create_dir_all(parent_dir).await?;
 
@@ -402,7 +431,10 @@ impl KeyManager {
         let temp_path = parent_dir.join(&temp_filename);
 
         let json_data = serde_json::to_string_pretty(states).map_err(|e| {
-            std_io::Error::new(std_io::ErrorKind::InvalidData, format!("Failed to serialize key states: {e}"))
+            std_io::Error::new(
+                std_io::ErrorKind::InvalidData,
+                format!("Failed to serialize key states: {e}"),
+            )
         })?;
 
         async_fs::write(&temp_path, json_data.as_bytes()).await?;
@@ -420,7 +452,11 @@ impl KeyManager {
         let end = std::cmp::min(6, len);
         let start = if len > 10 { len - 4 } else { len };
         if len > 10 {
-            format!("{}...{}", key.chars().take(end).collect::<String>(), key.chars().skip(start).collect::<String>())
+            format!(
+                "{}...{}",
+                key.chars().take(end).collect::<String>(),
+                key.chars().skip(start).collect::<String>()
+            )
         } else {
             format!("{}...", key.chars().take(end).collect::<String>())
         }
@@ -436,7 +472,9 @@ impl KeyManager {
     }
 
     pub fn is_key_invalid(&self, api_key: &str) -> bool {
-        self.key_states.get(api_key).is_some_and(|s| s.status == KeyStatus::Invalid)
+        self.key_states
+            .get(api_key)
+            .is_some_and(|s| s.status == KeyStatus::Invalid)
     }
 
     pub(crate) fn reset_key_state_to_available(&mut self, api_key: &str) -> bool {
@@ -477,7 +515,8 @@ impl KeyManager {
         info!("Verifying key with Gemini API");
 
         // Construct the full URL for verification
-        let target_url = format!("{target_url_base}/v1beta/models/gemini-pro:generateContent?key={api_key}");
+        let target_url =
+            format!("{target_url_base}/v1beta/models/gemini-pro:generateContent?key={api_key}");
 
         let request_body = serde_json::json!({
             "contents": [{"parts":[ {"text": "Hi"}]}]
@@ -488,28 +527,32 @@ impl KeyManager {
             .header(CONTENT_TYPE, "application/json")
             .json(&request_body)
             .send()
-            .await {
-                Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.unwrap_or_else(|_| "Could not read response body".to_string());
-                    if status.is_success() {
-                        info!(api_key.preview = %Self::preview(api_key), "Key verification successful");
-                        Ok(text)
-                    } else {
-                        warn!(
-                            api_key.preview = %Self::preview(api_key),
-                            %status,
-                            error.body = %text,
-                            "Key verification failed with non-success status"
-                        );
-                        Err((status, text))
-                    }
-                }
-                Err(e) => {
-                     error!(api_key.preview = %Self::preview(api_key), error = ?e, "Network or other error during key verification");
-                     Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                let text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Could not read response body".to_string());
+                if status.is_success() {
+                    info!(api_key.preview = %Self::preview(api_key), "Key verification successful");
+                    Ok(text)
+                } else {
+                    warn!(
+                        api_key.preview = %Self::preview(api_key),
+                        %status,
+                        error.body = %text,
+                        "Key verification failed with non-success status"
+                    );
+                    Err((status, text))
                 }
             }
+            Err(e) => {
+                error!(api_key.preview = %Self::preview(api_key), error = ?e, "Network or other error during key verification");
+                Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            }
+        }
     }
 
     #[tracing::instrument(level = "info", skip(self, verification_result), fields(api_key.preview = %Self::preview(api_key)))]
@@ -1022,9 +1065,27 @@ mod tests {
         let dir = tempdir().unwrap();
         let config_path = create_temp_yaml_config(&dir);
         let groups = vec![
-            KeyGroup { name: "g1".to_string(), api_keys: vec!["g1k1".to_string(), "g1k2".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None },
-            KeyGroup { name: "g2".to_string(), api_keys: vec!["g2k1".to_string()], proxy_url: None, target_url: "t2".to_string(), top_p: None },
-            KeyGroup { name: "g3".to_string(), api_keys: vec!["g3k1".to_string()], proxy_url: None, target_url: "t3".to_string(), top_p: None },
+            KeyGroup {
+                name: "g1".to_string(),
+                api_keys: vec!["g1k1".to_string(), "g1k2".to_string()],
+                proxy_url: None,
+                target_url: "t1".to_string(),
+                top_p: None,
+            },
+            KeyGroup {
+                name: "g2".to_string(),
+                api_keys: vec!["g2k1".to_string()],
+                proxy_url: None,
+                target_url: "t2".to_string(),
+                top_p: None,
+            },
+            KeyGroup {
+                name: "g3".to_string(),
+                api_keys: vec!["g3k1".to_string()],
+                proxy_url: None,
+                target_url: "t3".to_string(),
+                top_p: None,
+            },
         ];
         let mut config = create_test_config(groups);
         // Use BlockUntilMidnight to make test deterministic
@@ -1037,9 +1098,21 @@ mod tests {
         sleep(Duration::from_millis(50)).await; // allow state to be saved
 
         // Expected sequence: g1k2 (starts at g1, skips g1k1), g3k1 (skips g2), g1k2 (wraps around)
-        assert_eq!(manager.get_next_available_key_info().unwrap().key, "g1k2", "Should select g1k2 first");
-        assert_eq!(manager.get_next_available_key_info().unwrap().key, "g3k1", "Should select g3k1 after skipping g2");
-        assert_eq!(manager.get_next_available_key_info().unwrap().key, "g1k2", "Should wrap around and select g1k2 again");
+        assert_eq!(
+            manager.get_next_available_key_info().unwrap().key,
+            "g1k2",
+            "Should select g1k2 first"
+        );
+        assert_eq!(
+            manager.get_next_available_key_info().unwrap().key,
+            "g3k1",
+            "Should select g3k1 after skipping g2"
+        );
+        assert_eq!(
+            manager.get_next_available_key_info().unwrap().key,
+            "g1k2",
+            "Should wrap around and select g1k2 again"
+        );
     }
 
     #[tokio::test]
@@ -1047,8 +1120,20 @@ mod tests {
         let dir = tempdir().unwrap();
         let config_path = create_temp_yaml_config(&dir);
         let groups = vec![
-            KeyGroup { name: "g1".to_string(), api_keys: vec!["g1k1".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None },
-            KeyGroup { name: "g2".to_string(), api_keys: vec!["g2k1".to_string()], proxy_url: None, target_url: "t2".to_string(), top_p: None },
+            KeyGroup {
+                name: "g1".to_string(),
+                api_keys: vec!["g1k1".to_string()],
+                proxy_url: None,
+                target_url: "t1".to_string(),
+                top_p: None,
+            },
+            KeyGroup {
+                name: "g2".to_string(),
+                api_keys: vec!["g2k1".to_string()],
+                proxy_url: None,
+                target_url: "t2".to_string(),
+                top_p: None,
+            },
         ];
         let mut config = create_test_config(groups);
         // Use BlockUntilMidnight to make test deterministic
@@ -1059,7 +1144,10 @@ mod tests {
         manager.mark_key_as_limited("g2k1");
         sleep(Duration::from_millis(250)).await;
 
-        assert!(manager.get_next_available_key_info().is_none(), "Should return None when all keys are limited");
+        assert!(
+            manager.get_next_available_key_info().is_none(),
+            "Should return None when all keys are limited"
+        );
     }
 
     #[tokio::test]
@@ -1128,7 +1216,13 @@ mod tests {
     async fn test_mark_key_as_limited_block_until_midnight() {
         let dir = tempdir().unwrap();
         let config_path = create_temp_yaml_config(&dir);
-        let groups = vec![KeyGroup { name: "g1".to_string(), api_keys: vec!["k1".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None }];
+        let groups = vec![KeyGroup {
+            name: "g1".to_string(),
+            api_keys: vec!["k1".to_string()],
+            proxy_url: None,
+            target_url: "t1".to_string(),
+            top_p: None,
+        }];
         let mut config = create_test_config(groups);
         config.rate_limit_behavior = RateLimitBehavior::BlockUntilMidnight;
         let mut manager = KeyManager::new(&config, &config_path).await;
@@ -1150,7 +1244,13 @@ mod tests {
     async fn test_mark_key_as_limited_retry_next_key() {
         let dir = tempdir().unwrap();
         let config_path = create_temp_yaml_config(&dir);
-        let groups = vec![KeyGroup { name: "g1".to_string(), api_keys: vec!["k1".to_string()], proxy_url: None, target_url: "t1".to_string(), top_p: None }];
+        let groups = vec![KeyGroup {
+            name: "g1".to_string(),
+            api_keys: vec!["k1".to_string()],
+            proxy_url: None,
+            target_url: "t1".to_string(),
+            top_p: None,
+        }];
         let mut config = create_test_config(groups);
         config.rate_limit_behavior = RateLimitBehavior::RetryNextKey;
         let mut manager = KeyManager::new(&config, &config_path).await;

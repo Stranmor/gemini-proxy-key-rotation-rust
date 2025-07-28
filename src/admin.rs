@@ -7,25 +7,25 @@ use crate::{
     state::AppState,
 };
 use axum::{
+    Router,
     body::Body,
     extract::{Path, Query, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
     routing::{delete, get, post, put},
-    Router,
 };
 use chrono::{DateTime, Utc};
-use cookie::{time::Duration as CookieDuration, SameSite};
+use cookie::{SameSite, time::Duration as CookieDuration};
 use http::HeaderName;
 
 #[cfg(test)]
 use http_body_util::BodyExt;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use sysinfo::{System, Disks};
+use sysinfo::{Disks, System};
 use tokio::sync::Mutex;
 use tower_cookies::{Cookie, Cookies};
 use tracing::{error, info, warn};
@@ -302,11 +302,7 @@ pub struct CsrfTokenResponse {
 /// Middleware for Cross-Site Request Forgery (CSRF) protection.
 ///
 /// It expects a `csrf_token` in a cookie and a matching token in the `X-CSRF-Token` header.
-async fn csrf_middleware(
-    cookies: Cookies,
-    req: Request<Body>,
-    next: Next,
-) -> Result<Response> {
+async fn csrf_middleware(cookies: Cookies, req: Request<Body>, next: Next) -> Result<Response> {
     let cookie_token = cookies
         .get(CSRF_TOKEN_COOKIE)
         .map(|cookie| cookie.value().to_string());
@@ -388,7 +384,12 @@ pub async fn list_keys(
 
     let keys = all_key_info
         .iter()
-        .filter(|key_info| query.group.as_ref().is_none_or(|g| g == &key_info.group_name))
+        .filter(|key_info| {
+            query
+                .group
+                .as_ref()
+                .is_none_or(|g| g == &key_info.group_name)
+        })
         .filter_map(|key_info| {
             let key_state = key_states.get(&key_info.key);
             let api_key_info = KeyInfo::new(key_info, key_state, now);
@@ -415,20 +416,25 @@ pub async fn verify_key(
 ) -> Result<StatusCode> {
     let mut key_manager_guard = state.key_manager.write().await;
 
-    let (key_to_verify, proxy_url, target_url) =
-        match key_manager_guard.get_key_info_by_id(&key_id) {
-            Some(info) => (
-                info.key.clone(),
-                info.proxy_url.clone(),
-                info.target_url.clone(),
-            ),
-            None => {
-                warn!("Verification failed: Key with ID '{}' not found.", key_id);
-                return Err(AppError::NotFound(format!("Key with ID '{key_id}' not found")));
-            }
-        };
+    let (key_to_verify, proxy_url, target_url) = match key_manager_guard.get_key_info_by_id(&key_id)
+    {
+        Some(info) => (
+            info.key.clone(),
+            info.proxy_url.clone(),
+            info.target_url.clone(),
+        ),
+        None => {
+            warn!("Verification failed: Key with ID '{}' not found.", key_id);
+            return Err(AppError::NotFound(format!(
+                "Key with ID '{key_id}' not found"
+            )));
+        }
+    };
 
-    info!("Attempting to verify key with ID '{}' for target '{}'.", key_id, target_url);
+    info!(
+        "Attempting to verify key with ID '{}' for target '{}'.",
+        key_id, target_url
+    );
 
     let client = state.get_client(proxy_url.as_deref()).await?;
     let verification_result = key_manager_guard
@@ -436,10 +442,16 @@ pub async fn verify_key(
         .await;
 
     if key_manager_guard.update_key_status_from_verification(&key_to_verify, verification_result) {
-        info!("Key with ID '{}' status updated after verification.", key_id);
+        info!(
+            "Key with ID '{}' status updated after verification.",
+            key_id
+        );
         key_manager_guard.save_states().await?;
     } else {
-        info!("Key with ID '{}' status did not change after verification.", key_id);
+        info!(
+            "Key with ID '{}' status did not change after verification.",
+            key_id
+        );
     }
 
     Ok(StatusCode::OK)
@@ -457,8 +469,13 @@ pub async fn reset_key(
         key_manager_guard.save_states().await?;
         Ok(StatusCode::OK)
     } else {
-        warn!("Attempted to reset key with ID '{}' but it was not found.", key_id);
-        Err(AppError::NotFound(format!("Key with ID '{key_id}' not found")))
+        warn!(
+            "Attempted to reset key with ID '{}' but it was not found.",
+            key_id
+        );
+        Err(AppError::NotFound(format!(
+            "Key with ID '{key_id}' not found"
+        )))
     }
 }
 
@@ -495,7 +512,10 @@ pub async fn add_keys(
             .iter_mut()
             .find(|g| g.name == request.group_name)
             .ok_or_else(|| {
-                warn!("Failed to add keys: Group '{}' not found.", request.group_name);
+                warn!(
+                    "Failed to add keys: Group '{}' not found.",
+                    request.group_name
+                );
                 AppError::NotFound(format!("Group '{}' not found", request.group_name))
             })?;
 
@@ -507,7 +527,10 @@ pub async fn add_keys(
                 added_count += 1;
             }
         }
-        info!("Added {} new keys to group '{}'.", added_count, request.group_name);
+        info!(
+            "Added {} new keys to group '{}'.",
+            added_count, request.group_name
+        );
         Ok(())
     })
     .await?;
@@ -520,7 +543,10 @@ pub async fn delete_keys(
     State(state): State<Arc<AppState>>,
     Json(request): Json<DeleteKeysRequest>,
 ) -> Result<StatusCode> {
-    info!("Attempting to delete keys from group '{}'.", request.group_name);
+    info!(
+        "Attempting to delete keys from group '{}'.",
+        request.group_name
+    );
     let config_base = state.config.read().await.clone();
     modify_config_and_reload(&state, "admin_delete_keys", config_base, |config| {
         let group = config
@@ -528,15 +554,23 @@ pub async fn delete_keys(
             .iter_mut()
             .find(|g| g.name == request.group_name)
             .ok_or_else(|| {
-                warn!("Failed to delete keys: Group '{}' not found.", request.group_name);
+                warn!(
+                    "Failed to delete keys: Group '{}' not found.",
+                    request.group_name
+                );
                 AppError::NotFound(format!("Group '{}' not found", request.group_name))
             })?;
 
         let keys_to_delete: HashSet<_> = request.api_keys.iter().map(String::as_str).collect();
         let initial_count = group.api_keys.len();
-        group.api_keys.retain(|k| !keys_to_delete.contains(k.as_str()));
+        group
+            .api_keys
+            .retain(|k| !keys_to_delete.contains(k.as_str()));
         let deleted_count = initial_count - group.api_keys.len();
-        info!("Deleted {} keys from group '{}'.", deleted_count, request.group_name);
+        info!(
+            "Deleted {} keys from group '{}'.",
+            deleted_count, request.group_name
+        );
         Ok(())
     })
     .await?;
@@ -545,7 +579,9 @@ pub async fn delete_keys(
 
 /// Provides a summary of application metrics (placeholder).
 #[axum::debug_handler]
-pub async fn get_metrics_summary(State(_state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>> {
+pub async fn get_metrics_summary(
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>> {
     info!("Metrics summary requested. (Placeholder)");
     Ok(Json(serde_json::json!({
         "message": "Metrics collection not yet implemented.",
@@ -635,7 +671,8 @@ where
     modification(&mut config)?;
 
     if !config::validate_config(&mut config, source) {
-        let msg = format!("Validation failed for new configuration from '{source}'; changes not saved.");
+        let msg =
+            format!("Validation failed for new configuration from '{source}'; changes not saved.");
         error!("{}", msg);
         return Err(AppError::Config(msg));
     }
@@ -646,7 +683,10 @@ where
     // Atomically swap the in-memory config and reload state.
     *state.config.write().await = config;
     state.reload_state_from_config().await?;
-    info!("Application state reloaded successfully after config update from '{}'.", source);
+    info!(
+        "Application state reloaded successfully after config update from '{}'.",
+        source
+    );
 
     Ok(())
 }
@@ -677,16 +717,21 @@ fn calculate_key_status_summary(
             "limited" => summary.limited_keys += 1,
             "invalid" => summary.invalid_keys += 1,
             "unavailable" => summary.temporarily_unavailable_keys += 1,
-            _ => warn!("Unknown key status '{}' for key in group '{}'.", status_str, key_info.group_name),
+            _ => warn!(
+                "Unknown key status '{}' for key in group '{}'.",
+                status_str, key_info.group_name
+            ),
         }
 
-        let entry = groups_map.entry(key_info.group_name.clone()).or_insert_with(|| GroupStatus {
-            name: key_info.group_name.clone(),
-            total_keys: 0,
-            active_keys: 0,
-            proxy_url: key_info.proxy_url.clone(),
-            target_url: key_info.target_url.clone(),
-        });
+        let entry = groups_map
+            .entry(key_info.group_name.clone())
+            .or_insert_with(|| GroupStatus {
+                name: key_info.group_name.clone(),
+                total_keys: 0,
+                active_keys: 0,
+                proxy_url: key_info.proxy_url.clone(),
+                target_url: key_info.target_url.clone(),
+            });
         entry.total_keys += 1;
         if status_str == "available" {
             entry.active_keys += 1;
@@ -725,10 +770,10 @@ mod tests {
     use crate::config::{KeyGroup as GroupConfig, ServerConfig};
     use crate::key_manager::{KeyState, KeyStatus as KmKeyStatus};
     use axum::{
-        body::Body,
-        http::{header, Request, StatusCode},
-        routing::post,
         Router,
+        body::Body,
+        http::{Request, StatusCode, header},
+        routing::post,
     };
     use chrono::Duration;
     use std::sync::Arc;
@@ -769,16 +814,6 @@ mod tests {
         (app_state, temp_dir)
     }
 
-    /// Creates a test app with the authentication middleware applied.
-    fn authed_app(state: Arc<AppState>) -> Router {
-        Router::new()
-            .route("/", get(|| async { StatusCode::OK }))
-            // NOTE: The auth_middleware was removed as it was unused in the main app router.
-            // For tests requiring auth, the token is passed directly in headers/cookies.
-            .layer(CookieManagerLayer::new())
-            .with_state(state)
-    }
-
     /// Creates a test app with the CSRF middleware applied.
     fn csrf_app() -> Router {
         Router::new()
@@ -797,34 +832,71 @@ mod tests {
 
         assert_eq!(get_key_status_str(None, now), ("available", None));
 
-        let state_available = KeyState { status: KmKeyStatus::Available, reset_time: None };
-        assert_eq!(get_key_status_str(Some(&state_available), now), ("available", None));
+        let state_available = KeyState {
+            status: KmKeyStatus::Available,
+            reset_time: None,
+        };
+        assert_eq!(
+            get_key_status_str(Some(&state_available), now),
+            ("available", None)
+        );
 
-        let state_limited_pending = KeyState { status: KmKeyStatus::RateLimited, reset_time: Some(future) };
-        assert_eq!(get_key_status_str(Some(&state_limited_pending), now), ("limited", Some(future)));
+        let state_limited_pending = KeyState {
+            status: KmKeyStatus::RateLimited,
+            reset_time: Some(future),
+        };
+        assert_eq!(
+            get_key_status_str(Some(&state_limited_pending), now),
+            ("limited", Some(future))
+        );
 
-        let state_limited_expired = KeyState { status: KmKeyStatus::RateLimited, reset_time: Some(past) };
-        assert_eq!(get_key_status_str(Some(&state_limited_expired), now), ("available", Some(past)));
+        let state_limited_expired = KeyState {
+            status: KmKeyStatus::RateLimited,
+            reset_time: Some(past),
+        };
+        assert_eq!(
+            get_key_status_str(Some(&state_limited_expired), now),
+            ("available", Some(past))
+        );
 
-        let state_invalid = KeyState { status: KmKeyStatus::Invalid, reset_time: None };
-        assert_eq!(get_key_status_str(Some(&state_invalid), now), ("invalid", None));
+        let state_invalid = KeyState {
+            status: KmKeyStatus::Invalid,
+            reset_time: None,
+        };
+        assert_eq!(
+            get_key_status_str(Some(&state_invalid), now),
+            ("invalid", None)
+        );
 
-        let state_unavailable_pending = KeyState { status: KmKeyStatus::TemporarilyUnavailable, reset_time: Some(future) };
-        assert_eq!(get_key_status_str(Some(&state_unavailable_pending), now), ("unavailable", Some(future)));
+        let state_unavailable_pending = KeyState {
+            status: KmKeyStatus::TemporarilyUnavailable,
+            reset_time: Some(future),
+        };
+        assert_eq!(
+            get_key_status_str(Some(&state_unavailable_pending), now),
+            ("unavailable", Some(future))
+        );
 
-        let state_unavailable_expired = KeyState { status: KmKeyStatus::TemporarilyUnavailable, reset_time: Some(past) };
-        assert_eq!(get_key_status_str(Some(&state_unavailable_expired), now), ("available", Some(past)));
+        let state_unavailable_expired = KeyState {
+            status: KmKeyStatus::TemporarilyUnavailable,
+            reset_time: Some(past),
+        };
+        assert_eq!(
+            get_key_status_str(Some(&state_unavailable_expired), now),
+            ("available", Some(past))
+        );
     }
 
     // --- Middleware Tests ---
-// --- Middleware Tests ---
+    // --- Middleware Tests ---
 
     #[tokio::test]
     async fn test_csrf_middleware_success() {
         let app = csrf_app();
         let token = "correct_csrf_token";
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -844,7 +916,8 @@ mod tests {
         let app = csrf_app();
         let token = "correct_csrf_token";
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -863,7 +936,8 @@ mod tests {
         let app = csrf_app();
         let token = "correct_csrf_token";
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -881,12 +955,16 @@ mod tests {
     async fn test_csrf_middleware_mismatch() {
         let app = csrf_app();
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/")
-                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}=token_in_cookie"))
+                    .header(
+                        header::COOKIE,
+                        format!("{CSRF_TOKEN_COOKIE}=token_in_cookie"),
+                    )
                     .header(&X_CSRF_TOKEN, "token_in_header")
                     .body(Body::empty())
                     .unwrap(),
@@ -900,7 +978,8 @@ mod tests {
     async fn test_csrf_middleware_empty_tokens() {
         let app = csrf_app();
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -920,16 +999,29 @@ mod tests {
     #[tokio::test]
     async fn test_get_csrf_token() {
         let (state, _temp_dir) = setup_state(None).await;
-        let app = admin_routes().layer(CookieManagerLayer::new()).with_state(state);
+        let app = admin_routes()
+            .layer(CookieManagerLayer::new())
+            .with_state(state);
 
-        let response = app.clone()
-            .oneshot(Request::builder().uri("/admin/csrf-token").body(Body::empty()).unwrap())
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/csrf-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let cookie_header = response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        let cookie_header = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(cookie_header.contains(CSRF_TOKEN_COOKIE));
         // CSRF cookie must be readable by client-side JS, so it should NOT be HttpOnly.
         assert!(!cookie_header.contains("HttpOnly"));
@@ -945,10 +1037,13 @@ mod tests {
     async fn test_login_success() {
         let admin_token = "test_admin_token".to_string();
         let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes().layer(CookieManagerLayer::new()).with_state(state);
+        let app = admin_routes()
+            .layer(CookieManagerLayer::new())
+            .with_state(state);
 
         let login_request = LoginRequest { token: admin_token };
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -961,7 +1056,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let cookie_header = response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        let cookie_header = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(cookie_header.contains(ADMIN_TOKEN_COOKIE));
         assert!(cookie_header.contains("HttpOnly"));
         assert!(cookie_header.contains("Secure"));
@@ -972,10 +1072,15 @@ mod tests {
     async fn test_login_failure() {
         let admin_token = "test_admin_token".to_string();
         let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes().layer(CookieManagerLayer::new()).with_state(state);
+        let app = admin_routes()
+            .layer(CookieManagerLayer::new())
+            .with_state(state);
 
-        let login_request = LoginRequest { token: "wrong_token".to_string() };
-        let response = app.clone()
+        let login_request = LoginRequest {
+            token: "wrong_token".to_string(),
+        };
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -995,21 +1100,27 @@ mod tests {
     async fn test_add_keys_success() {
         let admin_token = "test_admin_token".to_string();
         let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes().layer(CookieManagerLayer::new()).with_state(state.clone());
+        let app = admin_routes()
+            .layer(CookieManagerLayer::new())
+            .with_state(state.clone());
 
         let add_request = AddKeysRequest {
             group_name: "test_group".to_string(),
             api_keys: vec!["new_key_1".to_string(), "new_key_2".to_string()],
         };
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/admin/keys")
                     .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
                     .header(&X_CSRF_TOKEN, "dummy_csrf_token")
-                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"))
+                    .header(
+                        header::COOKIE,
+                        format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"),
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(serde_json::to_vec(&add_request).unwrap()))
                     .unwrap(),
@@ -1020,7 +1131,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let config_guard = state.config.read().await;
-        let group = config_guard.groups.iter().find(|g| g.name == "test_group").unwrap();
+        let group = config_guard
+            .groups
+            .iter()
+            .find(|g| g.name == "test_group")
+            .unwrap();
         assert!(group.api_keys.contains(&"new_key_1".to_string()));
         assert!(group.api_keys.contains(&"new_key_2".to_string()));
         assert_eq!(group.api_keys.len(), 4);
@@ -1030,21 +1145,27 @@ mod tests {
     async fn test_delete_keys_success() {
         let admin_token = "test_admin_token".to_string();
         let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes().layer(CookieManagerLayer::new()).with_state(state.clone());
+        let app = admin_routes()
+            .layer(CookieManagerLayer::new())
+            .with_state(state.clone());
 
         let delete_request = DeleteKeysRequest {
             group_name: "test_group".to_string(),
             api_keys: vec!["key1".to_string()],
         };
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("DELETE")
                     .uri("/admin/keys")
                     .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
                     .header(&X_CSRF_TOKEN, "dummy_csrf_token")
-                    .header(header::COOKIE, format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"))
+                    .header(
+                        header::COOKIE,
+                        format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"),
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(serde_json::to_vec(&delete_request).unwrap()))
                     .unwrap(),
@@ -1055,7 +1176,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let config_guard = state.config.read().await;
-        let group = config_guard.groups.iter().find(|g| g.name == "test_group").unwrap();
+        let group = config_guard
+            .groups
+            .iter()
+            .find(|g| g.name == "test_group")
+            .unwrap();
         assert!(!group.api_keys.contains(&"key1".to_string()));
         assert_eq!(group.api_keys.len(), 1);
     }
@@ -1073,8 +1198,14 @@ mod tests {
         }
 
         // Test without filters
-        let response = app.clone()
-            .oneshot(Request::builder().uri("/admin/keys").body(Body::empty()).unwrap())
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/keys")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1083,8 +1214,14 @@ mod tests {
         assert_eq!(keys.len(), 3);
 
         // Test with group filter
-        let response = app.clone()
-            .oneshot(Request::builder().uri("/admin/keys?group=test_group").body(Body::empty()).unwrap())
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/keys?group=test_group")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1094,8 +1231,14 @@ mod tests {
         assert!(keys.iter().all(|k| k.group_name == "test_group"));
 
         // Test with status filter
-        let response = app.clone()
-            .oneshot(Request::builder().uri("/admin/keys?status=limited").body(Body::empty()).unwrap())
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/keys?status=limited")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1110,8 +1253,14 @@ mod tests {
         let (state, _temp_dir) = setup_state(None).await;
         let app = admin_routes().with_state(state.clone());
 
-        let response = app.clone()
-            .oneshot(Request::builder().uri("/admin/health").body(Body::empty()).unwrap())
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

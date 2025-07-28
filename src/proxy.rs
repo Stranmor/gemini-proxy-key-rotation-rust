@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{header, HeaderMap, HeaderValue, Method}, // Removed unused StatusCode
+    http::{HeaderMap, HeaderValue, Method, header}, // Removed unused StatusCode
     response::Response,
 };
 
@@ -70,17 +70,25 @@ pub async fn forward_request(
             drop(config_guard);
             // The logic is wrapped in a closure to easily return the original bytes on any failure.
             let modified_body_bytes = (|| {
-                if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
+                {
                     if let Some(obj) = json_body.as_object_mut() {
                         obj.insert("top_p".to_string(), serde_json::json!(top_p_value));
                         if let Ok(modified_bytes) = serde_json::to_vec(&json_body) {
-                            info!(top_p = top_p_value, "Successfully injected top_p into request body");
+                            info!(
+                                top_p = top_p_value,
+                                "Successfully injected top_p into request body"
+                            );
                             return Bytes::from(modified_bytes);
                         } else {
-                            warn!("Failed to re-serialize JSON body after injecting top_p, forwarding original body.");
+                            warn!(
+                                "Failed to re-serialize JSON body after injecting top_p, forwarding original body."
+                            );
                         }
                     } else {
-                        debug!("Request body is valid JSON but not an object, cannot inject top_p.");
+                        debug!(
+                            "Request body is valid JSON but not an object, cannot inject top_p."
+                        );
                     }
                 } else {
                     debug!("Request body is not valid JSON, cannot inject top_p.");
@@ -91,14 +99,18 @@ pub async fn forward_request(
             // If the body was modified, update the Content-Length header.
             if modified_body_bytes.len() != body_bytes.len() {
                 let new_length = modified_body_bytes.len();
-                debug!(old_len = body_bytes.len(), new_len = new_length, "Updating Content-Length due to body modification");
+                debug!(
+                    old_len = body_bytes.len(),
+                    new_len = new_length,
+                    "Updating Content-Length due to body modification"
+                );
                 outgoing_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(new_length));
             }
-modified_body_bytes
-} else {
-body_bytes
-}
-};
+            modified_body_bytes
+        } else {
+            body_bytes
+        }
+    };
     // Log the body at debug level for diagnostics, converting to lossy string
     // in case of non-UTF8 content, BEFORE it's moved.
     debug!(
@@ -110,7 +122,7 @@ body_bytes
     // --- End Body Modification ---
     // --- Get Client ---
     let http_client = state.get_client(proxy_url_option).await?; // Error handled within
-                                                                 // ---
+    // ---
 
     // Log before sending the request
     info!(
@@ -230,7 +242,6 @@ fn build_forward_headers(original_headers: &HeaderMap, api_key: &str) -> Result<
     Ok(filtered)
 }
 
-
 /// Creates the `HeaderMap` for the response sent back to the original client.
 #[tracing::instrument(level="debug", skip(original_headers), fields(header_count = original_headers.len()))]
 fn build_response_headers(original_headers: &HeaderMap) -> HeaderMap {
@@ -255,14 +266,18 @@ fn copy_non_hop_by_hop_headers(source: &HeaderMap, dest: &mut HeaderMap, is_requ
 
 /// Adds the necessary authentication headers (`x-goog-api-key` and `Authorization: Bearer`).
 /// Returns a Result to indicate potential failures.
-#[tracing::instrument(level="debug")] // Removed skip attribute
+#[tracing::instrument(level = "debug")] // Removed skip attribute
 // Now takes api_key to add the Bearer token
 fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
     let auth_value_str = format!("Bearer {api_key}");
     match HeaderValue::from_str(&auth_value_str) {
         Ok(auth_value) => {
             headers.insert(header::AUTHORIZATION, auth_value);
-            trace!(header.name="Authorization", header.action="add", "Added Bearer token");
+            trace!(
+                header.name = "Authorization",
+                header.action = "add",
+                "Added Bearer token"
+            );
             Ok(())
         }
         Err(e) => {
@@ -277,8 +292,8 @@ fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{header, HeaderName, HeaderValue,};
-     // Import Error trait for source()
+    use axum::http::{HeaderName, HeaderValue, header};
+    // Import Error trait for source()
 
     #[test]
     fn test_build_forward_headers_basic() {
@@ -337,17 +352,6 @@ mod tests {
 
     #[test]
     fn test_build_response_headers_filters_hop_by_hop() {
-
-
-
-
-
-
-
-
-
-
-
         let mut upstream_headers = HeaderMap::new();
         upstream_headers.insert("content-type", HeaderValue::from_static("text/plain"));
         upstream_headers.insert("x-upstream-specific", HeaderValue::from_static("value2"));

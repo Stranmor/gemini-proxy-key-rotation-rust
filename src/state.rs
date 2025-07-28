@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, instrument, warn, Instrument};
+use tracing::{Instrument, debug, error, info, instrument, warn};
 use url::Url;
 
 /// Представляет общее состояние приложения, доступное для всех обработчиков Axum.
@@ -66,16 +66,14 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
     };
 
     // 1. Создаем базовый клиент (без прокси) - это ДОЛЖНО получиться
-    let base_client = configure_builder(Client::builder())
-        .build()
-        .map_err(|e| {
-            // Структурированная ошибка для сбоя базового клиента - это фатально
-            error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
-            AppError::HttpClientBuildError {
-                source: e,
-                proxy_url: None,
-            }
-        })?;
+    let base_client = configure_builder(Client::builder()).build().map_err(|e| {
+        // Структурированная ошибка для сбоя базового клиента - это фатально
+        error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
+        AppError::HttpClientBuildError {
+            source: e,
+            proxy_url: None,
+        }
+    })?;
     http_clients.insert(None, Arc::new(base_client));
     info!(client.type = "base", "Base HTTP client (no proxy) created successfully.");
 
@@ -215,7 +213,9 @@ impl AppState {
     /// Возвращает `Err`, если какая-либо часть реконструкции состояния завершается неудачно.
     #[instrument(level = "info", skip(self))]
     pub async fn reload_state_from_config(&self) -> Result<()> {
-        info!("Attempting to reload full application state (KeyManager, HttpClients) from configuration...");
+        info!(
+            "Attempting to reload full application state (KeyManager, HttpClients) from configuration..."
+        );
         let config_guard = self.config.read().await;
 
         // --- Создаем новый KeyManager ---
@@ -313,10 +313,12 @@ mod tests {
         drop(clients_guard);
 
         assert!(state.get_client(None).await.is_ok());
-        assert!(state
-            .get_client(Some("http://nonexistent.proxy"))
-            .await
-            .is_err());
+        assert!(
+            state
+                .get_client(Some("http://nonexistent.proxy"))
+                .await
+                .is_err()
+        );
     }
     #[tokio::test]
     async fn test_appstate_new_with_valid_proxies() {
@@ -510,7 +512,9 @@ mod tests {
                 assert!(state.get_client(http_key.as_deref()).await.is_ok());
                 if socks_created {
                     assert!(state.get_client(socks_key.as_deref()).await.is_ok());
-                    warn!("SOCKS client build succeeded unexpectedly in test - test might not cover build failure path");
+                    warn!(
+                        "SOCKS client build succeeded unexpectedly in test - test might not cover build failure path"
+                    );
                 } else {
                     assert!(state.get_client(socks_key.as_deref()).await.is_err());
                 }

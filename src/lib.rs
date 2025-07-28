@@ -1,28 +1,27 @@
 // src/lib.rs
 
 // Declare modules that constitute the library's public API or internal structure
+pub mod admin;
 pub mod config;
 pub mod error;
 pub mod handler;
 pub mod key_manager;
 pub mod proxy;
 pub mod state;
-pub mod admin;
 
 // Re-export key types for easier use by the binary or tests
 use axum::{
+    Router,
     body::Body,
     http::Request as AxumRequest,
     middleware::{self, Next},
     response::Response as AxumResponse,
     routing::{any, get},
-    Router,
 };
 use std::{path::PathBuf, sync::Arc, time::Instant};
 use tower_cookies::CookieManagerLayer;
-use tracing::{error, info, span, Instrument, Level};
+use tracing::{Instrument, Level, error, info, span};
 use uuid::Uuid;
-
 
 pub use config::AppConfig;
 pub use error::{AppError, Result};
@@ -111,16 +110,18 @@ pub async fn run(
     );
 
     // --- Application State Initialization ---
-    let app_state = AppState::new(&app_config, &config_path).await.map_err(|e| {
-        error!(
-            error = ?e,
-            "Failed to initialize application state. Exiting."
-        );
-        e
-    })?;
+    let app_state = AppState::new(&app_config, &config_path)
+        .await
+        .map_err(|e| {
+            error!(
+                error = ?e,
+                "Failed to initialize application state. Exiting."
+            );
+            e
+        })?;
     let app_state = Arc::new(app_state);
-// --- Router Setup ---
-let app = create_router(app_state.clone()).layer(middleware::from_fn(trace_requests));
+    // --- Router Setup ---
+    let app = create_router(app_state.clone()).layer(middleware::from_fn(trace_requests));
 
-Ok((app, app_config))
+    Ok((app, app_config))
 }

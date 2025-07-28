@@ -1,8 +1,9 @@
 // src/error.rs
 use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
     Json,
+    body::Bytes,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -43,7 +44,6 @@ pub struct ProxyConfigErrorData {
     pub url: String,
     pub kind: ProxyConfigErrorKind,
 }
-
 
 /// Represents the possible errors that can occur within the application.
 ///
@@ -108,6 +108,16 @@ pub enum AppError {
     #[error("CSRF token invalid")]
     Csrf,
 
+    #[error("Rate limited by upstream")]
+    RateLimited {
+        status: StatusCode,
+        headers: Box<HeaderMap>,
+        body: Box<Bytes>,
+    },
+
+    #[error("Failed to read response body from upstream: {0}")]
+    BodyReadError(String),
+
     #[error("Axum error: {0}")]
     Axum(#[from] axum::Error),
 
@@ -116,6 +126,9 @@ pub enum AppError {
 
     #[error("HTTP response builder error: {0}")]
     HttpResponseBuilder(#[from] http::Error),
+
+    #[error("Internal retry mechanism exhausted without a final response")]
+    InternalRetryExhausted,
 }
 
 // Removed manual `impl From<reqwest::Error> for AppError` to resolve conflict
@@ -126,6 +139,26 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_details) = match self {
+            Self::InternalRetryExhausted => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorDetails {
+                    error_type: "INTERNAL_RETRY_EXHAUSTED".to_string(),
+                    message: "Internal retry mechanism failed to produce a final response"
+                        .to_string(),
+                    details: None,
+                },
+            ),
+            Self::RateLimited {
+                status,
+                headers,
+                body,
+            } => {
+                // The fields are now Boxed, so we need to dereference them.
+                let mut resp = Response::new(axum::body::Body::from(*body));
+                *resp.status_mut() = status;
+                *resp.headers_mut() = *headers;
+                return resp;
+            }
             // --- 5xx Server Errors (Internal details logged, generic message to client) ---
             Self::Config(msg) => {
                 error!("Configuration error: {}", msg); // Log the specific error
@@ -277,6 +310,18 @@ impl IntoResponse for AppError {
                 },
             ),
 
+            Self::BodyReadError(msg) => {
+                error!("Failed to read upstream response body: {}", msg);
+                (
+                    StatusCode::BAD_GATEWAY,
+                    ErrorDetails {
+                        error_type: "UPSTREAM_RESPONSE_READ_ERROR".to_string(),
+                        message: "Failed to read response from upstream service".to_string(),
+                        details: Some(msg),
+                    },
+                )
+            }
+
             // --- 4xx Client Errors ---
             Self::RequestBodyError(msg) => (
                 StatusCode::BAD_REQUEST,
@@ -350,7 +395,7 @@ impl IntoResponse for AppError {
                         details: Some(e.to_string()),
                     },
                 )
-            },
+            }
             Self::HttpResponseBuilder(e) => {
                 error!("HTTP response builder error: {}", e);
                 (

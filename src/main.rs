@@ -1,7 +1,7 @@
 // src/main.rs
 
 use axum::serve;
-use gemini_proxy_key_rotation_rust::{run, AppError};
+use gemini_proxy_key_rotation_rust::{AppError, run};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -31,7 +31,7 @@ async fn shutdown_signal() {
     }
 }
 
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
