@@ -2,7 +2,7 @@
 
 use chrono::{Duration, Utc};
 use gemini_proxy_key_rotation_rust::key_manager::{KeyManager, ModelBlockState};
-use gemini_proxy_key_rotation_rust::config::{AppConfig, KeyGroup, ServerConfig, RateLimitBehavior};
+use gemini_proxy_key_rotation_rust::config::{AppConfig, KeyGroup, ServerConfig};
 use tempfile::tempdir;
 
 fn create_test_config() -> AppConfig {
@@ -21,7 +21,7 @@ fn create_test_config() -> AppConfig {
                 top_p: None,
             }
         ],
-        rate_limit_behavior: RateLimitBehavior::BlockUntilMidnight,
+
         internal_retries: 2,
         temporary_block_minutes: 5,
     }

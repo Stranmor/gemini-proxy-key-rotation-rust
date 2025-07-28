@@ -35,13 +35,7 @@ impl Default for KeyGroup {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RateLimitBehavior {
-    BlockUntilMidnight,
-    #[default]
-    RetryNextKey,
-}
+
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Default, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -50,8 +44,7 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub groups: Vec<KeyGroup>,
-    #[serde(default)]
-    pub rate_limit_behavior: RateLimitBehavior,
+
     #[serde(default = "default_internal_retries")]
     pub internal_retries: u32,
     #[serde(default = "default_temporary_block_minutes")]

@@ -1,6 +1,6 @@
 // src/key_manager.rs
 
-use crate::config::{AppConfig, RateLimitBehavior};
+use crate::config::AppConfig;
 use crate::error::{AppError, Result as AppResult}; // Use AppResult alias where appropriate
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc}; // ENSURED TimeZone is imported
@@ -77,7 +77,7 @@ pub struct KeyManager {
     state_file_path: PathBuf,
     // This mutex is for controlling writes to the state *file*, not in-memory state.
     save_mutex: Arc<Mutex<()>>,
-    rate_limit_behavior: crate::config::RateLimitBehavior, // Add the new field
+
 }
 
 impl KeyManager {
@@ -220,7 +220,7 @@ impl KeyManager {
             key_states: initial_key_states,
             state_file_path: state_file_path.clone(),
             save_mutex: Arc::new(Mutex::new(())),
-            rate_limit_behavior: config.rate_limit_behavior.clone(),
+
         };
 
         debug!(key_state.path = %state_file_path_display, "Performing initial state save/sync after KeyManager initialization.");
@@ -432,29 +432,23 @@ impl KeyManager {
                 return false;
             }
 
-            warn!(group.name=%group_name_for_log, behavior = ?self.rate_limit_behavior, "Marking key as rate-limited");
-            match self.rate_limit_behavior {
-                RateLimitBehavior::BlockUntilMidnight => {
-                    let target_tz: Tz = Los_Angeles;
-                    let now_in_target_tz = now_utc.with_timezone(&target_tz);
-                    let tomorrow_naive_target =
-                        (now_in_target_tz + ChronoDuration::days(1)).date_naive();
-                    let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target
-                        .and_hms_opt(0, 0, 0)
-                        .expect("Failed to calculate next midnight");
-                    let reset_time_utc = target_tz
-                        .from_local_datetime(&reset_time_naive_target)
-                        .single()
-                        .expect("Timezone conversion failed")
-                        .with_timezone(&Utc);
-                    key_state.status = KeyStatus::RateLimited;
-                    key_state.reset_time = Some(reset_time_utc);
-                }
-                RateLimitBehavior::RetryNextKey => {
-                    key_state.status = KeyStatus::RateLimited;
-                    key_state.reset_time = Some(Utc::now() + ChronoDuration::seconds(1));
-                }
-            }
+            warn!(group.name=%group_name_for_log, "Marking key as rate-limited until midnight PST");
+            
+            // Always block until midnight PST (00:00 PST / 10:00 MSK)
+            let target_tz: Tz = Los_Angeles;
+            let now_in_target_tz = now_utc.with_timezone(&target_tz);
+            let tomorrow_naive_target =
+                (now_in_target_tz + ChronoDuration::days(1)).date_naive();
+            let reset_time_naive_target: NaiveDateTime = tomorrow_naive_target
+                .and_hms_opt(0, 0, 0)
+                .expect("Failed to calculate next midnight");
+            let reset_time_utc = target_tz
+                .from_local_datetime(&reset_time_naive_target)
+                .single()
+                .expect("Timezone conversion failed")
+                .with_timezone(&Utc);
+            key_state.status = KeyStatus::RateLimited;
+            key_state.reset_time = Some(reset_time_utc);
             true
         } else {
             error!("Attempted to mark an unknown API key as limited!");
@@ -940,7 +934,7 @@ async fn cleanup_temp_files(temp_dir: &Path, base_filename: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{KeyGroup, RateLimitBehavior, ServerConfig};
+    use crate::config::{KeyGroup, ServerConfig};
     use std::fs::{self as sync_fs, File};
     use std::io::Write;
     use std::path::PathBuf;
@@ -956,7 +950,7 @@ mod tests {
                 admin_token: None,
             },
             groups,
-            rate_limit_behavior: RateLimitBehavior::default(),
+
             internal_retries: 2,
             temporary_block_minutes: 5,
         }
@@ -1287,8 +1281,7 @@ mod tests {
             },
         ];
         let mut config = create_test_config(groups);
-        // Use BlockUntilMidnight to make test deterministic
-        config.rate_limit_behavior = RateLimitBehavior::BlockUntilMidnight;
+        // Behavior is now always block until midnight PST
         let mut manager = KeyManager::new(&config, &config_path).await;
 
         // Limit g1k1 and all of g2
@@ -1335,8 +1328,7 @@ mod tests {
             },
         ];
         let mut config = create_test_config(groups);
-        // Use BlockUntilMidnight to make test deterministic
-        config.rate_limit_behavior = RateLimitBehavior::BlockUntilMidnight;
+        // Behavior is now always block until midnight PST
         let mut manager = KeyManager::new(&config, &config_path).await;
 
         manager.mark_key_as_limited("g1k1");
@@ -1423,7 +1415,6 @@ mod tests {
             top_p: None,
         }];
         let mut config = create_test_config(groups);
-        config.rate_limit_behavior = RateLimitBehavior::BlockUntilMidnight;
         let mut manager = KeyManager::new(&config, &config_path).await;
 
         manager.mark_key_as_limited("k1");
@@ -1439,31 +1430,5 @@ mod tests {
         assert!(reset_time < Utc::now() + ChronoDuration::hours(25));
     }
 
-    #[tokio::test]
-    async fn test_mark_key_as_limited_retry_next_key() {
-        let dir = tempdir().unwrap();
-        let config_path = create_temp_yaml_config(&dir);
-        let groups = vec![KeyGroup {
-            name: "g1".to_string(),
-            api_keys: vec!["k1".to_string()],
-            proxy_url: None,
-            target_url: "t1".to_string(),
-            top_p: None,
-        }];
-        let mut config = create_test_config(groups);
-        config.rate_limit_behavior = RateLimitBehavior::RetryNextKey;
-        let mut manager = KeyManager::new(&config, &config_path).await;
-
-        manager.mark_key_as_limited("k1");
-
-        let states = &manager.key_states;
-        let key_state = states.get("k1").unwrap();
-
-        assert_eq!(key_state.status, KeyStatus::RateLimited);
-        assert!(key_state.reset_time.is_some());
-        let reset_time = key_state.reset_time.unwrap();
-        // Should be very close to now
-        assert!(reset_time > Utc::now());
-        assert!(reset_time < Utc::now() + ChronoDuration::seconds(1));
-    }
+    // Test removed - behavior is now always block until midnight PST
 }
