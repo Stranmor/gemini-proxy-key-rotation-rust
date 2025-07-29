@@ -1,13 +1,17 @@
 # Example configuration for the Gemini Proxy
 
 # Server settings
+# Server settings
 server:
   # Port the proxy will listen on
   port: 8081
   # Optional: Default top_p value for generation, must be between 0.0 and 1.0.
   # This value will be injected into the request body if it's not already present.
+
+# Redis connection URL
+redis_url: "redis://127.0.0.1:6380"
+
   # API key groups. The proxy will rotate through keys in a round-robin fashion.
-groups:
   # Default group. You can have multiple groups.
   - name: "Default"
     # List of your Google Gemini API keys

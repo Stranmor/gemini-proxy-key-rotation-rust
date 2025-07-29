@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     container_name: gemini-proxy-container
     ports:
       - "${GEMINI_PROXY_PORT:-8080}:${GEMINI_PROXY_PORT:-8080}"
@@ -12,11 +16,20 @@ services:
     environment:
       - RUST_BACKTRACE=1
     restart: unless-stopped
+    depends_on:
+      - redis
     # Ограничения ресурсов для non-swarm режима
     deploy:
       resources:
         limits:
           cpus: '2.0'
+
+  redis:
+    image: "redis:alpine"
+    container_name: gemini-proxy-redis
+    ports:
+      - "6380:6379"
+    restart: unless-stopped
 
   # Сервис для запуска генерации отчета о покрытии.
   # Не запускается по умолчанию, а вызывается через `docker-compose run`.
@@ -25,6 +38,10 @@ services:
       context: .
       # Указываем, что нужно использовать этап 'coverage_runner' из Dockerfile.
       target: coverage_runner
+      network: host
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     volumes:
       # Привязываем локальную директорию к директории с отчетом внутри контейнера.
       # Это позволит получить доступ к сгенерированному отчету на хост-машине.
@@ -36,6 +53,10 @@ services:
     build:
       context: .
       target: tester
+      network: host
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
 
 volumes:
   key_states:

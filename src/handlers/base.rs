@@ -1,0 +1,28 @@
+// src/handlers/base.rs
+
+use axum::response::Response;
+
+/// Defines the next action to be taken by the main request loop.
+#[derive(Debug)]
+pub enum Action {
+    /// The key is valid, but the quota is exhausted. Try the next key.
+    RetryNextKey,
+    /// The key is invalid and should be permanently blocked. Then, try the next key.
+    BlockKeyAndRetry,
+    /// The response is final and should be returned to the client immediately.
+    ReturnToClient(Response),
+}
+
+/// A trait for handling responses from the upstream service.
+/// Each implementation is responsible for a specific case (e.g., success, rate limit).
+pub trait ResponseHandler: Send + Sync {
+    /// Examines the response and decides on the next action.
+    ///
+    /// # Arguments
+    /// * `response` - The response from the upstream service.
+    ///
+    /// # Returns
+    /// * `Some(Action)` if this handler can process the response.
+    /// * `None` if this handler cannot process the response, allowing the next handler in the chain to try.
+    fn handle(&self, response: &Response, body_bytes: &axum::body::Bytes) -> Option<Action>;
+}

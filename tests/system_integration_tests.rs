@@ -7,14 +7,26 @@ use gemini_proxy_key_rotation_rust::{
     handler,
     state::AppState,
 };
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use std::{fs::File, sync::Arc};
 use tempfile::tempdir;
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
 };
 
-async fn create_test_system() -> (Arc<AppState>, MockServer, tempfile::TempDir) {
+fn generate_prefix() -> String {
+    thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(6)
+        .map(char::from)
+        .collect()
+}
+
+async fn create_test_system(
+    internal_retries: u32,
+) -> (Arc<AppState>, MockServer, tempfile::TempDir) {
     let server = MockServer::start().await;
     let temp_dir = tempdir().unwrap();
     let config_path = temp_dir.path().join("config.yaml");
@@ -23,21 +35,26 @@ async fn create_test_system() -> (Arc<AppState>, MockServer, tempfile::TempDir) 
     let test_group = KeyGroup {
         name: "test-group".to_string(),
         api_keys: vec!["test-key-1".to_string(), "test-key-2".to_string()],
+        model_aliases: vec![],
         target_url: server.uri(),
         proxy_url: None,
         top_p: None,
     };
 
-    let config = AppConfig {
-        server: ServerConfig {
-            port: 8080,
-            top_p: None,
-            admin_token: Some("test_token".to_string()),
-        },
-        groups: vec![test_group],
-        internal_retries: 3,
-        temporary_block_minutes: 1,
-    };
+   let config = AppConfig {
+       server: ServerConfig {
+           port: 8080,
+           top_p: None,
+           admin_token: Some("test_token".to_string()),
+           test_mode: true,
+       },
+       groups: vec![test_group],
+       redis_url: "redis://127.0.0.1:6379/1".to_string(), // Use a single DB for system tests
+       redis_key_prefix: Some(format!("test:{}", generate_prefix())),
+       internal_retries,
+       temporary_block_minutes: 1,
+       top_p: None,
+   };
 
     let app_state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
 
@@ -46,7 +63,7 @@ async fn create_test_system() -> (Arc<AppState>, MockServer, tempfile::TempDir) 
 
 #[tokio::test]
 async fn test_metrics_collection() {
-    let (app_state, server, _temp_dir) = create_test_system().await;
+    let (app_state, server, _temp_dir) = create_test_system(3).await;
 
     // Mock a successful request
     Mock::given(method("GET"))
@@ -70,16 +87,15 @@ async fn test_metrics_collection() {
     // In a real scenario, you'd check the actual metrics values
     // but that requires more complex setup with the metrics registry
 }
-
 #[tokio::test]
 async fn test_error_handling_and_recovery() {
-    let (app_state, server, _temp_dir) = create_test_system().await;
+    let (app_state, server, _temp_dir) = create_test_system(0).await; // Disable internal retries
 
     // Mock server error followed by success
     Mock::given(method("GET"))
         .and(path("/v1beta/openai/models"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-        .expect(8) // Expect 1 initial + 3 internal retries for each of the 2 keys
+        .expect(1) // Should only be called once, as we fail fast on server errors
         .mount(&server)
         .await;
 
@@ -99,7 +115,7 @@ async fn test_error_handling_and_recovery() {
 
 #[tokio::test]
 async fn test_concurrent_requests() {
-    let (app_state, server, _temp_dir) = create_test_system().await;
+    let (app_state, server, _temp_dir) = create_test_system(3).await;
 
     // Mock responses for concurrent requests
     Mock::given(method("GET"))

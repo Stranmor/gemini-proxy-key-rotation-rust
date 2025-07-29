@@ -5,6 +5,7 @@ pub mod admin;
 pub mod config;
 pub mod error;
 pub mod handler;
+pub mod handlers;
 pub mod key_manager;
 pub mod proxy;
 pub mod state;
@@ -113,6 +114,16 @@ pub async fn run(
          "Configuration loaded and validated successfully."
     );
 
+    // --- Redis Pool Initialization ---
+    let redis_cfg = deadpool_redis::Config::from_url(&app_config.redis_url);
+    let _redis_pool = redis_cfg
+        .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+        .map_err(|e| {
+            error!(error = ?e, redis.url = %app_config.redis_url, "Failed to create Redis pool. Exiting.");
+            AppError::Internal(format!("Failed to create Redis pool: {e}"))
+        })?;
+    info!("Successfully created Redis connection pool.");
+    
     // --- Application State Initialization ---
     let app_state = AppState::new(&app_config, &config_path)
         .await

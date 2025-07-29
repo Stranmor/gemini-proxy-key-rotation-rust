@@ -2,72 +2,103 @@
 
 use crate::admin::SystemInfoCollector;
 use crate::config::AppConfig;
-use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
+use crate::handlers::base::ResponseHandler;
+use crate::handlers::{
+    invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, success::SuccessHandler,
+    terminal_error::TerminalErrorHandler,
+};
 use crate::key_manager::KeyManager;
+use std::fmt;
+use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
+use deadpool_redis::{Pool, Runtime};
 use reqwest::{Client, ClientBuilder, Proxy};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{Instrument, debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn, Instrument};
 use url::Url;
 
-/// Представляет общее состояние приложения, доступное для всех обработчиков Axum.
-#[derive(Debug)]
+/// Represents the state of a single API key, designed to be stored in Redis.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct KeyState {
+    pub key: String,
+    pub group_name: String,
+    pub is_blocked: bool,
+    pub consecutive_failures: u32,
+    pub last_failure: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Represents the shared application state, accessible by all Axum handlers.
 pub struct AppState {
+    pub redis_pool: Pool,
     pub key_manager: Arc<RwLock<KeyManager>>,
     http_clients: Arc<RwLock<HashMap<Option<String>, Arc<Client>>>>,
+    pub response_handlers: Arc<Vec<Box<dyn ResponseHandler>>>,
     pub start_time: Instant,
     pub config: Arc<RwLock<AppConfig>>,
     pub system_info: SystemInfoCollector,
     pub config_path: PathBuf,
 }
 
-/// Создает `HashMap` HTTP-клиентов на основе предоставленной конфигурации.
+impl fmt::Debug for AppState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppState")
+            .field("http_clients", &self.http_clients)
+            .field("start_time", &self.start_time)
+            .field("config", &self.config)
+            .field("system_info", &self.system_info)
+            .field("config_path", &self.config_path)
+            .finish_non_exhaustive() // Indicates that redis_pool is omitted
+    }
+}
+
+/// Builds a `HashMap` of HTTP clients based on the provided configuration.
 ///
-/// Эта функция инкапсулирует логику для:
-/// 1. Создания базового клиента (без прокси).
-/// 2. Поиска уникальных URL-адресов прокси в конфигурации.
-/// 3. Создания отдельного клиента для каждого уникального прокси.
+/// This function encapsulates the logic for:
+/// 1. Creating a base client (no proxy).
+/// 2. Finding unique proxy URLs in the configuration.
+/// 3. Creating a separate client for each unique proxy.
 ///
 /// # Errors
 ///
-/// Возвращает `Err`, если:
-/// - Не удается создать базовый HTTP-клиент (фатальная ошибка).
-/// - URL-адрес прокси имеет синтаксически неверный формат или неподдерживаемую схему.
-/// - Происходит другая непредвиденная ошибка во время сборки клиента.
+/// Returns `Err` if:
+/// - The base HTTP client cannot be created (fatal).
+/// - A proxy URL is syntactically invalid or has an unsupported scheme.
+/// - Another unexpected error occurs during client building.
 #[instrument(level = "info", skip_all, name = "build_http_clients")]
 async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>, Arc<Client>>> {
     info!("Building HTTP clients based on configuration...");
     let mut http_clients = HashMap::new();
 
-    // Определяем размер пула соединений на основе количества ключей, с минимальным порогом
+    // Determine connection pool size based on key count, with a minimum threshold
     let total_key_count: usize = config
         .groups
         .iter()
         .flat_map(|g| &g.api_keys)
         .filter(|k| !k.trim().is_empty())
         .count()
-        .max(10); // Гарантируем не менее 10 возможных соединений даже при малом количестве ключей
+        .max(10); // Ensure at least 10 potential connections even with few keys
     debug!(
         pool.max_idle_per_host = total_key_count,
         "Calculated max idle connections per host"
     );
 
-    // Централизованная функция конфигурации клиента
+    // Centralized client configuration function
     let configure_builder = |builder: ClientBuilder| -> ClientBuilder {
         builder
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(300)) // Общий таймаут запроса
-            .pool_idle_timeout(Duration::from_secs(90)) // Держать неактивные соединения открытыми 90с
-            .pool_max_idle_per_host(total_key_count) // Настроить размер пула на основе ключей
-            .tcp_keepalive(Some(Duration::from_secs(60))) // Включить TCP keepalive
+            .timeout(Duration::from_secs(300)) // Overall request timeout
+            .pool_idle_timeout(Duration::from_secs(90)) // Keep idle connections open for 90s
+            .pool_max_idle_per_host(total_key_count) // Configure pool size based on keys
+            .tcp_keepalive(Some(Duration::from_secs(60))) // Enable TCP keepalive
     };
 
-    // 1. Создаем базовый клиент (без прокси) - это ДОЛЖНО получиться
+    // 1. Create the base client (no proxy) - this MUST succeed
     let base_client = configure_builder(Client::builder()).build().map_err(|e| {
-        // Структурированная ошибка для сбоя базового клиента - это фатально
+        // Structured error for base client failure - this is fatal
         error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
         AppError::HttpClientBuildError {
             source: e,
@@ -77,13 +108,13 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
     http_clients.insert(None, Arc::new(base_client));
     info!(client.type = "base", "Base HTTP client (no proxy) created successfully.");
 
-    // 2. Собираем уникальные URL-адреса прокси из конфигурации
+    // 2. Collect unique proxy URLs from the configuration
     let unique_proxy_urls: HashSet<String> = config
         .groups
         .iter()
-        .filter_map(|g| g.proxy_url.as_ref()) // Получаем Option<&String>
-        .filter(|url_str| !url_str.trim().is_empty()) // Отфильтровываем пустые строки
-        .cloned() // Клонируем String
+        .filter_map(|g| g.proxy_url.as_ref()) // Get Option<&String>
+        .filter(|url_str| !url_str.trim().is_empty()) // Filter out empty strings
+        .cloned() // Clone the String
         .collect();
     debug!(
         proxy.count = unique_proxy_urls.len(),
@@ -91,11 +122,11 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
         "Found unique proxy URLs for client creation"
     );
 
-    // 3. Создаем клиенты для каждого уникального URL-адреса прокси
+    // 3. Create clients for each unique proxy URL
     for proxy_url_str in unique_proxy_urls {
         let proxy_span = tracing::info_span!("create_proxy_client", proxy.url = %proxy_url_str);
         let client_result: Result<Client> = async {
-            // Сначала парсим URL, сопоставляем ошибку с конкретным ProxyConfigErrorKind
+            // First, parse the URL, mapping the error to a specific ProxyConfigErrorKind
             let parsed_proxy_url = Url::parse(&proxy_url_str).map_err(|e| {
                 error!(error = %e, "Failed to parse proxy URL string.");
                 AppError::ProxyConfigError(ProxyConfigErrorData {
@@ -107,7 +138,7 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
             let scheme = parsed_proxy_url.scheme().to_lowercase();
             debug!(proxy.scheme = %scheme, "Parsed proxy scheme");
 
-            // Создаем объект прокси, сопоставляем ошибки с конкретным ProxyConfigErrorKind
+            // Create the proxy object, mapping errors to a specific ProxyConfigErrorKind
             let proxy = match scheme.as_str() {
                 "http" => Proxy::http(&proxy_url_str),
                 "https" => Proxy::https(&proxy_url_str),
@@ -129,7 +160,7 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
             })?;
             debug!("Proxy object created successfully");
 
-            // Собираем клиент с прокси
+            // Build the client with the proxy
             configure_builder(Client::builder())
                 .proxy(proxy)
                 .build()
@@ -144,7 +175,7 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
         .instrument(proxy_span)
         .await;
 
-        // Обрабатываем результат создания клиента
+        // Handle the result of client creation
         match client_result {
             Ok(proxy_client) => {
                 info!(proxy.url = %proxy_url_str, "HTTP client created successfully for proxy.");
@@ -154,18 +185,18 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
                 match e {
                     AppError::ProxyConfigError(_) => {
                         error!(proxy.url = %proxy_url_str, error = ?e, "Critical proxy configuration error. Aborting client creation process.");
-                        return Err(e); // Быстрый выход при ошибках конфигурации
+                        return Err(e); // Fail fast on config errors
                     }
                     AppError::HttpClientBuildError {
                         ref source,
                         proxy_url: Some(ref url),
                     } => {
                         warn!(proxy.url = %url, error = ?source, "Skipping client creation for this proxy due to build error. Groups using this proxy might fail.");
-                        // Логируем и продолжаем при ошибках сборки
+                        // Log and continue on build errors
                     }
                     _ => {
                         error!(proxy.url = %proxy_url_str, error = ?e, "Unexpected error during proxy client creation. Aborting.");
-                        return Err(e); // Выход при других непредвиденных ошибках
+                        return Err(e); // Fail on other unexpected errors
                     }
                 }
             }
@@ -180,24 +211,48 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
 }
 
 impl AppState {
-    /// Создает новый `AppState`. Инициализирует KeyManager и предварительно создает HTTP-клиенты.
+    /// Creates a new `AppState`. Initializes the Redis pool and pre-builds HTTP clients.
     ///
     /// # Errors
     ///
-    /// Возвращает `Err`, если не удается создать `KeyManager` или `http_clients`.
+    /// Returns `Err` if the Redis pool or `http_clients` cannot be created.
     #[instrument(level = "info", skip(config, config_path), fields(config.path = %config_path.display()))]
     pub async fn new(config: &AppConfig, config_path: &Path) -> Result<Self> {
         info!("Creating shared AppState...");
 
-        // Сначала инициализируем KeyManager
-        let key_manager = KeyManager::new(config, config_path).await;
+        let redis_pool_config = deadpool_redis::Config::from_url(&config.redis_url);
+        let redis_pool = redis_pool_config
+            .create_pool(Some(Runtime::Tokio1))?;
+        info!("Redis connection pool created successfully.");
 
-        // Создаем все HTTP-клиенты с помощью вспомогательной функции
+        // For tests, ensure Redis state is clean before initializing KeyManager
+        // In production, this should not be done.
+        #[cfg(test)]
+        {
+            use deadpool_redis::redis::cmd;
+            let mut conn = redis_pool.get().await?;
+            // For tests, completely clear the database to ensure test isolation.
+            let _: () = cmd("FLUSHDB").query_async(&mut conn).await?;
+            info!("FLUSHDB command executed to clear Redis for test environment.");
+        }
+
+        let key_manager = KeyManager::new(config, redis_pool.clone()).await?;
+
+        // Build all HTTP clients using the helper function
         let http_clients = build_http_clients(config).await?;
 
+        let response_handlers: Arc<Vec<Box<dyn ResponseHandler>>> = Arc::new(vec![
+            Box::new(SuccessHandler),
+            Box::new(RateLimitHandler),
+            Box::new(InvalidApiKeyHandler),
+            Box::new(TerminalErrorHandler),
+        ]);
+
         Ok(Self {
+            redis_pool,
             key_manager: Arc::new(RwLock::new(key_manager)),
             http_clients: Arc::new(RwLock::new(http_clients)),
+            response_handlers,
             start_time: Instant::now(),
             config: Arc::new(RwLock::new(config.clone())),
             system_info: SystemInfoCollector::new(),
@@ -205,44 +260,49 @@ impl AppState {
         })
     }
 
-    /// Перезагружает `KeyManager` и `http_clients` из текущей конфигурации.
-    /// Это позволяет выполнять горячую перезагрузку API-ключей и конфигураций прокси без перезапуска сервера.
+    /// Reloads `http_clients` from the current configuration.
+    /// This allows for hot-reloading of proxy configurations without a server restart.
     ///
     /// # Errors
     ///
-    /// Возвращает `Err`, если какая-либо часть реконструкции состояния завершается неудачно.
+    /// Returns `Err` if any part of the state reconstruction fails.
     #[instrument(level = "info", skip(self))]
     pub async fn reload_state_from_config(&self) -> Result<()> {
         info!(
-            "Attempting to reload full application state (KeyManager, HttpClients) from configuration..."
+            "Attempting to reload application state (HttpClients) from configuration..."
         );
         let config_guard = self.config.read().await;
 
-        // --- Создаем новый KeyManager ---
-        let new_key_manager = KeyManager::new(&config_guard, &self.config_path).await;
-
-        // --- Создаем новые HttpClients с помощью вспомогательной функции ---
-        // Вспомогательная функция содержит надежную обработку ошибок, которую мы хотим использовать.
+        // --- Build new HttpClients using the helper function ---
+        // The helper function contains robust error handling we want to leverage.
         let new_http_clients = build_http_clients(&config_guard).await?;
 
-        // Освобождаем блокировку чтения перед получением блокировок записи
+        // --- Reload KeyManager ---
+        // Create a new KeyManager with the updated config.
+        let new_key_manager = KeyManager::new(&config_guard, self.redis_pool.clone()).await?;
+
+        // Release the read lock before acquiring the write lock
         drop(config_guard);
 
-        // --- Атомарно обновляем состояние ---
+        // --- Atomically update the state ---
+        // ALWAYS LOCK IN THE SAME ORDER TO PREVENT DEADLOCKS
+        // Order: key_manager -> http_clients
         *self.key_manager.write().await = new_key_manager;
         *self.http_clients.write().await = new_http_clients;
 
-        info!("Application state (KeyManager, HttpClients) reloaded successfully.");
+        info!(
+            "Application state (HttpClients and KeyManager) reloaded successfully."
+        );
         Ok(())
     }
 
-    /// Возвращает ссылку на соответствующий HTTP-клиент.
+    /// Returns a reference to the appropriate HTTP client.
     ///
     /// # Errors
     ///
-    /// Возвращает `AppError::Internal`, если запрошенный клиент (определяемый `proxy_url` Option)
-    /// не был найден в предварительно созданном отображении клиентов. Это указывает на логическую ошибку,
-    /// так как все необходимые клиенты должны были быть инициализированы при запуске.
+    /// Returns `AppError::Internal` if the requested client (identified by the `proxy_url` Option)
+    /// was not found in the pre-built client map. This indicates a logic error,
+    /// as all necessary clients should have been initialized at startup.
     #[instrument(level = "debug", skip(self), fields(proxy.url = ?proxy_url))]
     pub async fn get_client(&self, proxy_url: Option<&str>) -> Result<Arc<Client>> {
         let clients_guard = self.http_clients.read().await;
@@ -262,7 +322,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{KeyGroup, ServerConfig};
+    use crate::config::{AppConfig, KeyGroup, ServerConfig};
     use crate::error::ProxyConfigErrorKind; // Import the kind enum for tests
     use std::fs::File;
     use tempfile::tempdir;
@@ -270,16 +330,19 @@ mod tests {
 
     const DEFAULT_TARGET_URL_STR: &str = "https://generativelanguage.googleapis.com";
 
-    fn create_test_state_config(groups: Vec<KeyGroup>) -> AppConfig {
+    fn create_test_config(groups: Vec<KeyGroup>) -> AppConfig {
         AppConfig {
             server: ServerConfig {
                 port: 8080,
                 top_p: None,
                 admin_token: None,
-            },
+                test_mode: true,
+            }, // Closing brace for ServerConfig
             groups,
+            redis_url: "redis://127.0.0.1:6379".to_string(), // Use a different DB for tests
             internal_retries: 2,
             temporary_block_minutes: 5,
+            ..Default::default() // Ensure all other fields are initialized
         }
     }
 
@@ -297,14 +360,15 @@ mod tests {
         let groups = vec![KeyGroup {
             name: "g1".to_string(),
             api_keys: vec!["key1".to_string()],
+            model_aliases: vec![],
             proxy_url: None,
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
             top_p: None,
         }];
-        let config = create_test_state_config(groups);
+        let config = create_test_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
 
-        assert!(state_result.is_ok());
+        assert!(state_result.is_ok(), "AppState::new failed: {:?}", state_result.err());
         let state = state_result.unwrap();
         let clients_guard = state.http_clients.read().await;
         assert_eq!(clients_guard.len(), 1);
@@ -332,6 +396,7 @@ mod tests {
             KeyGroup {
                 name: "g_http".to_string(),
                 api_keys: vec!["key_http".to_string()],
+                model_aliases: vec![],
                 proxy_url: Some(http_proxy_url.to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
@@ -339,6 +404,7 @@ mod tests {
             KeyGroup {
                 name: "g_socks".to_string(),
                 api_keys: vec!["key_socks".to_string()],
+                model_aliases: vec![],
                 proxy_url: Some(socks_proxy_url.to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
@@ -347,6 +413,7 @@ mod tests {
                 // Same HTTP proxy, should reuse client map entry
                 name: "g_http_dup".to_string(),
                 api_keys: vec!["key_http2".to_string()],
+                model_aliases: vec![],
                 proxy_url: Some(http_proxy_url.to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
@@ -354,12 +421,13 @@ mod tests {
             KeyGroup {
                 name: "g_no_proxy".to_string(),
                 api_keys: vec!["key_none".to_string()],
+                model_aliases: vec![],
                 proxy_url: None,
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
             },
         ];
-        let config = create_test_state_config(groups);
+        let config = create_test_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
 
         // AppState::new should succeed even if proxy servers aren't actually running
@@ -410,11 +478,12 @@ mod tests {
         let groups = vec![KeyGroup {
             name: "g_invalid_url".to_string(),
             api_keys: vec!["key_invalid".to_string()],
+            model_aliases: vec![],
             proxy_url: Some("::not a proxy url::".to_string()), // Invalid syntax
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
             top_p: None,
         }];
-        let config = create_test_state_config(groups);
+        let config = create_test_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
 
         assert!(
@@ -436,11 +505,12 @@ mod tests {
         let groups = vec![KeyGroup {
             name: "g_unsupported".to_string(),
             api_keys: vec!["key_unsupported".to_string()],
+            model_aliases: vec![],
             proxy_url: Some("ftp://unsupported.proxy".to_string()), // Unsupported scheme
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
             top_p: None,
         }];
-        let config = create_test_state_config(groups);
+        let config = create_test_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
 
         assert!(
@@ -469,6 +539,7 @@ mod tests {
                 // Valid HTTP
                 name: "g_http_ok".to_string(),
                 api_keys: vec!["k1".to_string()],
+                model_aliases: vec![],
                 proxy_url: Some("http://127.0.0.1:34569".to_string()), // Likely free port
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
@@ -477,13 +548,14 @@ mod tests {
             KeyGroup {
                 name: "g_socks_fail_build".to_string(),
                 api_keys: vec!["k2".to_string()],
+                model_aliases: vec![],
                 // Provide a URL that might fail build if socks feature isn't compiled correctly or has issues
                 proxy_url: Some("socks5://invalid-host-that-causes-build-error:1080".to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
             },
         ];
-        let config = create_test_state_config(groups);
+        let config = create_test_config(groups);
         let state_result = AppState::new(&config, &dummy_path).await;
 
         // Check the result: AppState::new should either succeed (skipping the build error)

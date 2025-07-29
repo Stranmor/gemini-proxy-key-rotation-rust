@@ -16,6 +16,8 @@ pub struct KeyGroup {
     #[serde(default)]
     pub api_keys: Vec<String>,
     #[serde(default)]
+    pub model_aliases: Vec<String>,
+    #[serde(default)]
     pub proxy_url: Option<String>,
     #[serde(default = "default_target_url")]
     pub target_url: String,
@@ -28,6 +30,7 @@ impl Default for KeyGroup {
         Self {
             name: String::new(),
             api_keys: Vec::new(),
+            model_aliases: Vec::new(),
             proxy_url: None,
             target_url: default_target_url(),
             top_p: None,
@@ -42,11 +45,26 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub groups: Vec<KeyGroup>,
+    pub redis_url: String,
+    #[serde(default)]
+    pub redis_key_prefix: Option<String>,
 
     #[serde(default = "default_internal_retries")]
     pub internal_retries: u32,
     #[serde(default = "default_temporary_block_minutes")]
     pub temporary_block_minutes: i64,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+}
+
+impl AppConfig {
+    pub fn get_group_for_model(&self, model_name: &str) -> Option<&KeyGroup> {
+        self.groups.iter().find(|g| {
+            g.model_aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(model_name))
+        })
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
@@ -58,6 +76,8 @@ pub struct ServerConfig {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub admin_token: Option<String>,
+    #[serde(default)]
+    pub test_mode: bool,
 }
 
 // --- Default Implementations ---
@@ -68,6 +88,7 @@ impl Default for ServerConfig {
             port: default_server_port(),
             top_p: None,
             admin_token: None,
+            test_mode: false,
         }
     }
 }
@@ -300,6 +321,8 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> Result<()> {
         AppError::Config(format!("Failed to serialize config: {e}"))
     })?;
 
+    
+
     let parent_dir = path.parent().ok_or_else(|| {
         error!("Config file path has no parent directory");
         AppError::Io(io::Error::new(
@@ -365,6 +388,7 @@ mod tests {
             port: 0,
             top_p: None,
             admin_token: None,
+            test_mode: false,
         }));
     }
     #[test]
@@ -408,6 +432,7 @@ mod tests {
             groups: vec![KeyGroup {
                 name: "G".into(),
                 api_keys: vec!["k".into()],
+                model_aliases: vec![],
                 proxy_url: None,
                 target_url: default_target_url(),
                 top_p: None,
@@ -427,6 +452,7 @@ mod tests {
             groups: vec![KeyGroup {
                 name: "".into(),
                 api_keys: vec!["k".into()],
+                model_aliases: vec![],
                 proxy_url: None,
                 target_url: default_target_url(),
                 top_p: None,
@@ -447,6 +473,7 @@ mod tests {
                 KeyGroup {
                     name: "N".into(),
                     api_keys: vec!["k".into()],
+                    model_aliases: vec![],
                     proxy_url: None,
                     target_url: default_target_url(),
                     top_p: None,
@@ -454,6 +481,7 @@ mod tests {
                 KeyGroup {
                     name: "n".into(),
                     api_keys: vec!["k".into()],
+                    model_aliases: vec![],
                     proxy_url: None,
                     target_url: default_target_url(),
                     top_p: None,
@@ -469,6 +497,7 @@ mod tests {
             groups: vec![KeyGroup {
                 name: "G".into(),
                 api_keys: vec!["k1".to_string(), "k3".to_string()],
+                model_aliases: vec![],
                 proxy_url: None,
                 target_url: default_target_url(),
                 top_p: None,
@@ -488,6 +517,7 @@ mod tests {
             groups: vec![KeyGroup {
                 name: "G".into(),
                 api_keys: vec![],
+                model_aliases: vec![],
                 proxy_url: None,
                 target_url: default_target_url(),
                 top_p: None,
@@ -513,7 +543,7 @@ mod tests {
     #[test]
     fn test_load_no_groups_from_file() {
         let d = tempdir().unwrap();
-        let p = create_temp_config_file(&d, "server:\n  port: 1\n");
+        let p = create_temp_config_file(&d, "redis_url: redis://localhost\nserver:\n  port: 1\n");
         let r = load_config(&p);
         assert!(
             r.is_err()
@@ -524,6 +554,7 @@ mod tests {
     #[test]
     fn test_load_config_from_file_ok() {
         let yaml_content = r#"
+redis_url: redis://localhost
 server:
   port: 8081
 groups:

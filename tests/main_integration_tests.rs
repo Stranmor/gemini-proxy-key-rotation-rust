@@ -10,11 +10,14 @@ async fn test_run_successful_startup() {
 
     let mut temp_config = File::create(&config_path).expect("Failed to create temp config file");
     let config_content = r#"
+redis_url: "redis://127.0.0.1:6379/1"
 server:
   port: 8080
   admin_token: "test_token"
+  test_mode: true
 groups:
   - name: "default"
+    target_url: "http://127.0.0.1:1" # Dummy URL, doesn't matter for this test
     api_keys: ["key1"]
 "#;
     temp_config

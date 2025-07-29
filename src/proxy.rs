@@ -3,7 +3,6 @@
 use crate::{
     error::{AppError, Result},
     key_manager::FlattenedKeyInfo,
-    state::AppState, // Import AppState
 };
 use axum::{
     body::{Body, Bytes},
@@ -46,7 +45,7 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 /// - The response body stream from the target has an error.
 /// - The final response to the client cannot be constructed.
 pub async fn forward_request(
-    state: &AppState,
+    client: &reqwest::Client,
     key_info: &FlattenedKeyInfo,
     method: Method,
     target_url: Url,
@@ -60,69 +59,17 @@ pub async fn forward_request(
 
     let final_target_url = target_url;
     let outgoing_method = method;
-    let mut outgoing_headers = build_forward_headers(&headers, api_key)?;
+    let outgoing_headers = build_forward_headers(&headers, api_key)?;
 
-    // --- Body Modification ---
-    let body_to_send = {
-        let config_guard = state.config.read().await;
-        if let Some(top_p_value) = config_guard.server.top_p {
-            // Drop the read lock as soon as we have the value
-            drop(config_guard);
-            // The logic is wrapped in a closure to easily return the original bytes on any failure.
-            let modified_body_bytes = (|| {
-                if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
-                {
-                    if let Some(obj) = json_body.as_object_mut() {
-                        obj.insert("top_p".to_string(), serde_json::json!(top_p_value));
-                        if let Ok(modified_bytes) = serde_json::to_vec(&json_body) {
-                            info!(
-                                top_p = top_p_value,
-                                "Successfully injected top_p into request body"
-                            );
-                            return Bytes::from(modified_bytes);
-                        } else {
-                            warn!(
-                                "Failed to re-serialize JSON body after injecting top_p, forwarding original body."
-                            );
-                        }
-                    } else {
-                        debug!(
-                            "Request body is valid JSON but not an object, cannot inject top_p."
-                        );
-                    }
-                } else {
-                    debug!("Request body is not valid JSON, cannot inject top_p.");
-                }
-                body_bytes.clone() // Return original on any failure
-            })();
-
-            // If the body was modified, update the Content-Length header.
-            if modified_body_bytes.len() != body_bytes.len() {
-                let new_length = modified_body_bytes.len();
-                debug!(
-                    old_len = body_bytes.len(),
-                    new_len = new_length,
-                    "Updating Content-Length due to body modification"
-                );
-                outgoing_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(new_length));
-            }
-            modified_body_bytes
-        } else {
-            body_bytes
-        }
-    };
     // Log the body at debug level for diagnostics, converting to lossy string
     // in case of non-UTF8 content, BEFORE it's moved.
     debug!(
-        http.request.body = %String::from_utf8_lossy(&body_to_send),
+        http.request.body = %String::from_utf8_lossy(&body_bytes),
         "Full request body"
     );
 
-    let outgoing_reqwest_body = reqwest::Body::from(body_to_send);
+    let outgoing_reqwest_body = reqwest::Body::from(body_bytes.clone());
     // --- End Body Modification ---
-    // --- Get Client ---
-    let http_client = state.get_client(proxy_url_option).await?; // Error handled within
-    // ---
 
     // Log before sending the request
     info!(
@@ -138,7 +85,7 @@ pub async fn forward_request(
     // --- Send request ---
     let start_time = Instant::now();
 
-    let target_response_result = http_client
+    let target_response_result = client
         .request(outgoing_method.clone(), final_target_url.clone()) // Clone Url for request
         .headers(outgoing_headers)
         .body(outgoing_reqwest_body)

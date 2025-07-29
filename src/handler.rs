@@ -1,31 +1,20 @@
 // src/handler.rs
 use crate::{
     error::{AppError, Result},
-    key_manager::{FlattenedKeyInfo, KeyManager},
+    handlers::base::Action,
+    key_manager::FlattenedKeyInfo,
     proxy,
     state::AppState,
 };
 use axum::{
-    body::{Body, Bytes, to_bytes},
+    body::{to_bytes, Body, Bytes},
     extract::{Request, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::Response,
 };
-use chrono::Duration;
 use std::sync::Arc;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument, trace, warn};
 use url::Url;
-
-/// Represents the outcome of a single key attempt.
-enum RetryOutcome {
-    /// The request was successful.
-    Success(Response),
-    /// The request failed in a way that warrants trying the next available key.
-    /// The associated data is the last error response received.
-    RetryNextKey((StatusCode, HeaderMap, Bytes)),
-    /// The request failed with a terminal error that should be returned to the client immediately.
-    Terminal(Response),
-}
 
 #[instrument(name = "health_check", skip_all)]
 pub async fn health_check() -> StatusCode {
@@ -82,16 +71,6 @@ fn build_target_url(original_uri: &Uri, key_info: &FlattenedKeyInfo) -> Result<U
     Ok(url)
 }
 
-async fn mutate_key<F>(state: &Arc<AppState>, key: &str, f: F) -> Result<()>
-where
-    F: FnOnce(&mut KeyManager, &str),
-{
-    let mut km = state.key_manager.write().await;
-    f(&mut km, key);
-    km.save_states().await?;
-    Ok(())
-}
-
 struct RequestContext<'a> {
     method: &'a Method,
     uri: &'a Uri,
@@ -99,152 +78,32 @@ struct RequestContext<'a> {
     body: &'a Bytes,
 }
 
-async fn retry_with_key(
-    state: &Arc<AppState>,
-    key_info: &FlattenedKeyInfo,
-    req_context: &RequestContext<'_>,
-    internal_retries: u32,
-    model: Option<&str>,
-) -> Result<RetryOutcome> {
-    for attempt in 1..=internal_retries + 1 {
-        let url = build_target_url(req_context.uri, key_info)?;
+/* ---------- main handler ---------- */
 
-        let response_result = proxy::forward_request(
-            state,
-            key_info,
-            req_context.method.clone(),
-            url,
-            req_context.headers.clone(),
-            req_context.body.clone(),
-        )
-        .await;
+#[instrument(skip_all, fields(uri = %req.uri(), method = %req.method()))]
+pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> Result<Response> {
+    let (mut parts, body) = req.into_parts();
+    let mut body_bytes = to_bytes(body, usize::MAX)
+        .await
+        .map_err(|e| AppError::RequestBodyError(e.to_string()))?;
 
-        let response = match response_result {
-            Ok(r) => r,
-            Err(e) => {
-                error!(error = ?e, key = %key_info.key, "Forwarding request failed");
-                let block_duration =
-                    Duration::minutes(state.config.read().await.temporary_block_minutes);
-                mutate_key(state, &key_info.key, |km, k| {
-                    km.mark_key_as_temporarily_unavailable(k, block_duration);
-                })
-                .await?;
-                // This is a network-level error with our proxy or the target.
-                // It's a retryable offense (try next key).
-                // We don't have a response to store, so we fabricate a 502 error.
-                let body = Bytes::from(format!("Proxy error: {e}"));
-                return Ok(RetryOutcome::RetryNextKey((
-                    StatusCode::BAD_GATEWAY,
-                    HeaderMap::new(),
-                    body,
-                )));
-            }
-        };
-
-        let status = response.status();
-        let (parts, body) = response.into_parts();
-        let bytes = to_bytes(body, usize::MAX)
-            .await
-            .map_err(|e| AppError::BodyReadError(e.to_string()))?;
-
-        match status {
-            s if s.is_success() => {
-                info!(key = %key_info.key, "Request successful");
-                return Ok(RetryOutcome::Success(Response::from_parts(
-                    parts,
-                    Body::from(bytes),
-                )));
-            }
-            StatusCode::NOT_FOUND | StatusCode::GATEWAY_TIMEOUT => {
-                warn!(%status, key = %key_info.key, "Received terminal error, not retrying with another key.");
-                return Ok(RetryOutcome::Terminal(Response::from_parts(
-                    parts,
-                    Body::from(bytes),
-                )));
-            }
-            StatusCode::TOO_MANY_REQUESTS => {
-                if let Some(model_name) = model {
-                    warn!(
-                        key = %key_info.key,
-                        model = %model_name,
-                        "Received 429 Too Many Requests. Blocking key for specific model and trying next."
+    // Conditionally inject top_p
+    if let Some(top_p) = state.config.read().await.top_p {
+        if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+            if let Some(obj) = json_body.as_object_mut() {
+                obj.insert("top_p".to_string(), serde_json::json!(top_p));
+                if let Ok(new_body_bytes) = serde_json::to_vec(&json_body) {
+                    let new_len = new_body_bytes.len();
+                    body_bytes = Bytes::from(new_body_bytes);
+                    parts.headers.insert(
+                        "content-length",
+                        http::HeaderValue::from_str(&new_len.to_string())
+                            .map_err(|_| AppError::InvalidHttpHeader)?,
                     );
-                    mutate_key(state, &key_info.key, |km, k| {
-                        km.mark_key_as_limited_for_model(k, model_name);
-                    })
-                    .await?;
-                } else {
-                    warn!(key = %key_info.key, "Received 429 Too Many Requests. Marking key as generally limited and trying next.");
-                    mutate_key(state, &key_info.key, |km, k| {
-                        km.mark_key_as_limited(k);
-                    })
-                    .await?;
                 }
-                return Ok(RetryOutcome::RetryNextKey((status, parts.headers, bytes)));
-            }
-            s if s == StatusCode::BAD_REQUEST => {
-                if let Ok(body_str) = std::str::from_utf8(&bytes) {
-                    if body_str.contains("API_KEY_INVALID") {
-                        warn!(key = %key_info.key, "Marking key as invalid due to API_KEY_INVALID reason in body.");
-                        mutate_key(state, &key_info.key, |km, k| {
-                            km.mark_key_as_invalid(k);
-                        })
-                        .await?;
-                        return Ok(RetryOutcome::RetryNextKey((s, parts.headers, bytes)));
-                    }
-                }
-                warn!(%s, key = %key_info.key, "Received 400 Bad Request without API_KEY_INVALID. Returning error to client immediately.");
-                return Ok(RetryOutcome::Terminal(Response::from_parts(
-                    parts,
-                    Body::from(bytes),
-                )));
-            }
-            s if s.is_client_error() => {
-                warn!(%s, key = %key_info.key, "Received a terminal client error. Returning error to client immediately.");
-                return Ok(RetryOutcome::Terminal(Response::from_parts(
-                    parts,
-                    Body::from(bytes),
-                )));
-            }
-            s if s.is_server_error() => {
-                warn!(%s, attempt, key = %key_info.key, "Server error, will retry");
-                if attempt > internal_retries {
-                    error!(key=%key_info.key, "Internal retries exhausted. Marking key as temporarily unavailable.");
-                    let block_duration =
-                        Duration::minutes(state.config.read().await.temporary_block_minutes);
-                    mutate_key(state, &key_info.key, |km, k| {
-                        km.mark_key_as_temporarily_unavailable(k, block_duration);
-                    })
-                    .await?;
-                    return Ok(RetryOutcome::RetryNextKey((s, parts.headers, bytes)));
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                continue;
-            }
-            _ => {
-                warn!(%status, "Received unexpected status code, returning as is.");
-                return Ok(RetryOutcome::Terminal(Response::from_parts(
-                    parts,
-                    Body::from(bytes),
-                )));
             }
         }
     }
-    // This is only reached if the internal retry loop for server errors finishes
-    // without returning. We need to return the last error encountered.
-    // This part of the logic is complex, for now we assume the loop always returns.
-    // A robust implementation would handle this case explicitly.
-    Err(AppError::InternalRetryExhausted)
-}
-
-/* ---------- main handler ---------- */
-
-#[instrument(skip(state, req), fields(uri = %req.uri(), method = %req.method()))]
-pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> Result<Response> {
-    let (parts, body) = req.into_parts();
-    let body_bytes = to_bytes(body, usize::MAX)
-        .await
-        .map_err(|e| AppError::RequestBodyError(e.to_string()))?;
 
     let req_context = RequestContext {
         method: &parts.method,
@@ -253,7 +112,6 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         body: &body_bytes,
     };
 
-    // Extract model from request for model-specific key management
     let model = extract_model_from_request(req_context.uri.path(), &body_bytes);
 
     info!(
@@ -262,63 +120,141 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         "Processing request with model-specific key management"
     );
 
-    let internal_retries = {
-        let config = state.config.read().await;
-        config.internal_retries
-    };
+    let key_manager = state.key_manager.clone();
+    let response_handlers = state.response_handlers.clone();
 
-    let mut last_error: Option<(StatusCode, HeaderMap, Bytes)> = None;
-
-    // Clean up expired model blocks before processing
-    {
-        let mut km = state.key_manager.write().await;
-        km.cleanup_expired_model_blocks();
-    }
+    let mut last_response: Option<Response> = None;
 
     loop {
+        // DE-NEST LOCKS TO PREVENT DEADLOCKS
+        // 1. Get group name from config first
+        let group_name = {
+            trace!("Attempting to acquire read lock on config...");
+            let config_guard = state.config.read().await;
+            trace!("Acquired read lock on config.");
+            let group = model
+                .as_deref()
+                .and_then(|m| config_guard.get_group_for_model(m))
+                .map(|g| g.name.clone());
+            trace!("Releasing read lock on config.");
+            group
+        };
+        // Drop config lock before acquiring key_manager lock
+
+        // 2. Get key from key_manager and handle immediately
         let key_info = {
-            let km = state.key_manager.read().await;
-            km.get_next_available_key_info_for_model(model.as_deref())
-        };
-
-        let key_info = match key_info {
-            Some(ki) => ki,
-            None => break, // No more keys, break the loop
-        };
-
-        let result = retry_with_key(
-            &state,
-            &key_info,
-            &req_context,
-            internal_retries,
-            model.as_deref(),
-        )
-        .await?;
-
-        match result {
-            RetryOutcome::Success(resp) => return Ok(resp),
-            RetryOutcome::Terminal(resp) => return Ok(resp),
-            RetryOutcome::RetryNextKey(err) => {
-                last_error = Some(err);
-                continue;
+            trace!("Attempting to acquire read lock on key_manager...");
+            let key_manager_guard = key_manager.read().await;
+            trace!("Acquired read lock on key_manager.");
+            let key_info_result = key_manager_guard
+                .get_next_available_key_info(group_name.as_deref())
+                .await?;
+            trace!("Releasing read lock on key_manager.");
+            match key_info_result {
+                Some(info) => info,
+                None => break, // No keys available for this group, exit loop.
             }
+        };
+        info!(key = %key_info.key, "Attempting to use key");
+
+        let url = build_target_url(req_context.uri, &key_info)?;
+
+        let client = state.get_client(key_info.proxy_url.as_deref()).await?;
+
+        let response = match proxy::forward_request(
+            &client,
+            &key_info,
+            req_context.method.clone(),
+            url,
+            req_context.headers.clone(),
+            req_context.body.clone(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!(error = ?e, key = %key_info.key, "Forwarding request failed. Breaking loop.");
+                let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
+                *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                last_response = Some(resp);
+                // Immediately break the loop on a proxy error. The response will be handled outside.
+                break;
+            }
+        };
+
+        let (parts, body) = response.into_parts();
+        let response_bytes = to_bytes(body, usize::MAX)
+            .await
+            .map_err(|e| AppError::BodyReadError(e.to_string()))?;
+
+        let response_for_analysis =
+            Response::from_parts(parts.clone(), Body::from(response_bytes.clone()));
+
+        let mut action_to_take = None;
+        for handler in response_handlers.iter() {
+            if let Some(action) = handler.handle(&response_for_analysis, &response_bytes) {
+                action_to_take = Some(action);
+                break;
+            }
+        }
+
+        // If no handler took action, it means the response should be returned as is.
+        let mut should_continue = false;
+        if let Some(action) = action_to_take {
+            match action {
+                Action::ReturnToClient(resp) => return Ok(resp),
+                Action::RetryNextKey => {
+                    trace!("Attempting to acquire write lock on key_manager (RetryNextKey)...");
+                    let key_manager_guard = key_manager.write().await;
+                    trace!("Acquired write lock on key_manager (RetryNextKey).");
+                    key_manager_guard
+                        .handle_api_failure(&key_info.key, false)
+                        .await?;
+                    should_continue = true;
+                    trace!("Releasing write lock on key_manager (RetryNextKey).");
+                }
+                Action::BlockKeyAndRetry => {
+                    trace!("Attempting to acquire write lock on key_manager (BlockKeyAndRetry)...");
+                    let key_manager_guard = key_manager.write().await;
+                    trace!("Acquired write lock on key_manager (BlockKeyAndRetry).");
+                    key_manager_guard
+                        .handle_api_failure(&key_info.key, true)
+                        .await?;
+                    should_continue = true;
+                    trace!("Releasing write lock on key_manager (BlockKeyAndRetry).");
+                }
+            }
+        }
+
+        // This is the crucial logic block.
+        // We decide whether to continue the loop or break and return the last response.
+        if should_continue {
+            // We need to retry. Store the current failed response in `last_response`
+            // in case all subsequent keys also fail. This ensures we return the *last*
+            // error to the client, which is what the test `test_handler_returns_last_429_on_exhaustion` checks.
+            last_response = Some(Response::from_parts(parts, Body::from(response_bytes)));
+            continue;
+        } else {
+            // No handler requested a retry (e.g., a generic 400 error).
+            // This means this is the final response. Store it and break the loop.
+            // This fixes `test_returns_immediately_on_400_with_other_body`.
+            last_response = Some(Response::from_parts(parts, Body::from(response_bytes)));
+            break;
         }
     }
 
-    // After the loop, if we've broken out due to no keys
     if let Some(model_name) = &model {
         warn!(model = %model_name, "No available API keys remaining for model.");
     } else {
         warn!("No available API keys remaining.");
     }
 
-    if let Some((status, headers, body)) = last_error {
-        let mut resp = Response::new(Body::from(body));
-        *resp.status_mut() = status;
-        *resp.headers_mut() = headers;
+    // The loop is broken either when no more keys are available, or when a response
+    // should be returned to the client without further retries.
+    if let Some(resp) = last_response {
         Ok(resp)
     } else {
-        // This case should ideally not be hit if there was at least one key attempt that failed
+        warn!("Exited proxy loop without any last response. This indicates no keys were available from the start.");
         Err(AppError::NoAvailableKeys)
     }
 }
