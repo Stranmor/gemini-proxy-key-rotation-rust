@@ -7,9 +7,10 @@ use axum::{
     response::Response,
 };
 use axum::body::to_bytes;
+use gemini_proxy_key_rotation_rust::key_manager::KeyManagerTrait;
 use gemini_proxy_key_rotation_rust::{
     config::{AppConfig, KeyGroup, ServerConfig},
-    handler, // Import the handler module
+    handlers, // Import the handler module
     // key_manager::FlattenedKeyInfo, // Removed unused import
     // proxy,
     state::AppState,
@@ -51,8 +52,9 @@ fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, _db_num: usize) -
        internal_retries: 3,
        temporary_block_minutes: 1,
        top_p: None,
+       max_failures_threshold: Some(10),
    }
-}
+ }
 
 // Helper to create a dummy config file path within a temp dir
 fn create_dummy_config_path_for_test(dir: &tempfile::TempDir) -> PathBuf {
@@ -79,7 +81,7 @@ async fn call_proxy_handler(
         .unwrap();
 
     // Call the actual handler function
-    handler::proxy_handler(State(state), request)
+    handlers::proxy_handler(State(state), request)
         .await
         .expect("Proxy handler returned an error") // Unwrap the Result<Response, AppError>
 }
@@ -896,13 +898,7 @@ async fn test_rotates_on_400_with_api_key_invalid_body() {
         "Expected status OK (200) after retry on 400 with API_KEY_INVALID"
     );
 // Verify that the first key is now marked as invalid
-let key_states = app_state
-    .key_manager
-    .read()
-    .await
-    .get_key_states()
-    .await
-    .unwrap();
+let key_states = app_state.key_manager.read().await.get_key_states().await.unwrap();
 let key1_state = key_states.get(key1_invalid).unwrap();
 assert!(key1_state.is_blocked, "Expected the first key to be marked as blocked");
 }
@@ -981,13 +977,7 @@ async fn test_returns_immediately_on_400_with_other_body() {
     );
 
     // Verify that the first key was NOT marked as invalid
-    let key_states = app_state
-        .key_manager
-        .read()
-        .await
-        .get_key_states()
-        .await
-        .unwrap();
+    let key_states = app_state.key_manager.read().await.get_key_states().await.unwrap();
     let key1_state = key_states.get(key1).unwrap();
     assert!(
         !key1_state.is_blocked,

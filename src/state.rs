@@ -8,6 +8,7 @@ use crate::handlers::{
     terminal_error::TerminalErrorHandler,
 };
 use crate::key_manager::KeyManager;
+use crate::metrics::MetricsCollector;
 use std::fmt;
 use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
 use deadpool_redis::{Config, Pool, Runtime};
@@ -33,7 +34,7 @@ pub struct KeyState {
 
 /// Represents the shared application state, accessible by all Axum handlers.
 pub struct AppState {
-    pub redis_pool: Option<Pool>, // Changed to Option<Pool>
+    pub redis_pool: Option<Pool>,
     pub key_manager: Arc<RwLock<KeyManager>>,
     http_clients: Arc<RwLock<HashMap<Option<String>, Arc<Client>>>>,
     pub response_handlers: Arc<Vec<Box<dyn ResponseHandler>>>,
@@ -41,6 +42,7 @@ pub struct AppState {
     pub config: Arc<RwLock<AppConfig>>,
     pub system_info: SystemInfoCollector,
     pub config_path: PathBuf,
+    pub metrics: Arc<MetricsCollector>,
 }
 
 impl fmt::Debug for AppState {
@@ -51,12 +53,125 @@ impl fmt::Debug for AppState {
             .field("config", &self.config)
             .field("system_info", &self.system_info)
             .field("config_path", &self.config_path)
-            .field("redis_pool_present", &self.redis_pool.is_some()) // Add field to indicate if redis_pool is present
+            .field("redis_pool_present", &self.redis_pool.is_some())
             .finish_non_exhaustive()
     }
 }
 
-/// Builds a `HashMap` of HTTP clients based on the provided configuration.
+/// Configuration for HTTP client connection pooling.
+#[derive(Debug, Clone)]
+struct ClientPoolConfig {
+    max_idle_per_host: usize,
+    idle_timeout: Duration,
+    keepalive: Duration,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+}
+
+impl ClientPoolConfig {
+    fn new(key_count: usize, server_config: &crate::config::ServerConfig) -> Self {
+        Self {
+            max_idle_per_host: key_count.max(10),
+            idle_timeout: Duration::from_secs(90),
+            keepalive: Duration::from_secs(60),
+            connect_timeout: Duration::from_secs(server_config.connect_timeout_secs),
+            request_timeout: Duration::from_secs(server_config.request_timeout_secs),
+        }
+    }
+}
+
+/// Builder for HTTP clients with consistent configuration.
+struct HttpClientBuilder {
+    pool_config: ClientPoolConfig,
+}
+
+impl HttpClientBuilder {
+    fn new(pool_config: ClientPoolConfig) -> Self {
+        Self { pool_config }
+    }
+
+    /// Configures a ClientBuilder with consistent settings.
+    fn configure_builder(&self, builder: ClientBuilder) -> ClientBuilder {
+        builder
+            .connect_timeout(self.pool_config.connect_timeout)
+            .timeout(self.pool_config.request_timeout)
+            .pool_idle_timeout(self.pool_config.idle_timeout)
+            .pool_max_idle_per_host(self.pool_config.max_idle_per_host)
+            .tcp_keepalive(Some(self.pool_config.keepalive))
+    }
+
+    /// Creates a base HTTP client without proxy.
+    fn build_base_client(&self) -> Result<Client> {
+        self.configure_builder(Client::builder())
+            .build()
+                .map_err(|e| {
+                error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
+                    AppError::HttpClientBuildError {
+                        source: e,
+                    proxy_url: None,
+                    }
+                })
+        }
+
+    /// Creates an HTTP client with the specified proxy.
+    async fn build_proxy_client(&self, proxy_url: &str) -> Result<Client> {
+        let proxy_span = tracing::info_span!("create_proxy_client", proxy.url = %proxy_url);
+        
+        async {
+            let parsed_proxy_url = Url::parse(proxy_url).map_err(|e| {
+                error!(error = %e, "Failed to parse proxy URL string.");
+                AppError::ProxyConfigError(ProxyConfigErrorData {
+                    url: proxy_url.to_string(),
+                    kind: ProxyConfigErrorKind::UrlParse(e),
+                })
+            })?;
+
+            let scheme = parsed_proxy_url.scheme().to_lowercase();
+            debug!(proxy.scheme = %scheme, "Parsed proxy scheme");
+
+            let proxy = self.create_proxy_from_scheme(&scheme, proxy_url)?;
+            debug!("Proxy object created successfully");
+
+            self.configure_builder(Client::builder())
+                .proxy(proxy)
+                .build()
+                .map_err(|e| {
+                    error!(proxy.scheme = %scheme, error = ?e, "Failed to build reqwest client for proxy.");
+                    AppError::HttpClientBuildError {
+                        source: e,
+                        proxy_url: Some(proxy_url.to_string()),
+                    }
+                })
+                    }
+        .instrument(proxy_span)
+                .await
+    }
+
+    /// Creates a proxy object based on the URL scheme.
+    fn create_proxy_from_scheme(&self, scheme: &str, proxy_url: &str) -> Result<Proxy> {
+        match scheme {
+            "http" => Proxy::http(proxy_url),
+            "https" => Proxy::https(proxy_url),
+            "socks5" => Proxy::all(proxy_url),
+            _ => {
+                error!(proxy.scheme = %scheme, "Unsupported proxy scheme");
+                return Err(AppError::ProxyConfigError(ProxyConfigErrorData {
+                    url: proxy_url.to_string(),
+                    kind: ProxyConfigErrorKind::UnsupportedScheme(scheme.to_string()),
+                }));
+            }
+        }
+        .map_err(|e| {
+            error!(error = %e, proxy.scheme = %scheme, "Invalid proxy definition");
+            AppError::ProxyConfigError(ProxyConfigErrorData {
+                url: proxy_url.to_string(),
+                kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
+            })
+        })
+    }
+}
+
+/// Builds HTTP clients for all unique proxy configurations.
 ///
 /// This function encapsulates the logic for:
 /// 1. Creating a base client (no proxy).
@@ -74,38 +189,25 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
     info!("Building HTTP clients based on configuration...");
     let mut http_clients = HashMap::new();
 
-    // Determine connection pool size based on key count, with a minimum threshold
+    // Calculate connection pool configuration
     let total_key_count: usize = config
         .groups
         .iter()
         .flat_map(|g| &g.api_keys)
         .filter(|k| !k.trim().is_empty())
         .count()
-        .max(10); // Ensure at least 10 potential connections even with few keys
+        .max(10);
+    
     debug!(
         pool.max_idle_per_host = total_key_count,
         "Calculated max idle connections per host"
-    );
+        );
 
-    // Centralized client configuration function
-    let configure_builder = |builder: ClientBuilder| -> ClientBuilder {
-        builder
-            .connect_timeout(Duration::from_secs(config.server.connect_timeout_secs))
-            .timeout(Duration::from_secs(config.server.request_timeout_secs))
-            .pool_idle_timeout(Duration::from_secs(90)) // Keep idle connections open for 90s
-            .pool_max_idle_per_host(total_key_count) // Configure pool size based on keys
-            .tcp_keepalive(Some(Duration::from_secs(60))) // Enable TCP keepalive
-    };
+    let pool_config = ClientPoolConfig::new(total_key_count, &config.server);
+    let client_builder = HttpClientBuilder::new(pool_config);
 
     // 1. Create the base client (no proxy) - this MUST succeed
-    let base_client = configure_builder(Client::builder()).build().map_err(|e| {
-        // Structured error for base client failure - this is fatal
-        error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
-        AppError::HttpClientBuildError {
-            source: e,
-            proxy_url: None,
-        }
-    })?;
+    let base_client = client_builder.build_base_client()?;
     http_clients.insert(None, Arc::new(base_client));
     info!(client.type = "base", "Base HTTP client (no proxy) created successfully.");
 
@@ -113,100 +215,30 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
     let unique_proxy_urls: HashSet<String> = config
         .groups
         .iter()
-        .filter_map(|g| g.proxy_url.as_ref()) // Get Option<&String>
-        .filter(|url_str| !url_str.trim().is_empty()) // Filter out empty strings
-        .cloned() // Clone the String
+        .filter_map(|g| g.proxy_url.as_ref())
+        .filter(|url_str| !url_str.trim().is_empty())
+        .cloned()
         .collect();
+    
     debug!(
         proxy.count = unique_proxy_urls.len(),
         ?unique_proxy_urls,
         "Found unique proxy URLs for client creation"
-    );
+        );
 
     // 3. Create clients for each unique proxy URL
     for proxy_url_str in unique_proxy_urls {
-        let proxy_span = tracing::info_span!("create_proxy_client", proxy.url = %proxy_url_str);
-        let client_result: Result<Client> = async {
-            // First, parse the URL, mapping the error to a specific ProxyConfigErrorKind
-            let parsed_proxy_url = Url::parse(&proxy_url_str).map_err(|e| {
-                error!(error = %e, "Failed to parse proxy URL string.");
-                AppError::ProxyConfigError(ProxyConfigErrorData {
-                    url: proxy_url_str.clone(),
-                    kind: ProxyConfigErrorKind::UrlParse(e),
-                })
-            })?;
-
-            let scheme = parsed_proxy_url.scheme().to_lowercase();
-            debug!(proxy.scheme = %scheme, "Parsed proxy scheme");
-
-            // Create the proxy object, mapping errors to a specific ProxyConfigErrorKind
-            let proxy = match scheme.as_str() {
-                "http" => Proxy::http(&proxy_url_str),
-                "https" => Proxy::https(&proxy_url_str),
-                "socks5" => Proxy::all(&proxy_url_str),
-                _ => {
-                    error!(proxy.scheme = %scheme, "Unsupported proxy scheme");
-                    return Err(AppError::ProxyConfigError(ProxyConfigErrorData {
-                        url: proxy_url_str.clone(),
-                        kind: ProxyConfigErrorKind::UnsupportedScheme(scheme.to_string()),
-                    }));
-                }
-            }
-            .map_err(|e| {
-                error!(error = %e, proxy.scheme = %scheme, "Invalid proxy definition");
-                AppError::ProxyConfigError(ProxyConfigErrorData {
-                    url: proxy_url_str.clone(),
-                    kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
-                })
-            })?;
-            debug!("Proxy object created successfully");
-
-            // Build the client with the proxy
-            configure_builder(Client::builder())
-                .proxy(proxy)
-                .build()
-                .map_err(|e| {
-                    error!(proxy.scheme = %scheme, error = ?e, "Failed to build reqwest client for proxy.");
-                    AppError::HttpClientBuildError {
-                        source: e,
-                        proxy_url: Some(proxy_url_str.clone()),
-                    }
-                })
-        }
-        .instrument(proxy_span)
-        .await;
-
-        // Handle the result of client creation
-        match client_result {
+        match client_builder.build_proxy_client(&proxy_url_str).await {
             Ok(proxy_client) => {
                 info!(proxy.url = %proxy_url_str, "HTTP client created successfully for proxy.");
                 http_clients.insert(Some(proxy_url_str.clone()), Arc::new(proxy_client));
             }
             Err(e) => {
-                match e {
-                    AppError::ProxyConfigError(ref data) => {
-                        match data.kind {
-                            ProxyConfigErrorKind::UrlParse(_) | ProxyConfigErrorKind::UnsupportedScheme(_) => {
-                                error!(proxy.url = %proxy_url_str, error = ?e, "Critical proxy configuration error. Aborting client creation process.");
-                                return Err(e); // Fail fast on critical config errors
-                            }
-                            ProxyConfigErrorKind::InvalidDefinition(_) => {
-                                warn!(proxy.url = %proxy_url_str, error = ?e, "Skipping client creation for this proxy due to configuration error. Groups using this proxy might fail.");
-                                // Log and continue on non-critical config errors
-                            }
-                        }
-                    }
-                    AppError::HttpClientBuildError {
-                        ref source,
-                        proxy_url: Some(ref url),
-                    } => {
-                        warn!(proxy.url = %url, error = ?source, "Skipping client creation for this proxy due to build error. Groups using this proxy might fail.");
-                        // Log and continue on build errors
-                    }
-                    _ => {
-                        error!(proxy.url = %proxy_url_str, error = ?e, "Unexpected error during proxy client creation. Aborting.");
-                        return Err(e); // Fail on other unexpected errors
-                    }
+                if should_fail_fast(&e) {
+                    error!(proxy.url = %proxy_url_str, error = ?e, "Critical proxy configuration error. Aborting client creation process.");
+                    return Err(e);
+                } else {
+                    warn!(proxy.url = %proxy_url_str, error = ?e, "Skipping client creation for this proxy. Groups using this proxy might fail.");
                 }
             }
         }
@@ -215,8 +247,22 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
     info!(
         client.count = http_clients.len(),
         "Finished building HTTP clients."
-    );
+        );
     Ok(http_clients)
+}
+
+/// Determines if an error should cause the entire client building process to fail.
+fn should_fail_fast(error: &AppError) -> bool {
+    match error {
+        AppError::ProxyConfigError(data) => {
+            matches!(
+                data.kind,
+                ProxyConfigErrorKind::UrlParse(_) | ProxyConfigErrorKind::UnsupportedScheme(_)
+            )
+        }
+        AppError::HttpClientBuildError { proxy_url: None, .. } => true, // Base client failure
+        _ => false,
+    }
 }
 
 impl AppState {
@@ -229,34 +275,14 @@ impl AppState {
     pub async fn new(config: &AppConfig, config_path: &Path) -> Result<Self> {
         info!("Creating shared AppState...");
 
-        let redis_pool = if let Some(redis_url) = &config.redis_url {
-            let redis_pool_config = Config::from_url(redis_url);
-            let pool = redis_pool_config.create_pool(Some(Runtime::Tokio1))?;
-            info!("Redis connection pool created successfully.");
-
-            // For tests, ensure Redis state is clean before initializing KeyManager
-            #[cfg(test)]
-            {
-                use deadpool_redis::redis::cmd;
-                let mut conn = pool.get().await?;
-                // For tests, completely clear the database to ensure test isolation.
-                let _: () = cmd("FLUSHDB").query_async(&mut conn).await?;
-                info!("FLUSHDB command executed to clear Redis for test environment.");
-            }
-            Some(pool) // Wrap in Some
-        } else {
-            info!("No Redis URL provided. Skipping Redis pool creation.");
-            None // Set to None
-        };
-
-        // Pass Option<Pool> to KeyManager::new
-        let key_manager = KeyManager::new(config, redis_pool.clone()).await?;
-
-        // Build all HTTP clients using the helper function
+        let redis_pool = Self::create_redis_pool(config).await?;
+        let key_manager =
+            Arc::new(RwLock::new(KeyManager::new(config, redis_pool.clone()).await?));
         let http_clients = build_http_clients(config).await?;
 
         let response_handlers: Arc<Vec<Box<dyn ResponseHandler>>> = Arc::new(vec![
             Box::new(SuccessHandler),
+            Box::new(crate::handlers::timeout::TimeoutHandler),
             Box::new(RateLimitHandler),
             Box::new(InvalidApiKeyHandler),
             Box::new(TerminalErrorHandler),
@@ -264,14 +290,42 @@ impl AppState {
 
         Ok(Self {
             redis_pool,
-            key_manager: Arc::new(RwLock::new(key_manager)),
+            key_manager,
             http_clients: Arc::new(RwLock::new(http_clients)),
             response_handlers,
             start_time: Instant::now(),
             config: Arc::new(RwLock::new(config.clone())),
             system_info: SystemInfoCollector::new(),
             config_path: config_path.to_path_buf(),
+            metrics: Arc::new(MetricsCollector::new()),
         })
+    }
+
+    /// Creates a Redis connection pool if configured.
+    async fn create_redis_pool(config: &AppConfig) -> Result<Option<Pool>> {
+        if let Some(redis_url) = &config.redis_url {
+            let redis_pool_config = Config::from_url(redis_url);
+            let pool = redis_pool_config.create_pool(Some(Runtime::Tokio1))?;
+            info!("Redis connection pool created successfully.");
+
+            #[cfg(test)]
+            Self::clear_redis_for_tests(&pool).await?;
+
+            Ok(Some(pool))
+        } else {
+            info!("No Redis URL provided. Skipping Redis pool creation.");
+            Ok(None)
+}
+    }
+
+    /// Clears Redis database for test isolation.
+    #[cfg(test)]
+    async fn clear_redis_for_tests(pool: &Pool) -> Result<()> {
+        use deadpool_redis::redis::cmd;
+        let mut conn = pool.get().await?;
+        let _: () = cmd("FLUSHDB").query_async(&mut conn).await?;
+        info!("FLUSHDB command executed to clear Redis for test environment.");
+        Ok(())
     }
 
     /// Reloads `http_clients` from the current configuration.
@@ -280,33 +334,19 @@ impl AppState {
     /// # Errors
     ///
     /// Returns `Err` if any part of the state reconstruction fails.
-    #[instrument(level = "info", skip(self))]
     pub async fn reload_state_from_config(&self) -> Result<()> {
-        info!(
-            "Attempting to reload application state (HttpClients) from configuration..."
-        );
+        info!("Attempting to reload application state from configuration...");
+
         let config_guard = self.config.read().await;
-
-        // --- Build new HttpClients using the helper function ---
-        // The helper function contains robust error handling we want to leverage.
         let new_http_clients = build_http_clients(&config_guard).await?;
-
-        // --- Reload KeyManager ---
-        // Create a new KeyManager with the updated config.
         let new_key_manager = KeyManager::new(&config_guard, self.redis_pool.clone()).await?;
-
-        // Release the read lock before acquiring the write lock
         drop(config_guard);
 
-        // --- Atomically update the state ---
-        // ALWAYS LOCK IN THE SAME ORDER TO PREVENT DEADLOCKS
-        // Order: key_manager -> http_clients
-        *self.key_manager.write().await = new_key_manager;
+        // Atomically swap the http_clients and key_manager
         *self.http_clients.write().await = new_http_clients;
+        *self.key_manager.write().await = new_key_manager;
 
-        info!(
-            "Application state (HttpClients and KeyManager) reloaded successfully."
-        );
+        info!("Application state reloaded successfully.");
         Ok(())
     }
 
@@ -325,7 +365,11 @@ impl AppState {
         clients_guard.get(&key).cloned().ok_or_else(|| {
             let msg = proxy_url.map_or_else(
                 || "Requested base HTTP client (None proxy) was unexpectedly missing.".to_string(),
-                |p_url| format!("Requested HTTP client for proxy '{p_url}' was not found/initialized in AppState."),
+                |p_url| {
+                    format!(
+                        "Requested HTTP client for proxy '{p_url}' was not found/initialized in AppState."
+                    )
+                },
             );
             error!(proxy.url = ?proxy_url, error.message = %msg, "HTTP client lookup failed");
             AppError::Internal(msg)
@@ -379,18 +423,17 @@ mod tests {
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
             top_p: None,
         }];
-        let config = create_test_config(groups, false); // No redis needed for this test
+        let config = create_test_config(groups, false);
         let state_result = AppState::new(&config, &dummy_path).await;
 
         assert!(
             state_result.is_ok(),
-            "AppState::new failed: {:?}",
+            "AppState::new failed unexpectedly: {:?}",
             state_result.err()
         );
         let state = state_result.unwrap();
         let clients_guard = state.http_clients.read().await;
         assert_eq!(clients_guard.len(), 1);
-        assert!(clients_guard.contains_key(&None)); // Base client only
         drop(clients_guard);
 
         assert!(state.get_client(None).await.is_ok());
@@ -401,14 +444,14 @@ mod tests {
                 .is_err()
         );
     }
+
     #[tokio::test]
     async fn test_appstate_new_with_valid_proxies() {
         let dir = tempdir().unwrap();
         let dummy_path = create_dummy_config_path(&dir);
 
-        // Mock server or use potentially invalid ports to test resilience
-        let http_proxy_url = "http://127.0.0.1:34567"; // Use a likely free port
-        let socks_proxy_url = "socks5://127.0.0.1:34568"; // Use a likely free port
+        let http_proxy_url = "http://127.0.0.1:34567";
+        let socks_proxy_url = "socks5://127.0.0.1:34568";
 
         let groups = vec![
             KeyGroup {
@@ -428,7 +471,6 @@ mod tests {
                 top_p: None,
             },
             KeyGroup {
-                // Same HTTP proxy, should reuse client map entry
                 name: "g_http_dup".to_string(),
                 api_keys: vec!["key_http2".to_string()],
                 model_aliases: vec![],
@@ -445,10 +487,9 @@ mod tests {
                 top_p: None,
             },
         ];
-        let config = create_test_config(groups, false); // No redis needed for this test
+        let config = create_test_config(groups, false);
         let state_result = AppState::new(&config, &dummy_path).await;
 
-        // AppState::new should succeed even if proxy servers aren't actually running
         assert!(
             state_result.is_ok(),
             "AppState::new failed unexpectedly: {:?}",
@@ -457,7 +498,7 @@ mod tests {
         let state = state_result.unwrap();
         let clients_guard = state.http_clients.read().await;
 
-        assert!(clients_guard.contains_key(&None)); // Base client must exist
+        assert!(clients_guard.contains_key(&None));
 
         let http_key = Some(http_proxy_url.to_string());
         let socks_key = Some(socks_proxy_url.to_string());
@@ -465,17 +506,15 @@ mod tests {
         let http_created = clients_guard.contains_key(&http_key);
         let socks_created = clients_guard.contains_key(&socks_key);
 
-        // We expect all clients to be created successfully if URLs are valid syntactically
         assert!(http_created, "HTTP proxy client was not created");
         assert!(socks_created, "SOCKS5 proxy client was not created");
         assert_eq!(
             clients_guard.len(),
             3,
             "Expected Base + HTTP + SOCKS clients"
-        ); // 1 base + 2 unique proxies
+        );
         drop(clients_guard);
 
-        // Verify get_client behavior
         assert!(
             state.get_client(http_key.as_deref()).await.is_ok(),
             "get_client failed for created HTTP proxy"
@@ -484,10 +523,9 @@ mod tests {
             state.get_client(socks_key.as_deref()).await.is_ok(),
             "get_client failed for created SOCKS5 proxy"
         );
-        assert!(state.get_client(None).await.is_ok()); // Check base client retrieval
-        assert!(state.get_client(Some("http://other.proxy")).await.is_err()); // Check non-existent proxy
-    }
-
+        assert!(state.get_client(None).await.is_ok());
+        assert!(state.get_client(Some("http://other.proxy")).await.is_err());
+}
     #[tokio::test]
     async fn test_appstate_new_returns_err_on_invalid_url_syntax() {
         let dir = tempdir().unwrap();
@@ -497,18 +535,17 @@ mod tests {
             name: "g_invalid_url".to_string(),
             api_keys: vec!["key_invalid".to_string()],
             model_aliases: vec![],
-            proxy_url: Some("::not a proxy url::".to_string()), // Invalid syntax
+            proxy_url: Some("::not a proxy url::".to_string()),
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
             top_p: None,
         }];
-        let config = create_test_config(groups, false); // No redis needed for this test
+        let config = create_test_config(groups, false);
         let state_result = AppState::new(&config, &dummy_path).await;
 
         assert!(
             state_result.is_err(),
             "AppState::new should return Err for invalid proxy URL syntax"
         );
-        // Check for the correct error variant and kind
         assert!(
             matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(data) if matches!(data.kind, ProxyConfigErrorKind::UrlParse(_))),
             "Expected ProxyConfigError with UrlParse kind"
@@ -524,59 +561,49 @@ mod tests {
             name: "g_unsupported".to_string(),
             api_keys: vec!["key_unsupported".to_string()],
             model_aliases: vec![],
-            proxy_url: Some("ftp://unsupported.proxy".to_string()), // Unsupported scheme
+            proxy_url: Some("ftp://unsupported.proxy".to_string()),
             target_url: DEFAULT_TARGET_URL_STR.to_string(),
             top_p: None,
         }];
-        let config = create_test_config(groups, false); // No redis needed for this test
+        let config = create_test_config(groups, false);
         let state_result = AppState::new(&config, &dummy_path).await;
 
         assert!(
             state_result.is_err(),
             "AppState::new should return Err for unsupported proxy scheme"
         );
-        // Check for the correct error variant and kind
         assert!(
             matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(data) if matches!(data.kind, ProxyConfigErrorKind::UnsupportedScheme(_))),
             "Expected ProxyConfigError with UnsupportedScheme kind"
         );
     }
 
-    // Test where Client::build() itself might fail (less common, requires specific setup or invalid proxy def)
-    // This test might be flaky depending on environment/reqwest version behavior
     #[tokio::test]
     async fn test_appstate_new_skips_client_on_build_error() {
-        // This test simulates a reqwest build failure for one proxy,
-        // but AppState creation should still succeed with other valid clients.
-        // We use a syntactically valid but likely non-functional SOCKS5 URL.
         let dir = tempdir().unwrap();
         let dummy_path = create_dummy_config_path(&dir);
 
         let groups = vec![
             KeyGroup {
-                // Valid HTTP
                 name: "g_http_ok".to_string(),
                 api_keys: vec!["k1".to_string()],
                 model_aliases: vec![],
-                proxy_url: Some("http://127.0.0.1:34569".to_string()), // Likely free port
+                proxy_url: Some("http://127.0.0.1:34569".to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
             },
-            // Use a valid URL but one that might cause build issues
             KeyGroup {
                 name: "g_build_error".to_string(),
                 api_keys: vec!["k2".to_string()],
                 model_aliases: vec![],
-                // Use a valid SOCKS5 URL that should parse correctly but might fail during client build
                 proxy_url: Some("socks5://nonexistent-proxy-host.invalid:1080".to_string()),
                 target_url: DEFAULT_TARGET_URL_STR.to_string(),
                 top_p: None,
             },
         ];
-        let config = create_test_config(groups, false); // No redis needed for this test
+        let config = create_test_config(groups, false);
         let state_result = AppState::new(&config, &dummy_path).await;
 
-        // AppState::new should now always succeed, logging warnings for build errors.
         assert!(
             state_result.is_ok(),
             "AppState::new failed unexpectedly: {:?}",
@@ -585,7 +612,6 @@ mod tests {
         let state = state_result.unwrap();
         let clients_guard = state.http_clients.read().await;
 
-        // Base client and valid HTTP client should exist.
         assert!(clients_guard.contains_key(&None));
         let http_key = Some("http://127.0.0.1:34569".to_string());
         assert!(
@@ -593,14 +619,12 @@ mod tests {
             "Valid HTTP client should have been created"
         );
 
-        // The SOCKS5 client should also be created (reqwest can create clients for non-existent hosts)
         let socks_key = Some("socks5://nonexistent-proxy-host.invalid:1080".to_string());
         assert!(
             clients_guard.contains_key(&socks_key),
             "SOCKS5 client should have been created (reqwest allows non-existent hosts)"
         );
 
-        // We expect 3 clients: base + HTTP + SOCKS5
         assert_eq!(
             clients_guard.len(),
             3,
@@ -608,7 +632,6 @@ mod tests {
         );
         drop(clients_guard);
 
-        // We should be able to retrieve all clients that were created.
         assert!(state.get_client(None).await.is_ok());
         assert!(state.get_client(http_key.as_deref()).await.is_ok());
         assert!(state.get_client(socks_key.as_deref()).await.is_ok());

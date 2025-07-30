@@ -6,7 +6,7 @@ use axum::{body::{Body, Bytes}, http::StatusCode, response::Response};
 pub struct TerminalErrorHandler;
 
 impl ResponseHandler for TerminalErrorHandler {
-    fn handle(&self, response: &Response, body_bytes: &Bytes) -> Option<Action> {
+    fn handle(&self, response: &Response, body_bytes: &Bytes, _api_key: &str) -> Option<Action> {
         let status = response.status();
         // This handler is last in the chain. It catches terminal server errors (5xx)
         // or any client errors that weren't specifically handled by previous handlers.

@@ -4,7 +4,7 @@ use axum::http::{Method, StatusCode};
 use futures::future;
 use gemini_proxy_key_rotation_rust::{
     config::{AppConfig, KeyGroup, ServerConfig},
-    handler,
+    handlers,
     state::AppState,
 };
 use rand::distributions::Alphanumeric;
@@ -56,9 +56,10 @@ async fn create_test_system(
        internal_retries,
        temporary_block_minutes: 1,
        top_p: None,
+       max_failures_threshold: Some(10),
    };
-
-    let app_state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
+ 
+     let app_state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
 
     (app_state, server, temp_dir)
 }
@@ -81,7 +82,7 @@ async fn test_metrics_collection() {
         .body(axum::body::Body::empty())
         .unwrap();
 
-    let _response = handler::proxy_handler(axum::extract::State(app_state.clone()), request)
+    let _response = handlers::proxy_handler(axum::extract::State(app_state.clone()), request)
         .await
         .unwrap();
 
@@ -107,7 +108,7 @@ async fn test_error_handling_and_recovery() {
         .body(axum::body::Body::empty())
         .unwrap();
 
-    let response = handler::proxy_handler(axum::extract::State(app_state.clone()), request)
+    let response = handlers::proxy_handler(axum::extract::State(app_state.clone()), request)
         .await
         .unwrap();
 
@@ -139,7 +140,7 @@ async fn test_concurrent_requests() {
                 .body(axum::body::Body::empty())
                 .unwrap();
 
-            handler::proxy_handler(axum::extract::State(app_state_clone), request).await
+            handlers::proxy_handler(axum::extract::State(app_state_clone), request).await
         });
         handles.push(handle);
     }

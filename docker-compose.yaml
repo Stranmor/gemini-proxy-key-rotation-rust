@@ -25,7 +25,7 @@ services:
           cpus: '2.0'
 
   redis:
-в    image: "docker.io/library/redis:alpine"
+    image: "docker.io/library/redis:alpine"
     container_name: gemini-proxy-redis
     ports:
       - "6380:6379"

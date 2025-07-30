@@ -1,92 +1,129 @@
 // src/lib.rs
 
-// Declare modules that constitute the library's public API or internal structure
+// --- Модули ---
+// Примечание: модуль `handler` был переименован в `handlers` для лучшего соответствия
+// общепринятым практикам именования (модуль, содержащий несколько обработчиков).
 pub mod admin;
 pub mod config;
 pub mod error;
-pub mod handler;
-pub mod handlers;
+pub mod handlers; // <-- Переименовано с `handler`
 pub mod key_manager;
+pub mod metrics;
+pub mod middleware;
 pub mod proxy;
 pub mod state;
 pub mod tokenizer;
 
-// Re-export key types for easier use by the binary or tests
+// --- Зависимости и пере-экспорты ---
 use axum::{
-    Router,
     body::Body,
-    http::Request as AxumRequest,
-    middleware::{self, Next},
-    response::Response as AxumResponse,
+    http::{Request as AxumRequest, HeaderValue},
+    response::IntoResponse,
     routing::{any, get},
+    Router,
 };
+use crate::handlers::{health_check, proxy_handler};
 use std::{path::PathBuf, sync::Arc, time::Instant};
 use tower_cookies::CookieManagerLayer;
-use tracing::{Instrument, Level, error, info, span};
+use tracing::{error, info, info_span, Instrument};
 use uuid::Uuid;
 
+// Пере-экспорт ключевых типов для удобства использования
 pub use config::AppConfig;
 pub use error::{AppError, Result};
 pub use state::AppState;
 
-/// Creates the main Axum router for the application.
+/// Создает основной роутер Axum для приложения.
 pub fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/health", get(handler::health_check))
-        .merge(admin::admin_routes())
-        .route("/v1/*path", any(handler::proxy_handler))
-        .route("/v1beta/*path", any(handler::proxy_handler))
-        .route("/chat/*path", any(handler::proxy_handler))
-        .route("/embeddings", any(handler::proxy_handler))
-        .route("/models", any(handler::proxy_handler))
+    // Объединяем маршруты прокси для уменьшения дублирования
+    let proxy_routes = [
+        "/v1/*path",
+        "/v1beta/*path",
+        "/chat/*path",
+        "/embeddings",
+        "/models",
+    ];
+
+    let mut router = Router::new()
+        .route("/health", get(health_check))
+        .route("/metrics", get(metrics::metrics_handler))
+        .merge(admin::admin_routes());
+
+    for path in proxy_routes {
+        router = router.route(path, any(proxy_handler));
+    }
+
+    router
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }
 
-/// Middleware to add Request ID and trace requests.
-async fn trace_requests(req: AxumRequest<Body>, next: Next) -> AxumResponse {
+/// Middleware для добавления Request ID и трассировки запросов.
+async fn trace_requests(mut req: AxumRequest<Body>, next: axum::middleware::Next) -> impl IntoResponse {
     let request_id = Uuid::new_v4();
     let start_time = Instant::now();
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
-    let span = span!(
-        Level::INFO,
+    // Создаем span для трассировки запроса с полезными полями
+    let span = info_span!(
         "request",
         request_id = %request_id,
         http.method = %method,
         url.path = %path,
     );
 
-    let response = next.run(req).instrument(span).await;
-    let elapsed = start_time.elapsed();
+    // Добавляем request_id в расширения запроса для доступа в других обработчиках
+    req.extensions_mut().insert(request_id);
 
-    info!(
-        http.response.duration = ?elapsed,
-        http.status_code = response.status().as_u16(),
-        "Finished processing request"
-    );
+    // Выполняем запрос внутри span
+    async move {
+        let mut response = next.run(req).await;
+        let elapsed = start_time.elapsed();
 
-    response
+        // Добавляем заголовок X-Request-ID в ответ
+        response.headers_mut().insert(
+            "X-Request-ID",
+            HeaderValue::from_str(&request_id.to_string()).unwrap(),
+        );
+
+        // Логируем завершение обработки запроса с кодом ответа и длительностью
+        info!(
+            http.response.duration = ?elapsed,
+            http.status_code = response.status().as_u16(),
+            "Finished processing request"
+        );
+
+        response
+    }
+    .instrument(span)
+    .await
 }
 
-/// The main application setup function, responsible for configuration, state initialization,
-/// and router creation.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// - Configuration loading or validation fails.
-/// - The application state (e.g., HTTP clients) cannot be initialized.
+/// Основная функция настройки приложения, отвечающая за конфигурацию,
+/// инициализацию состояния и создание роутера.
 pub async fn run(
     config_path_override: Option<PathBuf>,
 ) -> std::result::Result<(Router, AppConfig), AppError> {
-    // --- Configuration Path ---
+    info!("Starting Gemini API Key Rotation Proxy...");
+
+    // 1. Настройка конфигурации
+    let (app_config, config_path) = setup_configuration(config_path_override)?;
+
+    // 2. Инициализация состояния приложения
+    let app_state = build_application_state(&app_config, &config_path).await?;
+
+    // 3. Настройка роутера и middleware
+    let app = create_router(app_state).layer(axum::middleware::from_fn(trace_requests));
+
+    Ok((app, app_config))
+}
+
+/// Загружает, валидирует и логирует конфигурацию приложения.
+fn setup_configuration(config_path_override: Option<PathBuf>) -> Result<(AppConfig, PathBuf)> {
     let config_path = config_path_override.unwrap_or_else(|| {
         std::env::var("CONFIG_PATH").map_or_else(|_| PathBuf::from("config.yaml"), PathBuf::from)
     });
-
-    info!("Starting Gemini API Key Rotation Proxy...");
 
     let config_path_display = config_path.display().to_string();
     if config_path.exists() {
@@ -95,7 +132,6 @@ pub async fn run(
         info!(config.path = %config_path_display, "Optional configuration file not found. Using defaults and environment variables.");
     }
 
-    // --- Configuration Loading & Validation ---
     let app_config = config::load_config(&config_path).map_err(|e| {
         error!(
             config.path = %config_path_display,
@@ -115,33 +151,28 @@ pub async fn run(
          "Configuration loaded and validated successfully."
     );
 
-    // --- Redis Pool Initialization ---
-    if let Some(redis_url_str) = app_config.redis_url.as_deref() {
-        let redis_cfg = deadpool_redis::Config::from_url(redis_url_str);
-        let _redis_pool = redis_cfg
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .map_err(|e| {
-                error!(error = ?e, redis.url = ?app_config.redis_url, "Failed to create Redis pool. Exiting.");
-                AppError::Internal(format!("Failed to create Redis pool: {e}"))
-            })?;
-        info!("Successfully created Redis connection pool.");
-    } else {
-        info!("Redis URL not configured. Running without Redis persistence.");
-    }
-    
-    // --- Application State Initialization ---
-    let app_state = AppState::new(&app_config, &config_path)
+    Ok((app_config, config_path))
+}
+
+/// Создает и инициализирует состояние приложения, включая подключение к Redis.
+async fn build_application_state(app_config: &AppConfig, config_path: &PathBuf) -> Result<Arc<AppState>> {
+    // Примечание: Логика создания пула Redis теперь должна быть внутри `AppState::new`.
+    // Это улучшает инкапсуляцию, так как AppState управляет своими собственными зависимостями.
+    // Функция `run` больше не должна беспокоиться о деталях создания пула.
+
+    let app_state = AppState::new(app_config, config_path)
         .await
         .map_err(|e| {
-            error!(
-                error = ?e,
-                "Failed to initialize application state. Exiting."
-            );
+            error!(error = ?e, "Failed to initialize application state. Exiting.");
             e
         })?;
-    let app_state = Arc::new(app_state);
-    // --- Router Setup ---
-    let app = create_router(app_state.clone()).layer(middleware::from_fn(trace_requests));
 
-    Ok((app, app_config))
+    info!("Application state initialized successfully.");
+    if app_config.redis_url.is_some() {
+        info!("Redis persistence is enabled.");
+    } else {
+        info!("Running without Redis persistence.");
+    }
+
+    Ok(Arc::new(app_state))
 }

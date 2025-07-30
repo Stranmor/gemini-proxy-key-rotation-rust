@@ -24,5 +24,5 @@ pub trait ResponseHandler: Send + Sync {
     /// # Returns
     /// * `Some(Action)` if this handler can process the response.
     /// * `None` if this handler cannot process the response, allowing the next handler in the chain to try.
-    fn handle(&self, response: &Response, body_bytes: &axum::body::Bytes) -> Option<Action>;
+    fn handle(&self, response: &Response, body_bytes: &axum::body::Bytes, api_key: &str) -> Option<Action>;
 }

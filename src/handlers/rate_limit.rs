@@ -7,7 +7,7 @@ use tracing::warn;
 pub struct RateLimitHandler;
 
 impl ResponseHandler for RateLimitHandler {
-    fn handle(&self, response: &Response, body_bytes: &Bytes) -> Option<Action> {
+    fn handle(&self, response: &Response, body_bytes: &Bytes, _api_key: &str) -> Option<Action> {
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             // Log the response body to understand the exact reason for rate limiting
             let response_body = String::from_utf8_lossy(body_bytes);

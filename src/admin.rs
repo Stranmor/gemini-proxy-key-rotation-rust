@@ -3,7 +3,7 @@
 use crate::{
     config::{self, AppConfig},
     error::{AppError, Result},
-    key_manager::FlattenedKeyInfo,
+    key_manager::{FlattenedKeyInfo, KeyManagerTrait},
     state::{AppState, KeyState},
 };
 use axum::{
@@ -18,7 +18,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use cookie::{SameSite, time::Duration as CookieDuration};
 use http::HeaderName;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -133,6 +133,8 @@ impl Default for SystemInfoCollector {
 
 /// Defines all administrative API routes.
 pub fn admin_routes() -> Router<Arc<AppState>> {
+    use crate::middleware::rate_limit_middleware;
+    
     // Routes that require admin authentication and CSRF protection
     // Order of middleware matters: auth first, then CSRF.
     let authed_routes = Router::new()
@@ -156,7 +158,8 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
             .route("/model-stats", get(get_model_stats))
             .route("/csrf-token", get(get_csrf_token))
             .route("/login", post(login))
-            .merge(authed_routes),
+            .merge(authed_routes)
+            .layer(middleware::from_fn(rate_limit_middleware)), // Add rate limiting to all admin routes
     )
 }
 
@@ -613,14 +616,15 @@ pub async fn login(
     }
 }
 
-/// Generates a CSRF token, sets it as a cookie, and returns it in the response body.
+/// Generates a cryptographically secure CSRF token, sets it as a cookie, and returns it in the response body.
 #[axum::debug_handler]
 pub async fn get_csrf_token(jar: Cookies) -> Result<impl IntoResponse> {
-    let token: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect();
+    // Generate a cryptographically secure token using 32 random bytes
+    let mut token_bytes = [0u8; 32];
+    thread_rng().fill(&mut token_bytes);
+    
+    // Convert to hex string for easier handling
+    let token = hex::encode(token_bytes);
 
     let cookie = Cookie::build((CSRF_TOKEN_COOKIE, token.clone()))
         .path("/")
@@ -630,7 +634,7 @@ pub async fn get_csrf_token(jar: Cookies) -> Result<impl IntoResponse> {
         // It is session-based for stricter security (no max_age).
         .build();
 
-    info!("Generated new CSRF token.");
+    info!("Generated new cryptographically secure CSRF token.");
     Ok((
         jar.add(cookie),
         Json(CsrfTokenResponse { csrf_token: token }),

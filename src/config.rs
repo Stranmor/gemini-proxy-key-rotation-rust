@@ -47,6 +47,8 @@ pub struct AppConfig {
     pub redis_url: Option<String>,
     #[serde(default)]
     pub redis_key_prefix: Option<String>,
+    #[serde(default)]
+    pub max_failures_threshold: Option<u32>,
 
     #[serde(default = "default_internal_retries")]
     pub internal_retries: u32,

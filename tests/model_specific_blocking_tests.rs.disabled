@@ -1,4 +1,0 @@
-// tests/model_specific_blocking_tests.rs
-
-// TODO: Re-enable and adapt these tests once model-specific blocking is implemented with Redis.
-// The previous implementation was based on an in-memory state that has been removed.
