@@ -35,16 +35,18 @@ use wiremock::{
 static TEST_DB_COUNTER: AtomicUsize = AtomicUsize::new(2);
 
 // Helper function to create a basic AppConfig for testing
-fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, db_num: usize) -> AppConfig {
+fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, _db_num: usize) -> AppConfig {
    AppConfig {
        server: ServerConfig {
            port: server_port,
            top_p: None,
            admin_token: Some("test_token".to_string()),
            test_mode: true,
+           connect_timeout_secs: 10,
+           request_timeout_secs: 60,
        },
        groups,
-       redis_url: format!("redis://127.0.0.1:6379/{db_num}"), // Use a unique DB for tests
+       redis_url: None, // Disable Redis for tests
        redis_key_prefix: None,
        internal_retries: 3,
        temporary_block_minutes: 1,

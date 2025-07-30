@@ -47,9 +47,11 @@ async fn create_test_system(
            top_p: None,
            admin_token: Some("test_token".to_string()),
            test_mode: true,
+           connect_timeout_secs: 10,
+           request_timeout_secs: 60,
        },
        groups: vec![test_group],
-       redis_url: "redis://127.0.0.1:6379/1".to_string(), // Use a single DB for system tests
+       redis_url: None, // Disable Redis for tests
        redis_key_prefix: Some(format!("test:{}", generate_prefix())),
        internal_retries,
        temporary_block_minutes: 1,

@@ -90,8 +90,14 @@ CMD ["cargo", "test", "--all-features", "--locked"]
 # Этап 5: Генератор отчета о покрытии (Coverage Runner)
 # Используется для генерации отчета о покрытии кода тестами.
 # -------------------------------------------------------------------------------------------------
-FROM builder AS coverage_runner
+FROM rust:${RUST_VERSION} AS coverage_runner
 WORKDIR /app
+
+# Копируем кэш и зависимости, чтобы не пересобирать все с нуля
+COPY --from=dependencies_builder /usr/local/cargo/registry /usr/local/cargo/registry
+COPY --from=builder /app/target /app/target
+# Копируем исходный код
+COPY . .
 
 # Устанавливаем необходимые системные зависимости для tarpaulin с движком LLVM.
 RUN apt-get update && apt-get install -y llvm-dev libffi-dev clang

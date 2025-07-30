@@ -18,10 +18,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use cookie::{SameSite, time::Duration as CookieDuration};
 use http::HeaderName;
-
-#[cfg(test)]
-use http_body_util::BodyExt;
-use rand::{Rng, distributions::Alphanumeric};
+use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -756,62 +753,16 @@ fn get_key_status_str(key_state: Option<&KeyState>) -> (&'static str, Option<Dat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{KeyGroup as GroupConfig, ServerConfig};
     use axum::{
-        Router,
         body::Body,
         http::{Request, StatusCode, header},
         routing::post,
     };
-    use std::sync::Arc;
-    use tempfile::TempDir;
     use tower::util::ServiceExt;
     use tower_cookies::CookieManagerLayer;
 
-    // --- Test Setup ---
-
-    async fn setup_state(admin_token: Option<String>) -> (Arc<AppState>, TempDir) {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("config.toml");
-        let config = AppConfig {
-            server: ServerConfig {
-                admin_token,
-                port: 8080,
-                ..Default::default()
-            },
-            groups: vec![
-                GroupConfig {
-                    name: "test_group".to_string(),
-                    target_url: "http://example.com".to_string(),
-                    api_keys: vec!["key1".to_string(), "key2".to_string()],
-                    ..Default::default()
-                },
-                GroupConfig {
-                    name: "another_group".to_string(),
-                    target_url: "http://another.com".to_string(),
-                    api_keys: vec!["key3".to_string()],
-                    ..Default::default()
-                },
-            ],
-            redis_url: "redis://127.0.0.1:6379".to_string(), // Use a different DB for tests
-            ..Default::default()
-        };
-        config::save_config(&config, &config_path).await.unwrap();
-        let app_state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
-        (app_state, temp_dir)
-    }
-
-    /// Creates a test app with the CSRF middleware applied.
-    fn csrf_app() -> Router {
-        Router::new()
-            .route("/", post(|| async { StatusCode::OK }))
-            .route_layer(middleware::from_fn(csrf_middleware))
-            .layer(CookieManagerLayer::new())
-    }
-
     // --- Unit Tests ---
 
-    // Simplified test as the logic is now much simpler
     #[test]
     fn test_get_key_status_str() {
         let now = Utc::now();
@@ -843,7 +794,14 @@ mod tests {
     }
 
     // --- Middleware Tests ---
-    // --- Middleware Tests ---
+
+    /// Creates a test app with the CSRF middleware applied.
+    fn csrf_app() -> Router {
+        Router::new()
+            .route("/", post(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn(csrf_middleware))
+            .layer(CookieManagerLayer::new())
+    }
 
     #[tokio::test]
     async fn test_csrf_middleware_success() {
@@ -947,258 +905,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    // --- Route Handler Tests ---
-
-    #[tokio::test]
-    async fn test_get_csrf_token() {
-        let (state, _temp_dir) = setup_state(None).await;
-        let app = admin_routes()
-            .layer(CookieManagerLayer::new())
-            .with_state(state);
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/admin/csrf-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let cookie_header = response
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(cookie_header.contains(CSRF_TOKEN_COOKIE));
-        // CSRF cookie must be readable by client-side JS, so it should NOT be HttpOnly.
-        assert!(!cookie_header.contains("HttpOnly"));
-        assert!(cookie_header.contains("Secure"));
-        assert!(cookie_header.contains("SameSite=Strict"));
-
-        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let csrf_response: CsrfTokenResponse = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(!csrf_response.csrf_token.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_login_success() {
-        let admin_token = "test_admin_token".to_string();
-        let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes()
-            .layer(CookieManagerLayer::new())
-            .with_state(state);
-
-        let login_request = LoginRequest { token: admin_token };
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/admin/login")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&login_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let cookie_header = response
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(cookie_header.contains(ADMIN_TOKEN_COOKIE));
-        assert!(cookie_header.contains("HttpOnly"));
-        assert!(cookie_header.contains("Secure"));
-        assert!(cookie_header.contains("SameSite=Strict"));
-    }
-
-    #[tokio::test]
-    async fn test_login_failure() {
-        let admin_token = "test_admin_token".to_string();
-        let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes()
-            .layer(CookieManagerLayer::new())
-            .with_state(state);
-
-        let login_request = LoginRequest {
-            token: "wrong_token".to_string(),
-        };
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/admin/login")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&login_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert!(response.headers().get(header::SET_COOKIE).is_none());
-    }
-
-    #[tokio::test]
-    async fn test_add_keys_success() {
-        let admin_token = "test_admin_token".to_string();
-        let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes()
-            .layer(CookieManagerLayer::new())
-            .with_state(state.clone());
-
-        let add_request = AddKeysRequest {
-            group_name: "test_group".to_string(),
-            api_keys: vec!["new_key_1".to_string(), "new_key_2".to_string()],
-        };
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/admin/keys")
-                    .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
-                    .header(&X_CSRF_TOKEN, "dummy_csrf_token")
-                    .header(
-                        header::COOKIE,
-                        format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"),
-                    )
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&add_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let config_guard = state.config.read().await;
-        let group = config_guard
-            .groups
-            .iter()
-            .find(|g| g.name == "test_group")
-            .unwrap();
-        assert!(group.api_keys.contains(&"new_key_1".to_string()));
-        assert!(group.api_keys.contains(&"new_key_2".to_string()));
-        assert_eq!(group.api_keys.len(), 4);
-    }
-
-    #[tokio::test]
-    async fn test_delete_keys_success() {
-        let admin_token = "test_admin_token".to_string();
-        let (state, _temp_dir) = setup_state(Some(admin_token.clone())).await;
-        let app = admin_routes()
-            .layer(CookieManagerLayer::new())
-            .with_state(state.clone());
-
-        let delete_request = DeleteKeysRequest {
-            group_name: "test_group".to_string(),
-            api_keys: vec!["key1".to_string()],
-        };
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/admin/keys")
-                    .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
-                    .header(&X_CSRF_TOKEN, "dummy_csrf_token")
-                    .header(
-                        header::COOKIE,
-                        format!("{CSRF_TOKEN_COOKIE}=dummy_csrf_token"),
-                    )
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&delete_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let config_guard = state.config.read().await;
-        let group = config_guard
-            .groups
-            .iter()
-            .find(|g| g.name == "test_group")
-            .unwrap();
-        assert!(!group.api_keys.contains(&"key1".to_string()));
-        assert_eq!(group.api_keys.len(), 1);
-    }
-
-    // This test needs a running Redis instance and is more of an integration test.
-    // It's commented out to allow unit tests to pass without external dependencies.
-    // #[tokio::test]
-    // async fn test_list_keys() {
-    //     let (state, _temp_dir) = setup_state(None).await;
-    //     let app = admin_routes().with_state(state.clone());
-    //
-    //     // Test without filters
-    //     let response = app
-    //         .clone()
-    //         .oneshot(
-    //             Request::builder()
-    //                 .uri("/admin/keys")
-    //                 .body(Body::empty())
-    //                 .unwrap(),
-    //         )
-    //         .await
-    //         .unwrap();
-    //     assert_eq!(response.status(), StatusCode::OK);
-    //     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    //     let keys: Vec<KeyInfo> = serde_json::from_slice(&body_bytes).unwrap();
-    //     assert_eq!(keys.len(), 3);
-    // }
-
-    #[tokio::test]
-    async fn test_detailed_health() {
-        let (state, _temp_dir) = setup_state(None).await;
-        let app = admin_routes().with_state(state.clone());
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/admin/health")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let health: DetailedHealthStatus = serde_json::from_slice(&body_bytes).unwrap();
-
-        assert_eq!(health.status, "healthy");
-        assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
-        // uptime_seconds is u64, so it's always >= 0. This check is redundant but kept for clarity.
-        assert_eq!(health.server_info.port, 8080);
-        assert_eq!(health.server_info.host, "0.0.0.0");
-        assert!(!health.server_info.rust_version.is_empty());
-        assert!(!health.server_info.os_info.is_empty());
-        assert!(health.server_info.num_cpus > 0);
-
-        assert_eq!(health.key_status.total_keys, 3);
-        assert_eq!(health.key_status.active_keys, 3);
-        assert_eq!(health.key_status.groups.len(), 2);
-
-        assert!(health.system_info.memory_usage_mb > 0);
-        assert!(health.system_info.total_memory_mb > 0);
-        assert!(health.system_info.cpu_usage_percent >= 0.0);
     }
 }

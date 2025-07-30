@@ -198,63 +198,43 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
             }
         }
 
-        // If no handler took action, it means the response should be returned as is.
-        let mut should_continue = false;
-        if let Some(action) = action_to_take {
-            match action {
-                Action::ReturnToClient(resp) => return Ok(resp),
-                Action::RetryNextKey => {
-                    trace!("Attempting to acquire write lock on key_manager (RetryNextKey)...");
-                    let key_manager_guard = key_manager.write().await;
-                    trace!("Acquired write lock on key_manager (RetryNextKey).");
-                    key_manager_guard
-                        .handle_api_failure(&key_info.key, false)
-                        .await?;
-                    should_continue = true;
-                    trace!("Releasing write lock on key_manager (RetryNextKey).");
-                }
-                Action::BlockKeyAndRetry => {
-                    trace!("Attempting to acquire write lock on key_manager (BlockKeyAndRetry)...");
-                    let key_manager_guard = key_manager.write().await;
-                    trace!("Acquired write lock on key_manager (BlockKeyAndRetry).");
-                    key_manager_guard
-                        .handle_api_failure(&key_info.key, true)
-                        .await?;
-                    should_continue = true;
-                    trace!("Releasing write lock on key_manager (BlockKeyAndRetry).");
-                }
+        let final_response = Response::from_parts(parts, Body::from(response_bytes.clone()));
+
+        match action_to_take {
+            Some(Action::ReturnToClient(resp)) => return Ok(resp),
+            Some(Action::RetryNextKey) => {
+                trace!("Retrying with next key");
+                key_manager
+                    .write()
+                    .await
+                    .handle_api_failure(&key_info.key, false)
+                    .await?;
+                last_response = Some(final_response);
+            }
+            Some(Action::BlockKeyAndRetry) => {
+                trace!("Blocking key and retrying");
+                key_manager
+                    .write()
+                    .await
+                    .handle_api_failure(&key_info.key, true)
+                    .await?;
+                last_response = Some(final_response);
+            }
+            None => {
+                // No specific action, so this is the final response.
+                // This handles success cases and terminal errors not caught by handlers.
+                return Ok(final_response);
             }
         }
-
-        // This is the crucial logic block.
-        // We decide whether to continue the loop or break and return the last response.
-        if should_continue {
-            // We need to retry. Store the current failed response in `last_response`
-            // in case all subsequent keys also fail. This ensures we return the *last*
-            // error to the client, which is what the test `test_handler_returns_last_429_on_exhaustion` checks.
-            last_response = Some(Response::from_parts(parts, Body::from(response_bytes)));
-            continue;
-        } else {
-            // No handler requested a retry (e.g., a generic 400 error).
-            // This means this is the final response. Store it and break the loop.
-            // This fixes `test_returns_immediately_on_400_with_other_body`.
-            last_response = Some(Response::from_parts(parts, Body::from(response_bytes)));
-            break;
-        }
     }
 
-    if let Some(model_name) = &model {
-        warn!(model = %model_name, "No available API keys remaining for model.");
-    } else {
-        warn!("No available API keys remaining.");
-    }
-
-    // The loop is broken either when no more keys are available, or when a response
-    // should be returned to the client without further retries.
+    // If the loop completes, it means all keys were tried and failed.
+    // Return the last response that was captured.
     if let Some(resp) = last_response {
+        warn!("All keys failed, returning last captured error response.");
         Ok(resp)
     } else {
-        warn!("Exited proxy loop without any last response. This indicates no keys were available from the start.");
+        warn!("No available API keys for the given group.");
         Err(AppError::NoAvailableKeys)
     }
 }

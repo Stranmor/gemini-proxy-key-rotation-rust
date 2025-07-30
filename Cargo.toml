@@ -40,6 +40,7 @@ futures-util = "0.3"
 openssl = { version = "0.10", features = ["vendored"] }
 redis = { version = "0.25.4", features = ["tokio-comp"] }
 deadpool-redis = "0.15.0"
+once_cell = "1.19.0"
 
 [dev-dependencies]
 assert_cmd = "2.0"

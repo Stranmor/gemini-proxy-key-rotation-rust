@@ -25,7 +25,7 @@ services:
           cpus: '2.0'
 
   redis:
-    image: "redis:alpine"
+в    image: "docker.io/library/redis:alpine"
     container_name: gemini-proxy-redis
     ports:
       - "6380:6379"
@@ -49,14 +49,15 @@ services:
 
   # Сервис для запуска тестов.
   # Вызывается через `docker-compose run`.
-  tester:
+  test:
     build:
       context: .
       target: tester
-      network: host
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
+    # `depends_on` ensures that redis is started before the tests run.
+    # Podman Compose will also connect this service to the default network of the project,
+    # allowing the test container to reach redis at `redis:6379`.
+    depends_on:
+      - redis
 
 volumes:
   key_states:

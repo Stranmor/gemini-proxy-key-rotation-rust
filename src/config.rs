@@ -10,7 +10,6 @@ use crate::error::{AppError, Result};
 // --- Data Structures ---
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct KeyGroup {
     pub name: String,
     #[serde(default)]
@@ -39,13 +38,13 @@ impl Default for KeyGroup {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Default, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
     pub groups: Vec<KeyGroup>,
-    pub redis_url: String,
+    #[serde(default)]
+    pub redis_url: Option<String>,
     #[serde(default)]
     pub redis_key_prefix: Option<String>,
 
@@ -68,7 +67,6 @@ impl AppConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_server_port")]
     pub port: u16,
@@ -78,6 +76,10 @@ pub struct ServerConfig {
     pub admin_token: Option<String>,
     #[serde(default)]
     pub test_mode: bool,
+    #[serde(default = "default_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
 }
 
 // --- Default Implementations ---
@@ -89,11 +91,21 @@ impl Default for ServerConfig {
             top_p: None,
             admin_token: None,
             test_mode: false,
+            connect_timeout_secs: default_connect_timeout_secs(),
+            request_timeout_secs: default_request_timeout_secs(),
         }
     }
 }
 const fn default_server_port() -> u16 {
     8080
+}
+
+const fn default_connect_timeout_secs() -> u64 {
+    10
+}
+
+const fn default_request_timeout_secs() -> u64 {
+    60
 }
 
 const fn default_internal_retries() -> u32 {
@@ -126,6 +138,14 @@ fn validate_server_config(server: &ServerConfig) -> bool {
             error!(err = "server top_p out of range", top_p = tp);
             errors += 1;
         }
+    }
+    if server.connect_timeout_secs == 0 || server.connect_timeout_secs > 300 {
+        error!(err = "connect_timeout_secs out of range", timeout = server.connect_timeout_secs);
+        errors += 1;
+    }
+    if server.request_timeout_secs == 0 || server.request_timeout_secs > 600 {
+        error!(err = "request_timeout_secs out of range", timeout = server.request_timeout_secs);
+        errors += 1;
     }
     errors == 0
 }
@@ -389,6 +409,8 @@ mod tests {
             top_p: None,
             admin_token: None,
             test_mode: false,
+            connect_timeout_secs: default_connect_timeout_secs(),
+            request_timeout_secs: default_request_timeout_secs(),
         }));
     }
     #[test]
