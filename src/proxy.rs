@@ -150,20 +150,47 @@ pub async fn forward_request(
     let response_status = target_response.status();
     let response_headers = build_response_headers(target_response.headers());
 
-    // Stream response body back
-    let captured_response_status = response_status; // Capture status for closure
-    let response_body_stream = target_response.bytes_stream().map_err(move |e| {
-        // Log error during stream reading
+    // For error status codes, read and log the response body
+    let axum_response_body = if response_status.is_client_error() || response_status.is_server_error() {
+        // Read the entire response body for error cases to log it
+        let response_bytes = target_response.bytes().await.map_err(|e| {
+            error!(
+                status = response_status.as_u16(),
+                error = %e,
+                "Failed to read error response body"
+            );
+            AppError::ResponseBodyError(format!(
+                "Failed to read error response body (status {response_status}): {e}"
+            ))
+        })?;
+        
+        // Log the error response body
+        let response_body_text = String::from_utf8_lossy(&response_bytes);
         warn!(
-            status = captured_response_status.as_u16(),
-            error = %e,
-            "Error reading upstream response body stream"
+            status = response_status.as_u16(),
+            response_body = %response_body_text,
+            api_key.preview = %request_key_preview,
+            group.name = %group_name,
+            "Error response received from target"
         );
-        AppError::ResponseBodyError(format!(
-            "Upstream body stream error (status {captured_response_status}): {e}"
-        ))
-    });
-    let axum_response_body = Body::from_stream(response_body_stream);
+        
+        Body::from(response_bytes)
+    } else {
+        // For success responses, stream the body as before
+        let captured_response_status = response_status; // Capture status for closure
+        let response_body_stream = target_response.bytes_stream().map_err(move |e| {
+            // Log error during stream reading
+            warn!(
+                status = captured_response_status.as_u16(),
+                error = %e,
+                "Error reading upstream response body stream"
+            );
+            AppError::ResponseBodyError(format!(
+                "Upstream body stream error (status {captured_response_status}): {e}"
+            ))
+        });
+        Body::from_stream(response_body_stream)
+    };
 
     // Build final response to client
     let mut client_response = Response::builder()

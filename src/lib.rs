@@ -9,6 +9,7 @@ pub mod handlers;
 pub mod key_manager;
 pub mod proxy;
 pub mod state;
+pub mod tokenizer;
 
 // Re-export key types for easier use by the binary or tests
 use axum::{

@@ -10,10 +10,12 @@ use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{Request, State},
     http::{HeaderMap, Method, StatusCode, Uri},
-    response::Response,
+    response::{IntoResponse, Response},
+    Json,
 };
+use serde_json::json;
 use std::sync::Arc;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 use url::Url;
 
 #[instrument(name = "health_check", skip_all)]
@@ -87,12 +89,66 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         .await
         .map_err(|e| AppError::RequestBodyError(e.to_string()))?;
 
+    // --- Token Count Validation ---
+    let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
+    let mut body_modified = false;
+
+    if let Some(json_body) = &json_body_opt {
+        // --- Token Count Validation ---
+        const TOKEN_LIMIT: usize = 250_000;
+
+        let total_text: String = json_body
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|messages| {
+                messages
+                    .iter()
+                    .filter_map(|message| message.get("content").and_then(|c| c.as_str()))
+                    .collect::<Vec<&str>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+
+        if !total_text.is_empty() {
+            // Only count tokens if tokenizer is initialized
+            if let Some(tokenizer) = crate::tokenizer::TOKENIZER.get() {
+                let token_count = tokenizer.encode(total_text.as_str(), false)
+                    .map(|encoding| encoding.len())
+                    .unwrap_or(0);
+                info!(token_count, "Calculated request token count");
+
+                if token_count > TOKEN_LIMIT {
+                    warn!(
+                        token_count,
+                        limit = TOKEN_LIMIT,
+                        "Request exceeds token limit. Rejecting request."
+                    );
+                    let error_response = json!({
+                        "error": format!("Request exceeds the {} token limit and was not sent.", TOKEN_LIMIT)
+                    });
+                    return Ok((StatusCode::PAYLOAD_TOO_LARGE, Json(error_response)).into_response());
+                }
+            } else {
+                debug!("Tokenizer not initialized, skipping token count check");
+            }
+        }
+    }
+
     // Conditionally inject top_p
     if let Some(top_p) = state.config.read().await.top_p {
-        if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+        if let Some(json_body) = &mut json_body_opt {
             if let Some(obj) = json_body.as_object_mut() {
                 obj.insert("top_p".to_string(), serde_json::json!(top_p));
-                if let Ok(new_body_bytes) = serde_json::to_vec(&json_body) {
+                body_modified = true;
+            }
+        }
+    }
+
+    // If the body was modified, serialize it back to bytes
+    if body_modified {
+        if let Some(json_body) = json_body_opt {
+            match serde_json::to_vec(&json_body) {
+                Ok(new_body_bytes) => {
                     let new_len = new_body_bytes.len();
                     body_bytes = Bytes::from(new_body_bytes);
                     parts.headers.insert(
@@ -101,10 +157,13 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                             .map_err(|_| AppError::InvalidHttpHeader)?,
                     );
                 }
+                Err(e) => {
+                    // Log the error but proceed with the original body
+                    error!(error = ?e, "Failed to re-serialize JSON body after modification.");
+                }
             }
         }
     }
-
     let req_context = RequestContext {
         method: &parts.method,
         uri: &parts.uri,

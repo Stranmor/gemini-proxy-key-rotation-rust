@@ -1,7 +1,7 @@
 // src/main.rs
 
 use axum::serve;
-use gemini_proxy_key_rotation_rust::{AppError, run};
+use gemini_proxy_key_rotation_rust::{AppError, run, tokenizer::initialize_tokenizer};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -45,6 +45,13 @@ async fn main() -> Result<(), AppError> {
         .with(env_filter)
         .with(json_layer)
         .init();
+
+    // --- Initialize Tokenizer ---
+    if let Err(e) = initialize_tokenizer("google/gemma-2-2b").await {
+        error!(error = ?e, "Failed to initialize tokenizer. Exiting.");
+        return Err(AppError::TokenizerInitializationError(e.to_string()));
+    }
+
 
     // The `run` function now configures the app and returns both the router and the config.
     let (app, config) = run(None).await.map_err(|e| {

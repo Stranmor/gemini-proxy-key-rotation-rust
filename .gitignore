@@ -30,3 +30,4 @@ memory-bank/
 
 # Build artifacts
 clippy_report.txt
+coverage_report/

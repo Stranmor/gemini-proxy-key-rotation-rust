@@ -128,6 +128,9 @@ pub enum AppError {
 
     #[error("Redis command error: {0}")]
     RedisErrorGeneric(#[from] redis::RedisError),
+
+    #[error("Tokenizer initialization failed: {0}")]
+    TokenizerInitializationError(String),
 }
 
 impl From<deadpool_redis::CreatePoolError> for AppError {
@@ -284,6 +287,17 @@ impl AppError {
                     details: None,
                 },
             ),
+            Self::TokenizerInitializationError(msg) => {
+                error!("CRITICAL: Tokenizer initialization failed: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorDetails {
+                        error_type: "TOKENIZER_INIT_FAILURE".to_string(),
+                        message: "Internal server error: critical component failed to initialize.".to_string(),
+                        details: None, // Do not expose internal details to the client
+                    },
+                )
+            }
 
             // --- 5xx Ошибки, связанные с вышестоящими сервисами/проксированием ---
             Self::Reqwest(e) => {
