@@ -23,7 +23,7 @@ use axum::{
     Router,
 };
 use crate::handlers::{health_check, proxy_handler};
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{path::{Path, PathBuf}, sync::Arc, time::Instant};
 use tower_cookies::CookieManagerLayer;
 use tracing::{error, info, info_span, Instrument};
 use uuid::Uuid;
@@ -47,7 +47,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/metrics", get(metrics::metrics_handler))
-        .merge(admin::admin_routes());
+        .merge(admin::admin_routes(state.clone()));
 
     for path in proxy_routes {
         router = router.route(path, any(proxy_handler));
@@ -155,7 +155,7 @@ fn setup_configuration(config_path_override: Option<PathBuf>) -> Result<(AppConf
 }
 
 /// Создает и инициализирует состояние приложения, включая подключение к Redis.
-async fn build_application_state(app_config: &AppConfig, config_path: &PathBuf) -> Result<Arc<AppState>> {
+async fn build_application_state(app_config: &AppConfig, config_path: &Path) -> Result<Arc<AppState>> {
     // Примечание: Логика создания пула Redis теперь должна быть внутри `AppState::new`.
     // Это улучшает инкапсуляцию, так как AppState управляет своими собственными зависимостями.
     // Функция `run` больше не должна беспокоиться о деталях создания пула.

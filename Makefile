@@ -37,11 +37,18 @@ restart:
 # Run tests inside the container.
 # This command builds the tester image (if needed) and runs the tests.
 test:
-	podman-compose run --rm tester
+	podman-compose run --rm test
+
+# Clean test environment (use when needed)
+test-clean:
+	podman-compose down -v --rmi all
+	killall rootlessport || true
+	podman-compose run --rm test
 
 # Run the linter (clippy) using a dedicated Docker build stage.
 lint:
-	podman build --target linter .
+	podman build -q --target linter -t gemini-proxy-linter .
+	podman run --rm gemini-proxy-linter
 
 # Generate the code coverage report using a dedicated Docker build stage.
 coverage:

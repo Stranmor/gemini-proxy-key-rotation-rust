@@ -18,13 +18,13 @@ use axum::{
 use chrono::{DateTime, Utc};
 use cookie::{SameSite, time::Duration as CookieDuration};
 use http::HeaderName;
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use sysinfo::{Disks, System};
 use tokio::sync::Mutex;
-use tower_cookies::{Cookie, Cookies};
+use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
 use tracing::{error, info, warn};
 
 // --- Constants ---
@@ -35,6 +35,8 @@ static X_CSRF_TOKEN: HeaderName = HeaderName::from_static("x-csrf-token");
 const ADMIN_TOKEN_COOKIE: &str = "admin_token";
 /// The name of the cookie storing the CSRF token.
 const CSRF_TOKEN_COOKIE: &str = "csrf_token";
+/// Default system refresh interval in seconds.
+const DEFAULT_SYSTEM_REFRESH_INTERVAL: u64 = 5;
 
 // --- System Info Collector ---
 
@@ -68,10 +70,13 @@ impl SystemInfoCollector {
             timer.tick().await;
             loop {
                 timer.tick().await;
-                let mut sys = self.system.lock().await;
-                // Refresh only what we need to be more efficient.
-                (*sys).refresh_cpu_specifics(sysinfo::CpuRefreshKind::everything());
-                (*sys).refresh_memory();
+                if let Ok(mut sys) = self.system.try_lock() {
+                    // Refresh only what we need to be more efficient.
+                    sys.refresh_cpu_specifics(sysinfo::CpuRefreshKind::everything());
+                    sys.refresh_memory();
+                } else {
+                    warn!("Failed to acquire system lock for refresh, skipping this cycle");
+                }
             }
         });
     }
@@ -132,9 +137,9 @@ impl Default for SystemInfoCollector {
 // --- Router Definition ---
 
 /// Defines all administrative API routes.
-pub fn admin_routes() -> Router<Arc<AppState>> {
+pub fn admin_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     use crate::middleware::rate_limit_middleware;
-    
+
     // Routes that require admin authentication and CSRF protection
     // Order of middleware matters: auth first, then CSRF.
     let authed_routes = Router::new()
@@ -143,7 +148,8 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/keys/:key_id/verify", post(verify_key))
         .route("/keys/:key_id/reset", post(reset_key))
         .route("/config", put(update_config))
-        .route_layer(middleware::from_fn(csrf_middleware));
+        .route_layer(middleware::from_fn(csrf_middleware))
+        .route_layer(middleware::from_fn_with_state(state.clone(), crate::middleware::admin_auth_middleware));
 
     // Combine all admin routes under a common `/admin` prefix.
     Router::new().nest(
@@ -159,7 +165,8 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
             .route("/csrf-token", get(get_csrf_token))
             .route("/login", post(login))
             .merge(authed_routes)
-            .layer(middleware::from_fn(rate_limit_middleware)), // Add rate limiting to all admin routes
+            .layer(CookieManagerLayer::new())
+            .layer(middleware::from_fn_with_state(state, rate_limit_middleware)), // Add rate limiting to all admin routes
     )
 }
 
@@ -243,13 +250,6 @@ pub struct DeleteKeysRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModelBlockInfo {
-    pub model: String,
-    pub blocked_until: DateTime<Utc>,
-    pub reason: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct ModelStats {
     pub model: String,
     pub blocked_keys_count: usize,
@@ -271,23 +271,13 @@ pub struct KeyInfo {
     pub status: String,
     pub last_used: Option<DateTime<Utc>>,
     pub reset_time: Option<DateTime<Utc>>,
-    pub model_blocks: Vec<ModelBlockInfo>,
 }
 
 impl KeyInfo {
     /// Creates a new `KeyInfo` for API responses from internal key data.
     fn new(key_info: &FlattenedKeyInfo, key_state: Option<&KeyState>) -> Self {
         let (status_str, reset_time) = get_key_status_str(key_state);
-        let key_preview = if key_info.key.len() > 10 {
-            format!(
-                "{}...{}",
-                &key_info.key[..6],
-                &key_info.key[key_info.key.len() - 4..]
-            )
-        } else {
-            key_info.key.clone()
-        };
-
+        let key_preview = Self::create_key_preview(&key_info.key);
         Self {
             id: format!("{:x}", md5::compute(&key_info.key)),
             group_name: key_info.group_name.clone(),
@@ -295,7 +285,15 @@ impl KeyInfo {
             status: status_str.to_string(),
             last_used: None, // TODO: Track last usage time in KeyManager
             reset_time,
-            model_blocks: Vec::new(), // model_blocks is no longer part of KeyState
+        }
+    }
+
+    /// Creates a safe preview of the API key for display purposes.
+    fn create_key_preview(key: &str) -> String {
+        if key.len() > 10 {
+            format!("{}...{}", &key[..6], &key[key.len() - 4..])
+        } else {
+            key.to_string()
         }
     }
 }
@@ -407,7 +405,7 @@ pub async fn list_keys(
             query
                 .group
                 .as_ref()
-                .is_none_or(|g| g == &key_info.group_name)
+                .map_or(true, |g| g == &key_info.group_name)
         })
         .filter_map(|key_info| {
             let key_state = key_states.get(&key_info.key);
@@ -415,7 +413,7 @@ pub async fn list_keys(
             if query
                 .status
                 .as_ref()
-                .is_none_or(|s| s == &api_key_info.status)
+                .map_or(true, |s| s == &api_key_info.status)
             {
                 Some(api_key_info)
             } else {
@@ -599,10 +597,12 @@ pub async fn login(
 
     match expected_token {
         Some(token) if !token.is_empty() && request.token == token => {
+            let is_test_mode = config.server.test_mode;
             let cookie = Cookie::build((ADMIN_TOKEN_COOKIE, token.to_string()))
                 .path("/")
                 .http_only(true)
-                .secure(true)
+                // In production, the cookie must be secure. In test mode, it should not be.
+                .secure(!is_test_mode)
                 .same_site(SameSite::Strict)
                 .max_age(CookieDuration::days(7))
                 .build();
@@ -618,17 +618,24 @@ pub async fn login(
 
 /// Generates a cryptographically secure CSRF token, sets it as a cookie, and returns it in the response body.
 #[axum::debug_handler]
-pub async fn get_csrf_token(jar: Cookies) -> Result<impl IntoResponse> {
+pub async fn get_csrf_token(
+    State(state): State<Arc<AppState>>,
+    jar: Cookies,
+) -> Result<impl IntoResponse> {
     // Generate a cryptographically secure token using 32 random bytes
     let mut token_bytes = [0u8; 32];
     thread_rng().fill(&mut token_bytes);
-    
+
     // Convert to hex string for easier handling
     let token = hex::encode(token_bytes);
 
+    let config = state.config.read().await;
+    let is_test_mode = config.server.test_mode;
+
     let cookie = Cookie::build((CSRF_TOKEN_COOKIE, token.clone()))
         .path("/")
-        .secure(true)
+        // In production, the cookie must be secure. In test mode, it should not be.
+        .secure(!is_test_mode)
         .same_site(SameSite::Strict)
         // This cookie should be readable by JS, so it must NOT be HttpOnly.
         // It is session-based for stricter security (no max_age).
@@ -689,6 +696,7 @@ where
 
     Ok(())
 }
+
 /// Calculates a summary of key statuses and group information.
 async fn calculate_key_status_summary(
     key_manager_guard: &tokio::sync::RwLockReadGuard<'_, crate::key_manager::KeyManager>,
@@ -766,7 +774,6 @@ mod tests {
     use tower_cookies::CookieManagerLayer;
 
     // --- Unit Tests ---
-
     #[test]
     fn test_get_key_status_str() {
         let now = Utc::now();
@@ -797,6 +804,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_create_key_preview() {
+        assert_eq!(KeyInfo::create_key_preview("short"), "short");
+        assert_eq!(
+            KeyInfo::create_key_preview("sk-1234567890abcdef"),
+            "sk-123...cdef"
+        );
+        assert_eq!(
+            KeyInfo::create_key_preview("very_long_api_key_string_here"),
+            "very_l...here"
+        );
+    }
+
     // --- Middleware Tests ---
 
     /// Creates a test app with the CSRF middleware applied.
@@ -806,7 +826,6 @@ mod tests {
             .route_layer(middleware::from_fn(csrf_middleware))
             .layer(CookieManagerLayer::new())
     }
-
     #[tokio::test]
     async fn test_csrf_middleware_success() {
         let app = csrf_app();
@@ -890,7 +909,6 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
-
     #[tokio::test]
     async fn test_csrf_middleware_empty_tokens() {
         let app = csrf_app();

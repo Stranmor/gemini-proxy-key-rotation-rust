@@ -217,8 +217,7 @@ impl MetricsCollector {
         output.push_str("# TYPE gemini_proxy_key_usage_total counter\n");
         for (key_preview, count) in &snapshot.key_usage_count {
             output.push_str(&format!(
-                "gemini_proxy_key_usage_total{{key_preview=\"{}\"}} {}\n",
-                key_preview, count
+                "gemini_proxy_key_usage_total{{key_preview=\"{key_preview}\"}} {count}\n"
             ));
         }
         output.push('\n');
@@ -228,8 +227,7 @@ impl MetricsCollector {
         output.push_str("# TYPE gemini_proxy_key_failures_total counter\n");
         for (key_preview, count) in &snapshot.key_failure_count {
             output.push_str(&format!(
-                "gemini_proxy_key_failures_total{{key_preview=\"{}\"}} {}\n",
-                key_preview, count
+                "gemini_proxy_key_failures_total{{key_preview=\"{key_preview}\"}} {count}\n"
             ));
         }
         output.push('\n');
@@ -239,8 +237,7 @@ impl MetricsCollector {
         output.push_str("# TYPE gemini_proxy_errors_total counter\n");
         for (error_type, count) in &snapshot.error_counts {
             output.push_str(&format!(
-                "gemini_proxy_errors_total{{error_type=\"{}\"}} {}\n",
-                error_type, count
+                "gemini_proxy_errors_total{{error_type=\"{error_type}\"}} {count}\n"
             ));
         }
         

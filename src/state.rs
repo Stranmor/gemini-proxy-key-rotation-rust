@@ -3,6 +3,7 @@
 use crate::admin::SystemInfoCollector;
 use crate::config::AppConfig;
 use crate::handlers::base::ResponseHandler;
+use crate::middleware::rate_limit::RateLimitStore;
 use crate::handlers::{
     invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, success::SuccessHandler,
     terminal_error::TerminalErrorHandler,
@@ -43,6 +44,7 @@ pub struct AppState {
     pub system_info: SystemInfoCollector,
     pub config_path: PathBuf,
     pub metrics: Arc<MetricsCollector>,
+    pub rate_limit_store: RateLimitStore,
 }
 
 impl fmt::Debug for AppState {
@@ -298,6 +300,7 @@ impl AppState {
             system_info: SystemInfoCollector::new(),
             config_path: config_path.to_path_buf(),
             metrics: Arc::new(MetricsCollector::new()),
+            rate_limit_store: crate::middleware::rate_limit::create_rate_limit_store(),
         })
     }
 

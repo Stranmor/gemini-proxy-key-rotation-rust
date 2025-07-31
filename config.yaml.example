@@ -1,0 +1,41 @@
+# Example configuration file for Gemini Proxy Key Rotation
+# Copy this file to config.yaml and fill in your actual values
+
+# Server and Log settings
+server:
+  port: 4805
+  top_p: 0.7
+  # IMPORTANT: Set a strong admin token for admin panel access
+  admin_token: "your-secure-admin-token-here"
+  # HTTP client timeout settings (in seconds)
+  # connect_timeout_secs: 10  # Connection timeout
+  # request_timeout_secs: 60  # Overall request timeout
+
+# Rate limit behavior: BlockUntilMidnight or RetryNextKey
+# rate_limit_behavior: retryNextKey
+
+# Redis configuration (optional, for persistent state)
+# redis_url: "redis://127.0.0.1:6380"
+
+# --- API Key Groups ---
+groups:
+  - name: "default"
+    target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_keys:
+      - "YOUR_API_KEY_1_HERE"
+      - "YOUR_API_KEY_2_HERE"
+      # Add more API keys as needed
+
+  - name: "gemini-alt-17"
+    target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_keys:
+      - "YOUR_ALT_API_KEY_1_HERE"
+      - "YOUR_ALT_API_KEY_2_HERE"
+      # Add more API keys as needed
+      
+  - name: "gemini-alt-21"
+    target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_keys:
+      - "YOUR_ALT2_API_KEY_1_HERE"
+      - "YOUR_ALT2_API_KEY_2_HERE"
+      # Add more API keys as needed

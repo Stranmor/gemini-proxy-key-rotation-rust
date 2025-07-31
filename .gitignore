@@ -15,8 +15,11 @@ config.yaml
 # IDE files (optional, adjust as needed)
 .idea/
 .vscode/
+.idea/
+*.swp
+*.swo
 
-# OS files (optional)
+# OS
 .DS_Store
 *.swp
 *~
@@ -28,6 +31,16 @@ config.yaml
 # Ignore Memory Bank
 memory-bank/
 
-# Build artifacts
-clippy_report.txt
+# Coverage reports
 coverage_report/
+tarpaulin-report.html
+
+# Docker
+.dockerignore
+
+# Redis data
+dump.rdb
+
+# Temporary files
+*.tmp
+*.temp

@@ -15,6 +15,14 @@ use tempfile::TempDir;
 use tower::util::ServiceExt;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
+use std::panic;
+
+fn setup_panic_hook() {
+    panic::set_hook(Box::new(|panic_info| {
+        eprintln!("Panic occurred: {:?}", panic_info);
+    }));
+}
+
 static TRACING_INIT: Once = Once::new();
 
 /// Initializes the tracing subscriber for tests, ensuring it only runs once.
@@ -166,6 +174,7 @@ fn get_default_config() -> AppConfig {
 
 #[tokio::test]
 async fn test_detailed_health_ok() {
+    setup_panic_hook();
     let config = get_default_config();
     let app = TestApp::new(config).await;
 

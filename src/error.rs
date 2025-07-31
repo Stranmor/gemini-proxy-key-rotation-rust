@@ -499,9 +499,7 @@ mod tests {
             .expect("JSON 'error.message' field is not a string or missing");
         assert!(
             error_msg.contains(expected_message_substring),
-            "Assertion failed: Expected message '{}' to contain '{}'",
-            error_msg,
-            expected_message_substring
+            "Assertion failed: Expected message '{error_msg}' to contain '{expected_message_substring}'"
         );
 
         if expect_details {

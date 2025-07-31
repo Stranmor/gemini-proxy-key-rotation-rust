@@ -19,7 +19,7 @@ pub async fn initialize_tokenizer(model_name: &str) -> Result<(), Box<dyn Error 
         let api = Api::new()?;
         let repo = api.model(model_name_owned);
         let tokenizer_path = repo.get("tokenizer.json")?;
-        Ok(Tokenizer::from_file(tokenizer_path)?)
+        Tokenizer::from_file(tokenizer_path)
     })
     .await??;
 
@@ -113,8 +113,7 @@ mod tests {
 
         assert!(
             is_not_found_or_auth_error,
-            "Error message should indicate a 'Not Found', '404', '401', or '403' error, but was: {}",
-            error_message
+            "Error message should indicate a 'Not Found', '404', '401', or '403' error, but was: {error_message}"
         );
     }
 

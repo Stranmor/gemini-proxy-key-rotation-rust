@@ -19,7 +19,7 @@ const DEFAULT_GROUP_ID: &str = "__default_all_keys__";
 
 // --- Helper Functions ---
 fn key_state_key(api_key: &str) -> String {
-    format!("key_state:{}", api_key)
+    format!("key_state:{api_key}")
 }
 
 // --- Data Structures ---
@@ -99,7 +99,7 @@ impl KeyManager {
         }).collect()
     }
     
-    fn preview_key(key: &str) -> String {
+    pub fn preview_key(key: &str) -> String {
         if key.len() > 8 {
             format!("{}...{}", &key[..4], &key[key.len() - 4..])
         } else {
@@ -155,7 +155,7 @@ impl KeyManagerTrait for KeyManager {
         let mut candidate_keys: Vec<_> = all_keys.iter().filter_map(|key| {
             self.key_info_map.get(key)
         }).filter(|info| {
-            group_name.map_or(true, |gn| info.group_name == gn)
+            group_name.is_none_or(|gn| info.group_name == gn)
         }).collect();
 
         candidate_keys.sort_by(|a, b| a.key.cmp(&b.key));
@@ -305,7 +305,7 @@ impl KeyStore for RedisStore {
 
     async fn get_next_rotation_index(&self, group_id: &str) -> Result<usize> {
         let mut conn = self.pool.get().await?;
-        let counter_key = self.prefix_key(&format!("{}:{}", ROTATION_COUNTER_KEY, group_id));
+        let counter_key = self.prefix_key(&format!("{ROTATION_COUNTER_KEY}:{group_id}"));
         let index: usize = conn.incr(&counter_key, 1).await?;
         Ok(index)
     }
@@ -415,7 +415,7 @@ impl KeyStore for InMemoryStore {
             }
             return Ok(state.clone());
         }
-        Err(AppError::NotFound(format!("API Key '{}' not found in memory store.", api_key)))
+        Err(AppError::NotFound(format!("API Key '{api_key}' not found in memory store.")))
     }
     
     async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>> {

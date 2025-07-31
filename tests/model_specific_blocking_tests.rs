@@ -1,7 +1,7 @@
 // tests/model_specific_blocking_tests.rs
 
 use axum_test::TestServer;
-use gemini_proxy_key_rotation_rust::{run, AppConfig};
+use gemini_proxy_key_rotation_rust::run;
 use serde_json::json;
 use std::path::PathBuf;
 use tempfile::tempdir;

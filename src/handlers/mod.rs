@@ -25,6 +25,7 @@ use axum::{
 };
 use serde_json::json;
 use std::sync::Arc;
+
 use tracing::{debug, error, info, instrument, trace, warn};
 use url::Url;
 
@@ -107,120 +108,53 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         // --- Token Count Validation ---
         const TOKEN_LIMIT: usize = 250_000;
 
-        let total_text: String = json_body
-            .get("messages")
-            .and_then(|m| m.as_array())
-            .map(|messages| {
-                messages
-                    .iter()
-                    .filter_map(|message| message.get("content").and_then(|c| c.as_str()))
-                    .collect::<Vec<&str>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
+#[instrument(name = "health_check", skip_all)]
+pub async fn health_check() -> StatusCode {
+    StatusCode::OK
+}
 
-        if !total_text.is_empty() {
-            // Only count tokens if tokenizer is initialized
-            if let Some(tokenizer) = crate::tokenizer::TOKENIZER.get() {
-                let token_count = tokenizer.encode(total_text.as_str(), false)
-                    .map(|encoding| encoding.len())
-                    .unwrap_or(0);
-                info!(token_count, "Calculated request token count");
+/* ---------- helpers ---------- */
 
-                if token_count > TOKEN_LIMIT {
-                    warn!(
-                        token_count,
-                        limit = TOKEN_LIMIT,
-                        "Request exceeds token limit. Rejecting request."
-                    );
-                    let error_response = json!({
-                        "error": format!("Request exceeds the {} token limit and was not sent.", TOKEN_LIMIT)
-                    });
-                    return Ok((StatusCode::PAYLOAD_TOO_LARGE, Json(error_response)).into_response());
-                }
-            } else {
-                debug!("Tokenizer not initialized, skipping token count check");
-            }
-        }
-    }
-
-    // Conditionally inject top_p
-    if let Some(top_p) = state.config.read().await.top_p {
-        if let Some(json_body) = &mut json_body_opt {
-            if let Some(obj) = json_body.as_object_mut() {
-                obj.insert("top_p".to_string(), serde_json::json!(top_p));
-                body_modified = true;
-            }
-        }
-    }
-
-    // If the body was modified, serialize it back to bytes
-    if body_modified {
-        if let Some(json_body) = json_body_opt {
-            match serde_json::to_vec(&json_body) {
-                Ok(new_body_bytes) => {
-                    let new_len = new_body_bytes.len();
-                    body_bytes = Bytes::from(new_body_bytes);
-                    parts.headers.insert(
-                        "content-length",
-                        http::HeaderValue::from_str(&new_len.to_string())
-                            .map_err(|_| AppError::InvalidHttpHeader)?,
-                    );
-                }
-                Err(e) => {
-                    // Log the error but proceed with the original body
-                    error!(error = ?e, "Failed to re-serialize JSON body after modification.");
-                }
-            }
-        }
-    }
-    let req_context = RequestContext {
-        method: &parts.method,
-        uri: &parts.uri,
-        headers: &parts.headers,
-        body: &body_bytes,
-    };
-
-    let model = extract_model_from_request(req_context.uri.path(), &body_bytes);
-
-    info!(
-        model = ?model,
-        path = %req_context.uri.path(),
-        "Processing request with model-specific key management"
-    );
-
-    let response_handlers = state.response_handlers.clone();
-
-    let mut last_response: Option<Response> = None;
-
-    loop {
-        // DE-NEST LOCKS TO PREVENT DEADLOCKS
-        // 1. Get group name from config first
-        let group_name = {
-            trace!("Attempting to acquire read lock on config...");
-            let config_guard = state.config.read().await;
-            trace!("Acquired read lock on config.");
-            let group = model
-                .as_deref()
-                .and_then(|m| config_guard.get_group_for_model(m))
-                .map(|g| g.name.clone());
-            trace!("Releasing read lock on config.");
-            group
-        };
-        // Drop config lock before acquiring key_manager lock
-
-        // 2. Get key from key_manager and handle immediately
-        let key_info = {
-            let key_manager_guard = state.key_manager.write().await;
-            match key_manager_guard
-                .get_next_available_key_info(group_name.as_deref())
-                .await?
+/// Extracts model name from request path and body
+fn extract_model_from_request(path: &str, body: &[u8]) -> Option<String> {
+    // Try to extract from path first (for generateContent endpoints)
+    if let Some(captures) = regex::Regex::new(r"/v1beta/models/([^/:]+)")
+        .ok()?
+        .captures(path)
             {
                 Some(info) => info,
                 None => break, // No keys available for this group, exit loop.
+        return Some(captures.get(1)?.as_str().to_string());
             }
+
+    // Try to extract from OpenAI-style path
+    if path.contains("/chat/completions") || path.contains("/embeddings") {
+        // Try to parse JSON body to get model
+        if let Ok(body_str) = std::str::from_utf8(body) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(body_str) {
+                if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
+                    return Some(model.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn translate_path(path: &str) -> String {
+    if path == "/health/detailed" {
+        return "/v1beta/models".into();
+    }
+    if let Some(rest) = path.strip_prefix("/v1/") {
+        return match rest {
+            r if r.starts_with("chat/completions") => format!("/v1beta/openai/{r}"),
+            r if r.starts_with("embeddings") || r.starts_with("audio/speech") => {
+                format!("/v1beta/{r}")
+            }
+            r => format!("/v1beta/openai/{r}"),
         };
-        info!(key = %key_info.key, "Attempting to use key");
+        info!(key = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Attempting to use key");
 
         let url = build_target_url(req_context.uri, &key_info)?;
 
@@ -300,8 +234,270 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     if let Some(resp) = last_response {
         warn!("All keys failed, returning last captured error response.");
         Ok(resp)
+    }
+    }
+    path.to_owned()
+}
+
+fn build_target_url(original_uri: &Uri, key_info: &FlattenedKeyInfo) -> Result<Url> {
+    let mut url = Url::parse(&key_info.target_url)?.join(&translate_path(original_uri.path()))?;
+    url.set_query(original_uri.query());
+    url.query_pairs_mut().append_pair("key", &key_info.key);
+    Ok(url)
+}
+
+struct RequestContext<'a> {
+    method: &'a Method,
+    uri: &'a Uri,
+    headers: &'a HeaderMap,
+    body: &'a Bytes,
+}
+
+fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
+    let total_text: String = json_body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|messages| {
+            messages
+                .iter()
+                .filter_map(|message| message.get("content").and_then(|c| c.as_str()))
+                .collect::<Vec<&str>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+
+    if total_text.is_empty() {
+        return Ok(());
+    }
+
+    // Only count tokens if tokenizer is initialized
+    if let Some(tokenizer) = crate::tokenizer::TOKENIZER.get() {
+        let token_count = tokenizer.encode(total_text.as_str(), false)
+            .map(|encoding| encoding.len())
+            .unwrap_or(0);
+        
+        info!(token_count, "Calculated request token count");
+
+        if token_count > TOKEN_LIMIT {
+            warn!(
+                token_count,
+                limit = TOKEN_LIMIT,
+                "Request exceeds token limit. Rejecting request."
+            );
+            let error_response = json!({
+                "error": format!("Request exceeds the {} token limit and was not sent.", TOKEN_LIMIT)
+            });
+            return Err(AppError::TokenLimitExceeded((StatusCode::PAYLOAD_TOO_LARGE, Json(error_response)).into_response()));
+        }
     } else {
         warn!("No available API keys for the given group.");
         Err(AppError::NoAvailableKeys)
+        debug!("Tokenizer not initialized, skipping token count check");
     }
+
+    Ok(())
+}
+
+fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes, HeaderMap)> {
+    let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
+    let mut headers = HeaderMap::new();
+    
+    if let Some(json_body) = &json_body_opt {
+        validate_token_count(json_body)?;
+    }
+
+    // Conditionally inject top_p
+    let body_modified = if let Some(top_p_value) = top_p {
+        if let Some(json_body) = &mut json_body_opt {
+            if let Some(obj) = json_body.as_object_mut() {
+                obj.insert("top_p".to_string(), serde_json::json!(top_p_value));
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // If the body was modified, serialize it back to bytes
+    if body_modified {
+        if let Some(json_body) = json_body_opt {
+            match serde_json::to_vec(&json_body) {
+                Ok(new_body_bytes) => {
+                    let new_len = new_body_bytes.len();
+                    let body_bytes = Bytes::from(new_body_bytes);
+                    headers.insert(
+                        "content-length",
+                        http::HeaderValue::from_str(&new_len.to_string())
+                            .map_err(|_| AppError::InvalidHttpHeader)?,
+                    );
+                    return Ok((body_bytes, headers));
+                }
+                Err(e) => {
+                    error!(error = ?e, "Failed to re-serialize JSON body after modification.");
+                }
+            }
+        }
+    }
+
+    Ok((body_bytes, headers))
+}
+
+async fn try_request_with_key(
+    state: &Arc<AppState>,
+    req_context: &RequestContext<'_>,
+    key_info: &FlattenedKeyInfo,
+) -> Result<Response> {
+    let url = build_target_url(req_context.uri, key_info)?;
+    let client = state.get_client(key_info.proxy_url.as_deref()).await?;
+
+    let response = proxy::forward_request(
+        &client,
+        key_info,
+        req_context.method.clone(),
+        url,
+        req_context.headers.clone(),
+        req_context.body.clone(),
+    )
+    .await
+    .map_err(|e| {
+        error!(error = ?e, key = %key_info.key, "Forwarding request failed");
+        AppError::ProxyError(e.to_string())
+    })?;
+
+    let (parts, body) = response.into_parts();
+    let response_bytes = to_bytes(body, usize::MAX)
+        .await
+        .map_err(|e| AppError::BodyReadError(e.to_string()))?;
+
+    Ok(Response::from_parts(parts, Body::from(response_bytes)))
+}
+
+/* ---------- main handler ---------- */
+
+#[instrument(skip_all, fields(uri = %req.uri(), method = %req.method()))]
+pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> Result<Response> {
+    let (mut parts, body) = req.into_parts();
+    let body_bytes = to_bytes(body, usize::MAX)
+        .await
+        .map_err(|e| AppError::RequestBodyError(e.to_string()))?;
+
+    // Process request body (token validation and top_p injection)
+    let top_p = state.config.read().await.top_p;
+    let (processed_body, additional_headers) = process_request_body(body_bytes, top_p)?;
+    
+    // Merge additional headers
+    for (key, value) in additional_headers {
+        if let Some(key) = key {
+            parts.headers.insert(key, value);
+        }
+    }
+
+    let req_context = RequestContext {
+        method: &parts.method,
+        uri: &parts.uri,
+        headers: &parts.headers,
+        body: &processed_body,
+    };
+
+    let model = extract_model_from_request(req_context.uri.path(), &processed_body);
+
+    info!(
+        model = ?model,
+        path = %req_context.uri.path(),
+        "Processing request with model-specific key management"
+    );
+
+    let response_handlers = state.response_handlers.clone();
+    let mut last_response: Option<Response> = None;
+
+    loop {
+        // Get group name from config first
+        let group_name = {
+            let config_guard = state.config.read().await;
+            model
+                .as_deref()
+                .and_then(|m| config_guard.get_group_for_model(m))
+                .map(|g| g.name.clone())
+        };
+
+        // Get key from key_manager
+        let key_info = {
+            let key_manager_guard = state.key_manager.read().await;
+            match key_manager_guard
+                .get_next_available_key_info(group_name.as_deref())
+                .await?
+            {
+                Some(info) => info,
+                None => break, // No keys available for this group, exit loop.
+            }
+        };
+
+        info!(key = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Attempting to use key");
+
+        let response = match try_request_with_key(&state, &req_context, &key_info).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!(error = ?e, key = %key_info.key, "Request failed");
+                let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
+                *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                last_response = Some(resp);
+                break;
+            }
+        };
+
+        let (parts, body) = response.into_parts();
+        let response_bytes = to_bytes(body, usize::MAX)
+            .await
+            .map_err(|e| AppError::BodyReadError(e.to_string()))?;
+
+        let response_for_analysis =
+            Response::from_parts(parts.clone(), Body::from(response_bytes.clone()));
+
+        // Check response handlers
+        let action_to_take = response_handlers
+            .iter()
+            .find_map(|handler| handler.handle(&response_for_analysis, &response_bytes, &key_info.key));
+
+        let final_response = Response::from_parts(parts, Body::from(response_bytes));
+
+        match action_to_take {
+            Some(Action::ReturnToClient(resp)) => return Ok(resp),
+            Some(Action::RetryNextKey) => {
+                trace!("Retrying with next key");
+                let _ = state
+                    .key_manager
+                    .write()
+                    .await
+                    .handle_api_failure(&key_info.key, false)
+                    .await;
+                last_response = Some(final_response);
+            }
+            Some(Action::BlockKeyAndRetry) => {
+                trace!("Blocking key and retrying");
+                let _ = state
+                    .key_manager
+                    .write()
+                    .await
+                    .handle_api_failure(&key_info.key, true)
+                    .await;
+                last_response = Some(final_response);
+            }
+            None => {
+                // No specific action, so this is the final response.
+                return Ok(final_response);
+            }
+        }
+    }
+
+    // If the loop completes, return the last response or error
+    last_response
+        .map(Ok)
+        .unwrap_or_else(|| {
+            warn!("No available API keys for the given group.");
+            Err(AppError::NoAvailableKeys)
+        })
 }

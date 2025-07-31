@@ -1,7 +1,8 @@
 // src/middleware/rate_limit.rs
 
+use crate::state::AppState;
 use axum::{
-    extract::{ConnectInfo, Request},
+    extract::{ConnectInfo, Request, State},
     http::StatusCode,
     middleware::Next,
     response::Response,
@@ -44,20 +45,17 @@ pub fn create_rate_limit_store() -> RateLimitStore {
 
 /// Rate limiting middleware for admin endpoints
 pub async fn rate_limit_middleware(
+    State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let config = RateLimitConfig::default();
-    
+    let store = &state.rate_limit_store;
+
     // Use IP address as the key for rate limiting
     let client_key = addr.ip().to_string();
-    
-    // For now, we'll use a simple in-memory store
-    // In production, this should be shared across instances via Redis
-    static RATE_LIMIT_STORE: std::sync::OnceLock<RateLimitStore> = std::sync::OnceLock::new();
-    let store = RATE_LIMIT_STORE.get_or_init(create_rate_limit_store);
-    
+
     let now = Instant::now();
     let mut store_guard = store.write().await;
     
@@ -101,25 +99,38 @@ pub async fn rate_limit_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
     use axum::{
         body::Body,
-        http::{Method, Request},
-        middleware,
+        extract::connect_info::MockConnectInfo,
+        http::Method,
+        middleware::from_fn_with_state,
         routing::get,
         Router,
     };
-    
+    use std::net::SocketAddr;
+    use tempfile::tempdir;
     use tower::ServiceExt;
 
     async fn dummy_handler() -> &'static str {
         "OK"
     }
 
+    async fn create_test_app() -> Router {
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+        let config = AppConfig::default();
+        let state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
+
+        Router::new()
+            .route("/test", get(dummy_handler))
+            .layer(from_fn_with_state(state.clone(), rate_limit_middleware))
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 3000))))
+    }
+
     #[tokio::test]
     async fn test_rate_limit_allows_requests_within_limit() {
-        let app = Router::new()
-            .route("/test", get(dummy_handler))
-            .layer(middleware::from_fn(rate_limit_middleware));
+        let app = create_test_app().await;
 
         // Make several requests within the limit
         for i in 1..=5 {
@@ -130,15 +141,17 @@ mod tests {
                 .unwrap();
 
             let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "Request {} should succeed", i);
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "Request {i} should succeed"
+            );
         }
     }
 
     #[tokio::test]
     async fn test_rate_limit_blocks_excessive_requests() {
-        let app = Router::new()
-            .route("/test", get(dummy_handler))
-            .layer(middleware::from_fn(rate_limit_middleware));
+        let app = create_test_app().await;
 
         // Make requests up to the limit
         for i in 1..=10 {
@@ -149,7 +162,11 @@ mod tests {
                 .unwrap();
 
             let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "Request {} should succeed", i);
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "Request {i} should succeed"
+            );
         }
 
         // The next request should be rate limited
