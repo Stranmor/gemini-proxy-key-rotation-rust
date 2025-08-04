@@ -1062,6 +1062,7 @@ name = "gemini-proxy-key-rotation-rust"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "async-trait",
  "axum",
  "axum-extra",
  "axum-test",

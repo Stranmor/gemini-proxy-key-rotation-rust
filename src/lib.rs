@@ -1,19 +1,23 @@
 // src/lib.rs
 
-// --- Модули ---
-// Примечание: модуль `handler` был переименован в `handlers` для лучшего соответствия
-// общепринятым практикам именования (модуль, содержащий несколько обработчиков).
+// --- Core Modules ---
+pub mod core;
+pub mod storage;
+
+// --- Application Modules ---
 pub mod admin;
 pub mod circuit_breaker;
 pub mod config;
 pub mod error;
-pub mod handlers; // <-- Переименовано с `handler`
+pub mod handlers;
 pub mod key_manager;
+pub mod key_manager_v2; // New refactored version
 pub mod metrics;
 pub mod middleware;
 pub mod proxy;
 pub mod state;
 pub mod tokenizer;
+pub mod utils;
 
 // --- Зависимости и пере-экспорты ---
 use crate::handlers::{health_check, proxy_handler};

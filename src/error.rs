@@ -52,6 +52,12 @@ pub enum AppError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
+    #[error("Configuration validation error: {0}")]
+    ConfigValidationError(String),
+
     #[error("Reqwest HTTP client error: {0}")]
     Reqwest(#[from] reqwest::Error),
 
@@ -161,6 +167,28 @@ impl AppError {
                         error_type: "CONFIG_ERROR".to_string(),
                         message: "Internal server configuration error".to_string(),
                         details: None,
+                    },
+                )
+            }
+            Self::ConfigError(msg) => {
+                error!("Configuration error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorDetails {
+                        error_type: "CONFIG_ERROR".to_string(),
+                        message: "Configuration error".to_string(),
+                        details: Some(msg.clone()),
+                    },
+                )
+            }
+            Self::ConfigValidationError(msg) => {
+                error!("Configuration validation error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorDetails {
+                        error_type: "CONFIG_VALIDATION_ERROR".to_string(),
+                        message: "Configuration validation failed".to_string(),
+                        details: Some(msg.clone()),
                     },
                 )
             }

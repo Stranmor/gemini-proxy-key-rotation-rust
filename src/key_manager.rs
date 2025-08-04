@@ -31,8 +31,6 @@ pub struct FlattenedKeyInfo {
     pub group_name: String,
     pub target_url: String,
     pub proxy_url: Option<String>,
-    // Suggestion: Move max_failures_threshold here from AppConfig for per-group limits
-    // pub max_failures_threshold: u32,
 }
 
 impl std::fmt::Debug for FlattenedKeyInfo {
@@ -108,14 +106,17 @@ impl KeyManager {
         trace!("KeyManager::new started");
         let key_info_map = Self::build_key_info_map(config);
 
-        let store: Arc<dyn KeyStore> = if let Some(pool) = redis_pool {
+        let store: Arc<dyn KeyStore> = match redis_pool {
+            Some(pool) => {
             info!("Redis pool provided. KeyManager will operate in Redis mode.");
             let redis_store = RedisStore::new(pool, config, &key_info_map).await?;
             Arc::new(redis_store)
-        } else {
+            }
+            None => {
             info!("No Redis pool provided. KeyManager will operate in in-memory mode.");
             let in_memory_store = InMemoryStore::new(&key_info_map);
             Arc::new(in_memory_store)
+            }
         };
 
         trace!("KeyManager::new finished");
@@ -195,6 +196,39 @@ impl KeyManager {
             );
         }
     }
+
+    async fn find_available_key(
+        &self,
+        candidate_keys: &[&FlattenedKeyInfo],
+        start_index: usize,
+    ) -> Option<FlattenedKeyInfo> {
+        for i in 0..candidate_keys.len() {
+            let key_info = candidate_keys[(start_index + i) % candidate_keys.len()];
+            match self.store.get_key_state(key_info.key.expose_secret()).await {
+                Ok(Some(state)) if !state.is_blocked => {
+                    self.log_key_selection(key_info, "round_robin", candidate_keys.len());
+                    return Some(key_info.clone());
+                }
+                Ok(None) => {
+                    // If state is missing, assume it's usable
+                self.log_key_selection(key_info, "round_robin", candidate_keys.len());
+                    return Some(key_info.clone());
+            }
+                _ => continue,
+        }
+        }
+        None
+    }
+
+    fn filter_keys_by_group<'a>(
+        &'a self,
+        group_name: Option<&str>,
+    ) -> Vec<&'a FlattenedKeyInfo> {
+        self.key_info_map
+            .values()
+            .filter(|info| group_name.map_or(true, |gn| info.group_name == gn))
+            .collect()
+    }
 }
 
 // --- KeyManager Trait Implementation ---
@@ -206,18 +240,15 @@ impl KeyManagerTrait for KeyManager {
         group_name: Option<&str>,
     ) -> Result<Option<FlattenedKeyInfo>> {
         trace!("get_next_available_key_info: start");
+        
         let all_keys = self.store.get_candidate_keys().await?;
         trace!(
             "get_next_available_key_info: got {} candidate keys from store",
             all_keys.len()
         );
 
-        let mut candidate_keys: Vec<_> = all_keys
-            .iter()
-            .filter_map(|key| self.key_info_map.get(key))
-            .filter(|info| group_name.is_none_or(|gn| info.group_name == gn))
-            .collect();
-
+        let mut candidate_keys = self.filter_keys_by_group(group_name);
+        candidate_keys.retain(|info| all_keys.contains(info.key.expose_secret()));
         candidate_keys.sort_by(|a, b| a.key.expose_secret().cmp(b.key.expose_secret()));
 
         if candidate_keys.is_empty() {
@@ -233,26 +264,17 @@ impl KeyManagerTrait for KeyManager {
             group_id
         );
 
-        for i in 0..candidate_keys.len() {
-            let key_info = candidate_keys[(start_index + i) % candidate_keys.len()];
-            if let Ok(Some(state)) = self.store.get_key_state(key_info.key.expose_secret()).await {
-                if !state.is_blocked {
-                    self.log_key_selection(key_info, "round_robin", candidate_keys.len());
-                    return Ok(Some(key_info.clone()));
-                }
-            } else {
-                // If state is missing or there's an error, assume it's usable
-                self.log_key_selection(key_info, "round_robin", candidate_keys.len());
-                return Ok(Some(key_info.clone()));
+        match self.find_available_key(&candidate_keys, start_index).await {
+            Some(key_info) => Ok(Some(key_info)),
+            None => {
+                warn!(
+                    group_name,
+                    "All keys for the specified group are currently blocked."
+                );
+                trace!("get_next_available_key_info: end (all keys blocked)");
+                Ok(None)
             }
         }
-
-        warn!(
-            group_name,
-            "All keys for the specified group are currently blocked."
-        );
-        trace!("get_next_available_key_info: end (all keys blocked)");
-        Ok(None)
     }
 
     #[instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %KeyManager::preview_key_str(api_key), is_terminal))]
@@ -376,25 +398,49 @@ impl RedisStore {
             let state_keys: Vec<_> = all_keys
                 .iter()
                 .map(|k| format!("{key_prefix}{}", key_state_key(k)))
-                .collect();
+            .collect();
             let _: () = conn.del(state_keys).await?;
         }
         let _: () = conn.del(rotation_set_key).await?;
 
         // WARNING: Using KEYS in production is dangerous. This is acceptable ONLY for test isolation.
-        // A better approach for tests is to use a unique key prefix per test run or a separate Redis DB.
-        // For production, we should track counter keys separately or use a different cleanup strategy.
         if key_prefix.contains("test") || key_prefix.contains("TEST") {
             let counter_pattern = format!("{key_prefix}{ROTATION_COUNTER_KEY}:*");
             let counters: Vec<String> = conn.keys(&counter_pattern).await?;
             if !counters.is_empty() {
                 let _: () = conn.del(counters).await?;
-            }
+    }
         } else {
             warn!("Skipping KEYS command cleanup in production environment for safety");
-        }
+}
         info!("Cleared stale KeyManager keys from Redis for test isolation.");
         Ok(())
+    }
+
+    async fn get_connection(&self) -> Result<deadpool_redis::Connection> {
+        self.pool.get().await.map_err(Into::into)
+    }
+
+    fn parse_key_state(&self, key: &str, redis_state: HashMap<String, String>) -> KeyState {
+        KeyState {
+            key: key.to_string(),
+            group_name: redis_state
+                .get("group_name")
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+            is_blocked: redis_state
+                .get("is_blocked")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(false),
+            consecutive_failures: redis_state
+                .get("consecutive_failures")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            last_failure: redis_state
+                .get("last_failure")
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&chrono::Utc)),
+        }
     }
 }
 
@@ -402,12 +448,8 @@ impl RedisStore {
 impl KeyStore for RedisStore {
     async fn get_candidate_keys(&self) -> Result<Vec<String>> {
         trace!("RedisStore::get_candidate_keys: start");
-        let mut conn = self.pool.get().await?;
+        let mut conn = self.get_connection().await?;
         trace!("RedisStore::get_candidate_keys: got connection");
-        // PERF: SMEMBERS can be slow if the set is very large.
-        // A more performant model for large key sets with many groups would be to have a
-        // Redis Set *per group*, e.g., "rotation_set:group_a", "rotation_set:group_b".
-        // This would avoid fetching all keys and filtering in the application.
         let keys: Vec<String> = conn.smembers(self.prefix_key(ROTATION_SET_KEY)).await?;
         trace!("RedisStore::get_candidate_keys: found {} keys", keys.len());
         Ok(keys)
@@ -418,7 +460,7 @@ impl KeyStore for RedisStore {
             "RedisStore::get_next_rotation_index: start for group '{}'",
             group_id
         );
-        let mut conn = self.pool.get().await?;
+        let mut conn = self.get_connection().await?;
         trace!("RedisStore::get_next_rotation_index: got connection");
         let counter_key = self.prefix_key(&format!("{ROTATION_COUNTER_KEY}:{group_id}"));
         let index: usize = conn.incr(&counter_key, 1).await?;
@@ -439,7 +481,7 @@ impl KeyStore for RedisStore {
             "RedisStore::update_failure_state: start for key '{}'",
             api_key
         );
-        let mut conn = self.pool.get().await?;
+        let mut conn = self.get_connection().await?;
         trace!("RedisStore::update_failure_state: got connection");
         let state_key = self.prefix_key(&key_state_key(api_key));
 
@@ -466,11 +508,10 @@ impl KeyStore for RedisStore {
             consecutive_failures: new_failure_count,
             last_failure: Some(chrono::Utc::now()),
         })
-    }
-
+            }
     async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>> {
         trace!("RedisStore::get_key_state: start for key '{}'", key);
-        let mut conn = self.pool.get().await?;
+        let mut conn = self.get_connection().await?;
         trace!("RedisStore::get_key_state: got connection");
         let state_key = self.prefix_key(&key_state_key(key));
         let redis_state: HashMap<String, String> = conn.hgetall(&state_key).await?;
@@ -478,27 +519,9 @@ impl KeyStore for RedisStore {
 
         if redis_state.is_empty() {
             return Ok(None);
-        }
+    }
 
-        let state = KeyState {
-            key: key.to_string(),
-            group_name: redis_state
-                .get("group_name")
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string()),
-            is_blocked: redis_state
-                .get("is_blocked")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(false),
-            consecutive_failures: redis_state
-                .get("consecutive_failures")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            last_failure: redis_state
-                .get("last_failure")
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc)),
-        };
+        let state = self.parse_key_state(key, redis_state);
         Ok(Some(state))
     }
 
@@ -508,12 +531,11 @@ impl KeyStore for RedisStore {
         for key in keys {
             if let Ok(Some(state)) = self.get_key_state(&key).await {
                 states.insert(key, state);
-            }
-        }
+    }
+}
         Ok(states)
     }
 }
-
 // --- In-Memory Store Implementation ---
 struct InMemoryStore {
     key_states: Arc<RwLock<HashMap<String, KeyState>>>,

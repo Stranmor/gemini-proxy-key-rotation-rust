@@ -271,7 +271,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
             model
                 .as_deref()
                 .and_then(|m| config_guard.get_group_for_model(m))
-                .map(|g| g.name.clone())
+                .map(|g| g.to_string())
         };
 
         // Get key from key_manager
