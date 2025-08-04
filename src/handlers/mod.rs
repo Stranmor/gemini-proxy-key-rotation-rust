@@ -17,11 +17,10 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{Body, Bytes, to_bytes},
     extract::{Request, State},
     http::{HeaderMap, Method, StatusCode, Uri},
-    response::{IntoResponse, Response},
-    Json,
+    response::Response,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -29,9 +28,13 @@ use std::sync::Arc;
 use tracing::{debug, error, info, instrument, trace, warn};
 use url::Url;
 
-#[instrument(name = "health_check", skip_all)]
-pub async fn health_check() -> StatusCode {
-    StatusCode::OK
+const TOKEN_LIMIT: usize = 250_000;
+
+/// Lightweight health check handler used by /health route
+pub async fn health_check() -> Response {
+    let mut resp = Response::new(Body::from("OK"));
+    *resp.status_mut() = StatusCode::OK;
+    resp
 }
 
 /* ---------- helpers ---------- */
@@ -91,168 +94,6 @@ struct RequestContext<'a> {
     body: &'a Bytes,
 }
 
-/* ---------- main handler ---------- */
-
-#[instrument(skip_all, fields(uri = %req.uri(), method = %req.method()))]
-pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> Result<Response> {
-    let (mut parts, body) = req.into_parts();
-    let mut body_bytes = to_bytes(body, usize::MAX)
-        .await
-        .map_err(|e| AppError::RequestBodyError(e.to_string()))?;
-
-    // --- Token Count Validation ---
-    let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
-    let mut body_modified = false;
-
-    if let Some(json_body) = &json_body_opt {
-        // --- Token Count Validation ---
-        const TOKEN_LIMIT: usize = 250_000;
-
-#[instrument(name = "health_check", skip_all)]
-pub async fn health_check() -> StatusCode {
-    StatusCode::OK
-}
-
-/* ---------- helpers ---------- */
-
-/// Extracts model name from request path and body
-fn extract_model_from_request(path: &str, body: &[u8]) -> Option<String> {
-    // Try to extract from path first (for generateContent endpoints)
-    if let Some(captures) = regex::Regex::new(r"/v1beta/models/([^/:]+)")
-        .ok()?
-        .captures(path)
-            {
-                Some(info) => info,
-                None => break, // No keys available for this group, exit loop.
-        return Some(captures.get(1)?.as_str().to_string());
-            }
-
-    // Try to extract from OpenAI-style path
-    if path.contains("/chat/completions") || path.contains("/embeddings") {
-        // Try to parse JSON body to get model
-        if let Ok(body_str) = std::str::from_utf8(body) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(body_str) {
-                if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
-                    return Some(model.to_string());
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn translate_path(path: &str) -> String {
-    if path == "/health/detailed" {
-        return "/v1beta/models".into();
-    }
-    if let Some(rest) = path.strip_prefix("/v1/") {
-        return match rest {
-            r if r.starts_with("chat/completions") => format!("/v1beta/openai/{r}"),
-            r if r.starts_with("embeddings") || r.starts_with("audio/speech") => {
-                format!("/v1beta/{r}")
-            }
-            r => format!("/v1beta/openai/{r}"),
-        };
-        info!(key = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Attempting to use key");
-
-        let url = build_target_url(req_context.uri, &key_info)?;
-
-        let client = state.get_client(key_info.proxy_url.as_deref()).await?;
-
-        let response = match proxy::forward_request(
-            &client,
-            &key_info,
-            req_context.method.clone(),
-            url,
-            req_context.headers.clone(),
-            req_context.body.clone(),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                error!(error = ?e, key = %key_info.key, "Forwarding request failed. Breaking loop.");
-                let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
-                *resp.status_mut() = StatusCode::BAD_GATEWAY;
-                last_response = Some(resp);
-                // Immediately break the loop on a proxy error. The response will be handled outside.
-                break;
-            }
-        };
-
-        let (parts, body) = response.into_parts();
-        let response_bytes = to_bytes(body, usize::MAX)
-            .await
-            .map_err(|e| AppError::BodyReadError(e.to_string()))?;
-
-        let response_for_analysis =
-            Response::from_parts(parts.clone(), Body::from(response_bytes.clone()));
-
-        let mut action_to_take = None;
-        for handler in response_handlers.iter() {
-            if let Some(action) = handler.handle(&response_for_analysis, &response_bytes, &key_info.key) {
-                action_to_take = Some(action);
-                break;
-            }
-        }
-
-        let final_response = Response::from_parts(parts, Body::from(response_bytes.clone()));
-
-        match action_to_take {
-            Some(Action::ReturnToClient(resp)) => return Ok(resp),
-            Some(Action::RetryNextKey) => {
-                trace!("Retrying with next key");
-                let _ = state
-                    .key_manager
-                    .write()
-                    .await
-                    .handle_api_failure(&key_info.key, false)
-                    .await;
-                last_response = Some(final_response);
-            }
-            Some(Action::BlockKeyAndRetry) => {
-                trace!("Blocking key and retrying");
-                let _ = state
-                    .key_manager
-                    .write()
-                    .await
-                    .handle_api_failure(&key_info.key, true)
-                    .await;
-                last_response = Some(final_response);
-            }
-            None => {
-                // No specific action, so this is the final response.
-                // This handles success cases and terminal errors not caught by handlers.
-                return Ok(final_response);
-            }
-        }
-    }
-
-    // If the loop completes, it means all keys were tried and failed.
-    // Return the last response that was captured.
-    if let Some(resp) = last_response {
-        warn!("All keys failed, returning last captured error response.");
-        Ok(resp)
-    }
-    }
-    path.to_owned()
-}
-
-fn build_target_url(original_uri: &Uri, key_info: &FlattenedKeyInfo) -> Result<Url> {
-    let mut url = Url::parse(&key_info.target_url)?.join(&translate_path(original_uri.path()))?;
-    url.set_query(original_uri.query());
-    url.query_pairs_mut().append_pair("key", &key_info.key);
-    Ok(url)
-}
-
-struct RequestContext<'a> {
-    method: &'a Method,
-    uri: &'a Uri,
-    headers: &'a HeaderMap,
-    body: &'a Bytes,
-}
-
 fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
     let total_text: String = json_body
         .get("messages")
@@ -272,10 +113,11 @@ fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
 
     // Only count tokens if tokenizer is initialized
     if let Some(tokenizer) = crate::tokenizer::TOKENIZER.get() {
-        let token_count = tokenizer.encode(total_text.as_str(), false)
+        let token_count = tokenizer
+            .encode(total_text.as_str(), false)
             .map(|encoding| encoding.len())
             .unwrap_or(0);
-        
+
         info!(token_count, "Calculated request token count");
 
         if token_count > TOKEN_LIMIT {
@@ -286,22 +128,26 @@ fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
             );
             let error_response = json!({
                 "error": format!("Request exceeds the {} token limit and was not sent.", TOKEN_LIMIT)
+            })
+            .to_string();
+
+            return Err(AppError::UpstreamServiceError {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                body: error_response,
             });
-            return Err(AppError::TokenLimitExceeded((StatusCode::PAYLOAD_TOO_LARGE, Json(error_response)).into_response()));
         }
     } else {
-        warn!("No available API keys for the given group.");
-        Err(AppError::NoAvailableKeys)
         debug!("Tokenizer not initialized, skipping token count check");
     }
 
     Ok(())
 }
 
+
 fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes, HeaderMap)> {
     let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let mut headers = HeaderMap::new();
-    
+
     if let Some(json_body) = &json_body_opt {
         validate_token_count(json_body)?;
     }
@@ -364,8 +210,8 @@ async fn try_request_with_key(
     )
     .await
     .map_err(|e| {
-        error!(error = ?e, key = %key_info.key, "Forwarding request failed");
-        AppError::ProxyError(e.to_string())
+        error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Forwarding request failed");
+        AppError::Internal(e.to_string())
     })?;
 
     let (parts, body) = response.into_parts();
@@ -387,8 +233,9 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
     // Process request body (token validation and top_p injection)
     let top_p = state.config.read().await.top_p;
-    let (processed_body, additional_headers) = process_request_body(body_bytes, top_p)?;
-    
+    let (processed_body, additional_headers) =
+        process_request_body(body_bytes, top_p.map(|v| v as f64))?;
+
     // Merge additional headers
     for (key, value) in additional_headers {
         if let Some(key) = key {
@@ -441,11 +288,23 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         let response = match try_request_with_key(&state, &req_context, &key_info).await {
             Ok(r) => r,
             Err(e) => {
-                error!(error = ?e, key = %key_info.key, "Request failed");
-                let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
-                *resp.status_mut() = StatusCode::BAD_GATEWAY;
-                last_response = Some(resp);
-                break;
+                // Важно: сохраняем семантику ошибок апстрима.
+                // Если это AppError::UpstreamServiceError (например, 413 Payload Too Large),
+                // возвращаем её напрямую (Axum через IntoResponse отдаст оригинальный статус/тело).
+                // Для всех остальных ошибок сохраняем текущее поведение — 502 Bad Gateway.
+                error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Request failed");
+                match e {
+                    AppError::UpstreamServiceError { .. } => {
+                        // Возвращаем как есть, без преобразования в 502.
+                        return Err(e);
+                    }
+                    _ => {
+                        let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
+                        *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                        last_response = Some(resp);
+                        break;
+                    }
+                }
             }
         };
 
@@ -458,9 +317,9 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
             Response::from_parts(parts.clone(), Body::from(response_bytes.clone()));
 
         // Check response handlers
-        let action_to_take = response_handlers
-            .iter()
-            .find_map(|handler| handler.handle(&response_for_analysis, &response_bytes, &key_info.key));
+        let action_to_take = response_handlers.iter().find_map(|handler| {
+            handler.handle(&response_for_analysis, &response_bytes, &key_info.key)
+        });
 
         let final_response = Response::from_parts(parts, Body::from(response_bytes));
 
@@ -494,10 +353,82 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     }
 
     // If the loop completes, return the last response or error
-    last_response
-        .map(Ok)
-        .unwrap_or_else(|| {
-            warn!("No available API keys for the given group.");
-            Err(AppError::NoAvailableKeys)
-        })
+    last_response.map(Ok).unwrap_or_else(|| {
+        warn!("No available API keys for the given group.");
+        Err(AppError::NoAvailableKeys)
+    })
+}
+
+#[cfg(test)]
+mod token_limit_tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use tokenizers::Tokenizer;
+
+    // Helper to set a minimal tokenizer into the global OnceLock for tests.
+    fn install_minimal_tokenizer() {
+        if crate::tokenizer::TOKENIZER.get().is_none() {
+            // Валидный минимальный токенизатор: WordLevel + Whitespace, decoder отключен (null)
+            // Такой конфиг стабильно парсится библиотекой tokenizers и даёт разбиение по пробелам.
+            let simple_tokenizer_json = r#"
+           {
+             "version":"1.0",
+             "truncation":null,
+             "padding":null,
+             "added_tokens":[],
+             "normalizer": null,
+             "pre_tokenizer": { "type": "Whitespace" },
+             "post_processor": null,
+             "decoder": null,
+             "model": { "type": "WordLevel", "vocab": {"a":0, "b":1, "c":2}, "unk_token":"[UNK]" }
+           }"#;
+
+            let tk = Tokenizer::from_bytes(simple_tokenizer_json.as_bytes())
+                .expect("Failed to construct minimal tokenizer (WordLevel + Whitespace)");
+            let _ = crate::tokenizer::TOKENIZER.set(tk);
+        }
+    }
+
+    #[test]
+    fn validate_does_not_block_without_tokenizer() {
+        // Ensure tokenizer is absent: If previously set by other tests in suite,
+        // OnceLock can't be reset, so this test is only reliable when run in isolation first.
+        // We still verify that with empty messages the function is Ok.
+        let body = json!({
+            "messages": [{"role": "user", "content": ""}]
+        });
+        let res = validate_token_count(&body);
+        assert!(
+            res.is_ok(),
+            "Should not error without tokenizer on empty content"
+        );
+    }
+
+    #[test]
+    fn validate_blocks_when_over_limit_with_tokenizer() {
+        install_minimal_tokenizer();
+
+        // Build a huge text exceeding TOKEN_LIMIT by creating many words.
+        // Each word should count roughly as a token with Whitespace pre-tokenizer.
+        let big_text = "a ".repeat(TOKEN_LIMIT + 10);
+        let body = json!({
+            "messages": [
+                {"role":"user", "content": big_text}
+            ]
+        });
+
+        let err =
+            validate_token_count(&body).expect_err("Expected UpstreamServiceError for over-limit");
+        match err {
+            AppError::UpstreamServiceError { status, .. } => {
+                assert_eq!(
+                    status,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "Expected 413 from token limit"
+                );
+            }
+            other => panic!("Expected UpstreamServiceError, got: {other:?}"),
+        }
+    }
 }

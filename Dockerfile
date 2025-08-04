@@ -31,6 +31,9 @@ RUN cargo build --release --locked
 FROM rust:${RUST_VERSION} AS builder
 WORKDIR /app
 
+# Устанавливаем clippy и rustfmt, так как они могут понадобиться на последующих этапах.
+RUN rustup component add clippy rustfmt
+
 # Копируем кэш реестра крейтов и уже скомпилированные зависимости из предыдущего этапа.
 COPY --from=dependencies_builder /usr/local/cargo/registry /usr/local/cargo/registry
 COPY --from=dependencies_builder /app/target /app/target

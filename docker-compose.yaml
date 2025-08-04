@@ -28,7 +28,7 @@ services:
     image: "docker.io/library/redis:alpine"
     container_name: gemini-proxy-redis
     ports:
-      - "6380:6379"
+      - "6381:6379"
     restart: unless-stopped
 
   # Сервис для запуска генерации отчета о покрытии.

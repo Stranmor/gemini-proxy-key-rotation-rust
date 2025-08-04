@@ -15,13 +15,14 @@ pub async fn initialize_tokenizer(model_name: &str) -> Result<(), Box<dyn Error 
     info!(model = model_name, "Initializing tokenizer...");
 
     let model_name_owned = model_name.to_string();
-    let tokenizer_result = task::spawn_blocking(move || -> Result<Tokenizer, Box<dyn Error + Send + Sync>> {
-        let api = Api::new()?;
-        let repo = api.model(model_name_owned);
-        let tokenizer_path = repo.get("tokenizer.json")?;
-        Tokenizer::from_file(tokenizer_path)
-    })
-    .await??;
+    let tokenizer_result =
+        task::spawn_blocking(move || -> Result<Tokenizer, Box<dyn Error + Send + Sync>> {
+            let api = Api::new()?;
+            let repo = api.model(model_name_owned);
+            let tokenizer_path = repo.get("tokenizer.json")?;
+            Tokenizer::from_file(tokenizer_path)
+        })
+        .await??;
 
     match TOKENIZER.set(tokenizer_result) {
         Ok(_) => info!("Tokenizer initialized successfully."),
@@ -35,7 +36,7 @@ pub fn count_tokens(text: &str) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let tokenizer = TOKENIZER
         .get()
         .ok_or("Tokenizer not initialized. Call initialize_tokenizer() at startup.")?;
-    
+
     let encoding = tokenizer.encode(text, false)?;
     Ok(encoding.len())
 }
@@ -52,7 +53,7 @@ mod tests {
             if env::var("HF_TOKEN").is_err() {
                 return Err("HF_TOKEN not available, skipping tokenizer tests".into());
             }
-            initialize_tokenizer("google/gemma-2-2b").await?;
+            initialize_tokenizer("gpt2").await?;
         }
         Ok(())
     }
@@ -65,7 +66,10 @@ mod tests {
         }
         let text = "Hello, world!";
         let count = count_tokens(text).expect("Should be able to count tokens");
-        assert!(count > 0, "Token count for 'Hello, world!' should be greater than 0.");
+        assert!(
+            count > 0,
+            "Token count for 'Hello, world!' should be greater than 0."
+        );
     }
 
     #[tokio::test]
@@ -87,14 +91,19 @@ mod tests {
         }
         let text = "Hello 世界! 🌍";
         let count = count_tokens(text).expect("Should be able to count tokens for unicode text");
-        assert!(count > 0, "Token count for unicode text should be greater than 0.");
+        assert!(
+            count > 0,
+            "Token count for unicode text should be greater than 0."
+        );
     }
 
     #[tokio::test]
     async fn test_initialize_tokenizer_failure_on_invalid_model() {
         // Skip test if HF_TOKEN is not available
         if env::var("HF_TOKEN").is_err() {
-            println!("Skipping test_initialize_tokenizer_failure_on_invalid_model: HF_TOKEN not available");
+            println!(
+                "Skipping test_initialize_tokenizer_failure_on_invalid_model: HF_TOKEN not available"
+            );
             return;
         }
 
@@ -106,7 +115,7 @@ mod tests {
 
         // Check if the error message contains something indicative of a not found error
         let error_message = error.to_string();
-        let is_not_found_or_auth_error = error_message.contains("Not Found") 
+        let is_not_found_or_auth_error = error_message.contains("Not Found")
             || error_message.contains("404")
             || error_message.contains("401")
             || error_message.contains("403"); // Also accept 403 as valid failure
@@ -119,13 +128,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_count_tokens_without_initialization() {
-        // Create a fresh tokenizer instance to test error handling
-        let original_tokenizer = TOKENIZER.get().cloned();
-        
-        // This test assumes we can't easily reset the OnceLock, so we'll just test
-        // that count_tokens works when tokenizer is available
-        if original_tokenizer.is_some() {
+        // This test ensures that if the tokenizer is not initialized, count_tokens returns an error.
+        // We cannot reliably de-initialize the OnceLock, so we run this test in a separate process
+        // or trust that in a clean environment, it will fail as expected.
+        if TOKENIZER.get().is_none() {
             let result = count_tokens("test");
-            assert!(result.is_ok(), "count_tokens should work when tokenizer is initialized");
-}    }
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Tokenizer not initialized"));
+        }
+    }
 }

@@ -15,15 +15,19 @@ pub mod state;
 pub mod tokenizer;
 
 // --- Зависимости и пере-экспорты ---
+use crate::handlers::{health_check, proxy_handler};
 use axum::{
     body::Body,
-    http::{Request as AxumRequest, HeaderValue},
+    http::{HeaderValue, Request as AxumRequest},
     response::IntoResponse,
     routing::{any, get},
     Router,
 };
-use crate::handlers::{health_check, proxy_handler};
-use std::{path::{Path, PathBuf}, sync::Arc, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 use tower_cookies::CookieManagerLayer;
 use tracing::{error, info, info_span, Instrument};
 use uuid::Uuid;
@@ -53,13 +57,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         router = router.route(path, any(proxy_handler));
     }
 
-    router
-        .layer(CookieManagerLayer::new())
-        .with_state(state)
+    router.layer(CookieManagerLayer::new()).with_state(state)
 }
 
 /// Middleware для добавления Request ID и трассировки запросов.
-async fn trace_requests(mut req: AxumRequest<Body>, next: axum::middleware::Next) -> impl IntoResponse {
+async fn trace_requests(
+    mut req: AxumRequest<Body>,
+    next: axum::middleware::Next,
+) -> impl IntoResponse {
     let request_id = Uuid::new_v4();
     let start_time = Instant::now();
     let method = req.method().clone();
@@ -111,10 +116,35 @@ pub async fn run(
     let (app_config, config_path) = setup_configuration(config_path_override)?;
 
     // 2. Инициализация состояния приложения
-    let app_state = build_application_state(&app_config, &config_path).await?;
+    let (app_state, mut config_update_rx) =
+        build_application_state(&app_config, &config_path).await?;
 
-    // 3. Настройка роутера и middleware
-    let app = create_router(app_state).layer(axum::middleware::from_fn(trace_requests));
+    // 3. Запуск фонового обработчика для обновления конфигурации
+    let state_for_worker = app_state.clone();
+    tokio::spawn(async move {
+        loop {
+            match config_update_rx.recv().await {
+                Ok(new_config) => {
+                    info!("Received configuration update message. Reloading state...");
+                    // Эта логика перенесена из `modify_config_and_reload`
+                    if let Err(e) =
+                        admin::reload_state_from_config(state_for_worker.clone(), new_config).await
+                    {
+                        error!("Failed to reload state in background worker: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Config update channel error: {}. Worker terminating.", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // 4. Настройка роутера и middleware
+    let app = create_router(app_state)
+        .layer(axum::middleware::from_fn(crate::middleware::request_size_limit_middleware))
+        .layer(axum::middleware::from_fn(trace_requests));
 
     Ok((app, app_config))
 }
@@ -155,17 +185,18 @@ fn setup_configuration(config_path_override: Option<PathBuf>) -> Result<(AppConf
 }
 
 /// Создает и инициализирует состояние приложения, включая подключение к Redis.
-async fn build_application_state(app_config: &AppConfig, config_path: &Path) -> Result<Arc<AppState>> {
+async fn build_application_state(
+    app_config: &AppConfig,
+    config_path: &Path,
+) -> Result<(Arc<AppState>, tokio::sync::broadcast::Receiver<AppConfig>)> {
     // Примечание: Логика создания пула Redis теперь должна быть внутри `AppState::new`.
     // Это улучшает инкапсуляцию, так как AppState управляет своими собственными зависимостями.
     // Функция `run` больше не должна беспокоиться о деталях создания пула.
 
-    let app_state = AppState::new(app_config, config_path)
-        .await
-        .map_err(|e| {
-            error!(error = ?e, "Failed to initialize application state. Exiting.");
-            e
-        })?;
+    let (app_state, rx) = AppState::new(app_config, config_path).await.map_err(|e| {
+        error!(error = ?e, "Failed to initialize application state. Exiting.");
+        e
+    })?;
 
     info!("Application state initialized successfully.");
     if app_config.redis_url.is_some() {
@@ -174,5 +205,5 @@ async fn build_application_state(app_config: &AppConfig, config_path: &Path) -> 
         info!("Running without Redis persistence.");
     }
 
-    Ok(Arc::new(app_state))
+    Ok((Arc::new(app_state), rx))
 }

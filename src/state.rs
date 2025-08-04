@@ -2,25 +2,25 @@
 
 use crate::admin::SystemInfoCollector;
 use crate::config::AppConfig;
+use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
 use crate::handlers::base::ResponseHandler;
-use crate::middleware::rate_limit::RateLimitStore;
 use crate::handlers::{
     invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, success::SuccessHandler,
     terminal_error::TerminalErrorHandler,
 };
 use crate::key_manager::KeyManager;
 use crate::metrics::MetricsCollector;
-use std::fmt;
-use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
+use crate::middleware::rate_limit::RateLimitStore;
 use deadpool_redis::{Config, Pool, Runtime};
 use reqwest::{Client, ClientBuilder, Proxy};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
-use tracing::{debug, error, info, instrument, warn, Instrument};
+use tokio::sync::{RwLock, broadcast};
+use tracing::{Instrument, debug, error, info, instrument, warn};
 use url::Url;
 
 /// Represents the state of a single API key, designed to be stored in Redis.
@@ -37,7 +37,7 @@ pub struct KeyState {
 pub struct AppState {
     pub redis_pool: Option<Pool>,
     pub key_manager: Arc<RwLock<KeyManager>>,
-    http_clients: Arc<RwLock<HashMap<Option<String>, Arc<Client>>>>,
+    pub http_clients: Arc<RwLock<HashMap<Option<String>, Arc<Client>>>>,
     pub response_handlers: Arc<Vec<Box<dyn ResponseHandler>>>,
     pub start_time: Instant,
     pub config: Arc<RwLock<AppConfig>>,
@@ -45,6 +45,7 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub metrics: Arc<MetricsCollector>,
     pub rate_limit_store: RateLimitStore,
+    pub config_update_tx: broadcast::Sender<AppConfig>,
 }
 
 impl fmt::Debug for AppState {
@@ -106,19 +107,19 @@ impl HttpClientBuilder {
     fn build_base_client(&self) -> Result<Client> {
         self.configure_builder(Client::builder())
             .build()
-                .map_err(|e| {
+            .map_err(|e| {
                 error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
-                    AppError::HttpClientBuildError {
-                        source: e,
+                AppError::HttpClientBuildError {
+                    source: e,
                     proxy_url: None,
-                    }
-                })
-        }
+                }
+            })
+    }
 
     /// Creates an HTTP client with the specified proxy.
     async fn build_proxy_client(&self, proxy_url: &str) -> Result<Client> {
         let proxy_span = tracing::info_span!("create_proxy_client", proxy.url = %proxy_url);
-        
+
         async {
             let parsed_proxy_url = Url::parse(proxy_url).map_err(|e| {
                 error!(error = %e, "Failed to parse proxy URL string.");
@@ -144,9 +145,9 @@ impl HttpClientBuilder {
                         proxy_url: Some(proxy_url.to_string()),
                     }
                 })
-                    }
+        }
         .instrument(proxy_span)
-                .await
+        .await
     }
 
     /// Creates a proxy object based on the URL scheme.
@@ -187,9 +188,26 @@ impl HttpClientBuilder {
 /// - A proxy URL is syntactically invalid or has an unsupported scheme.
 /// - Another unexpected error occurs during client building.
 #[instrument(level = "info", skip_all, name = "build_http_clients")]
-async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>, Arc<Client>>> {
+pub async fn build_http_clients(
+    config: &AppConfig,
+) -> Result<HashMap<Option<String>, Arc<Client>>> {
     info!("Building HTTP clients based on configuration...");
     let mut http_clients = HashMap::new();
+
+    // In test mode, we do not want to create real clients that make network calls.
+    if config.server.test_mode {
+        info!("Test mode enabled, skipping real HTTP client creation.");
+        // Create a single dummy base client.
+        let dummy_client = Client::builder()
+            .timeout(Duration::from_millis(10))
+            .build()
+            .map_err(|e| AppError::HttpClientBuildError {
+                source: e,
+                proxy_url: None,
+            })?;
+        http_clients.insert(None, Arc::new(dummy_client));
+        return Ok(http_clients);
+    }
 
     // Calculate connection pool configuration
     let total_key_count: usize = config
@@ -199,11 +217,11 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
         .filter(|k| !k.trim().is_empty())
         .count()
         .max(10);
-    
+
     debug!(
         pool.max_idle_per_host = total_key_count,
         "Calculated max idle connections per host"
-        );
+    );
 
     let pool_config = ClientPoolConfig::new(total_key_count, &config.server);
     let client_builder = HttpClientBuilder::new(pool_config);
@@ -221,12 +239,12 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
         .filter(|url_str| !url_str.trim().is_empty())
         .cloned()
         .collect();
-    
+
     debug!(
         proxy.count = unique_proxy_urls.len(),
         ?unique_proxy_urls,
         "Found unique proxy URLs for client creation"
-        );
+    );
 
     // 3. Create clients for each unique proxy URL
     for proxy_url_str in unique_proxy_urls {
@@ -249,10 +267,9 @@ async fn build_http_clients(config: &AppConfig) -> Result<HashMap<Option<String>
     info!(
         client.count = http_clients.len(),
         "Finished building HTTP clients."
-        );
+    );
     Ok(http_clients)
 }
-
 /// Determines if an error should cause the entire client building process to fail.
 fn should_fail_fast(error: &AppError) -> bool {
     match error {
@@ -262,7 +279,9 @@ fn should_fail_fast(error: &AppError) -> bool {
                 ProxyConfigErrorKind::UrlParse(_) | ProxyConfigErrorKind::UnsupportedScheme(_)
             )
         }
-        AppError::HttpClientBuildError { proxy_url: None, .. } => true, // Base client failure
+        AppError::HttpClientBuildError {
+            proxy_url: None, ..
+        } => true, // Base client failure
         _ => false,
     }
 }
@@ -274,12 +293,16 @@ impl AppState {
     ///
     /// Returns `Err` if the Redis pool or `http_clients` cannot be created.
     #[instrument(level = "info", skip(config, config_path), fields(config.path = %config_path.display()))]
-    pub async fn new(config: &AppConfig, config_path: &Path) -> Result<Self> {
+    pub async fn new(
+        config: &AppConfig,
+        config_path: &Path,
+    ) -> Result<(Self, broadcast::Receiver<AppConfig>)> {
         info!("Creating shared AppState...");
 
         let redis_pool = Self::create_redis_pool(config).await?;
-        let key_manager =
-            Arc::new(RwLock::new(KeyManager::new(config, redis_pool.clone()).await?));
+        let key_manager = Arc::new(RwLock::new(
+            KeyManager::new(config, redis_pool.clone()).await?,
+        ));
         let http_clients = build_http_clients(config).await?;
 
         let response_handlers: Arc<Vec<Box<dyn ResponseHandler>>> = Arc::new(vec![
@@ -290,18 +313,24 @@ impl AppState {
             Box::new(TerminalErrorHandler),
         ]);
 
-        Ok(Self {
-            redis_pool,
-            key_manager,
-            http_clients: Arc::new(RwLock::new(http_clients)),
-            response_handlers,
-            start_time: Instant::now(),
-            config: Arc::new(RwLock::new(config.clone())),
-            system_info: SystemInfoCollector::new(),
-            config_path: config_path.to_path_buf(),
-            metrics: Arc::new(MetricsCollector::new()),
-            rate_limit_store: crate::middleware::rate_limit::create_rate_limit_store(),
-        })
+        let (tx, rx) = broadcast::channel(16);
+
+        Ok((
+            Self {
+                redis_pool,
+                key_manager,
+                http_clients: Arc::new(RwLock::new(http_clients)),
+                response_handlers,
+                start_time: Instant::now(),
+                config: Arc::new(RwLock::new(config.clone())),
+                system_info: SystemInfoCollector::new(),
+                config_path: config_path.to_path_buf(),
+                metrics: Arc::new(MetricsCollector::new()),
+                rate_limit_store: crate::middleware::rate_limit::create_rate_limit_store(),
+                config_update_tx: tx,
+            },
+            rx,
+        ))
     }
 
     /// Creates a Redis connection pool if configured.
@@ -318,7 +347,7 @@ impl AppState {
         } else {
             info!("No Redis URL provided. Skipping Redis pool creation.");
             Ok(None)
-}
+        }
     }
 
     /// Clears Redis database for test isolation.
@@ -328,28 +357,6 @@ impl AppState {
         let mut conn = pool.get().await?;
         let _: () = cmd("FLUSHDB").query_async(&mut conn).await?;
         info!("FLUSHDB command executed to clear Redis for test environment.");
-        Ok(())
-    }
-
-    /// Reloads `http_clients` from the current configuration.
-    /// This allows for hot-reloading of proxy configurations without a server restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if any part of the state reconstruction fails.
-    pub async fn reload_state_from_config(&self) -> Result<()> {
-        info!("Attempting to reload application state from configuration...");
-
-        let config_guard = self.config.read().await;
-        let new_http_clients = build_http_clients(&config_guard).await?;
-        let new_key_manager = KeyManager::new(&config_guard, self.redis_pool.clone()).await?;
-        drop(config_guard);
-
-        // Atomically swap the http_clients and key_manager
-        *self.http_clients.write().await = new_http_clients;
-        *self.key_manager.write().await = new_key_manager;
-
-        info!("Application state reloaded successfully.");
         Ok(())
     }
 
@@ -387,9 +394,9 @@ mod tests {
     use crate::error::ProxyConfigErrorKind;
     use std::fs::File;
     use tempfile::tempdir;
-    
+
     const DEFAULT_TARGET_URL_STR: &str = "https://generativelanguage.googleapis.com";
-    
+
     fn create_test_config(groups: Vec<KeyGroup>, with_redis: bool) -> AppConfig {
         AppConfig {
             server: ServerConfig {
@@ -434,7 +441,7 @@ mod tests {
             "AppState::new failed unexpectedly: {:?}",
             state_result.err()
         );
-        let state = state_result.unwrap();
+        let (state, _) = state_result.unwrap();
         let clients_guard = state.http_clients.read().await;
         assert_eq!(clients_guard.len(), 1);
         drop(clients_guard);
@@ -498,7 +505,7 @@ mod tests {
             "AppState::new failed unexpectedly: {:?}",
             state_result.err()
         );
-        let state = state_result.unwrap();
+        let (state, _) = state_result.unwrap();
         let clients_guard = state.http_clients.read().await;
 
         assert!(clients_guard.contains_key(&None));
@@ -528,7 +535,7 @@ mod tests {
         );
         assert!(state.get_client(None).await.is_ok());
         assert!(state.get_client(Some("http://other.proxy")).await.is_err());
-}
+    }
     #[tokio::test]
     async fn test_appstate_new_returns_err_on_invalid_url_syntax() {
         let dir = tempdir().unwrap();
@@ -612,7 +619,7 @@ mod tests {
             "AppState::new failed unexpectedly: {:?}",
             state_result.err()
         );
-        let state = state_result.unwrap();
+        let (state, _) = state_result.unwrap();
         let clients_guard = state.http_clients.read().await;
 
         assert!(clients_guard.contains_key(&None));

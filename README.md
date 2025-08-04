@@ -5,6 +5,8 @@
 
 A lightweight, high-performance asynchronous HTTP proxy for Google Gemini models, designed to be compatible with the OpenAI API. This proxy rotates Google Gemini API keys, distributes load, and manages rate limits, allowing you to use Gemini models with your existing OpenAI-compatible applications.
 
+**🚀 [Quick Start Guide](QUICKSTART.md)** | **🔒 [Security Guide](SECURITY.md)** | **📝 [Changelog](CHANGELOG.md)**
+
 ## Key Benefits
 
 *   **Avoid Rate Limits:** Distributes requests across many Gemini keys.
@@ -12,7 +14,7 @@ A lightweight, high-performance asynchronous HTTP proxy for Google Gemini models
 *   **Simplified Configuration:** All settings are managed in a single `config.yaml` file, making configuration straightforward and predictable.
 *   **Simplified Client Configuration:** Point your OpenAI client's base URL to this proxy; no need to manage Gemini keys in the client.
 *   **Group-Specific Routing:** Use different upstream proxies (`http`, `https`, `socks5`) for different sets of keys.
-*   **State Persistence:** Remembers rate-limited keys between restarts, avoiding checks on known limited keys until their reset time (daily midnight Pacific Time by default).
+*   **State Persistence:** Remembers rate-limited keys between restarts using Redis (optional) or in-memory storage, avoiding checks on known limited keys.
 
 ## Features
 
@@ -20,8 +22,8 @@ A lightweight, high-performance asynchronous HTTP proxy for Google Gemini models
 *   Supports multiple **groups** of Gemini API keys with optional upstream proxies (`http`, `https`, `socks5`) per group, all configured in `config.yaml`.
 *   **Group Round-Robin Key Rotation:** Selects the next available key by iterating through key groups sequentially (round-robin between groups) and then iterating through keys within the selected group. This ensures fairer distribution across groups compared to rotating through all keys flattened.
 *   Handles `429 Too Many Requests` responses from the target API by temporarily disabling the rate-limited key.
-*   **Rate Limit Reset:** Limited keys are automatically considered available again after the next **daily midnight in the Pacific Time zone (America/Los_Angeles)** by default.
-*   **Persists Rate Limit State:** Saves the limited status and UTC reset time of keys to `key_states.json` (located in `/app/` in Docker), allowing the proxy to skip known limited keys on startup.
+*   **Rate Limit Management:** Tracks rate-limited keys and automatically retries with different keys when limits are hit.
+*   **Persists Rate Limit State:** Optionally saves key states to Redis for persistence across restarts, or uses in-memory storage for single-instance deployments.
 *   Configuration is managed entirely through the `config.yaml` file.
 *   Injects a configurable `top_p` value into outgoing `generateContent` requests.
 *   Correctly adds the required `x-goog-api-key` and `Authorization: Bearer <key>` headers, replacing any client-sent `Authorization` headers.
@@ -29,6 +31,7 @@ A lightweight, high-performance asynchronous HTTP proxy for Google Gemini models
 *   Graceful shutdown handling (`SIGINT`, `SIGTERM`).
 *   Configurable logging using `tracing` and the `RUST_LOG` environment variable.
 *   Health check endpoints: a basic one at `/health` and a detailed one at `/health/detailed`.
+*   **Security Features:** Request size limits, rate limiting, timing-attack protection, secure logging (API keys are masked).
 
 ## Architecture
 
@@ -38,7 +41,7 @@ The Gemini Proxy Key Rotation service is built with a modular architecture, leve
 *   [`config.rs`](src/config.rs): Handles loading and validating the application's configuration from the `config.yaml` file. It defines how API key groups, proxy URLs, and target URLs are parsed and structured.
 *   [`key_manager.rs`](src/key_manager.rs): Manages the lifecycle of Gemini API keys. It's responsible for loading keys, selecting the next available key using a group round-robin strategy, tracking rate limits, and persisting key states to `key_states.json`.
 *   [`state.rs`](src/state.rs): Defines the shared application state (`AppState`) that is accessible across different request handlers. This includes the `KeyManager`, configuration, and other shared resources.
-*   [`handler.rs`](src/handler.rs): Contains the Axum request handlers. It processes incoming HTTP requests, interacts with the `KeyManager` to get an API key, and prepares the request for forwarding.
+*   [`handlers/mod.rs`](src/handlers/mod.rs): Contains the Axum request handlers. It processes incoming HTTP requests, interacts with the `KeyManager` to get an API key, and prepares the request for forwarding.
 *   [`proxy.rs`](src/proxy.rs): Responsible for forwarding the modified HTTP request to the actual Google Gemini API endpoint (or an upstream proxy if configured). It handles the network communication and returns the response to the client.
 
 **Request Flow Diagram:**
@@ -242,19 +245,28 @@ This file is the **single source of truth** for all configuration. It is require
 server:
   port: 8080
   # Optional: Default top_p value, must be between 0.0 and 1.0.
-  # This is applied if not specified in the group or client request.
   top_p: 0.95
+  # Admin panel access token (set to enable admin panel)
+  admin_token: "your-secure-admin-token-here"
+  # HTTP client timeout settings (in seconds)
+  connect_timeout_secs: 10
+  request_timeout_secs: 60
 
-# Defines the behavior when a rate limit is hit
-# - "RetryNextKey" (default): Tries the next available key.
-# - "BlockUntilMidnight": Disables the key until midnight PT.
-rate_limit_behavior: RetryNextKey
+# Redis configuration (optional, for persistent state)
+redis_url: "redis://127.0.0.1:6379"
+redis_key_prefix: "gemini_proxy:"
+
+# Maximum failures before blocking a key
+max_failures_threshold: 3
 
 groups:
   - name: "Default"
     api_keys:
       - "your-gemini-api-key-1"
       - "your-gemini-api-key-2"
+    target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    # Optional: proxy for this group
+    # proxy_url: "http://proxy.example.com:8080"
 ```
 
 ## Advanced Usage
@@ -273,12 +285,13 @@ The application itself only uses one environment variable.
 *   `GET /health` returns `200 OK` for a basic liveness check.
 *   `GET /health/detailed` performs a live API call to verify key validity for a readiness check.
 
-### Key State Persistence (`key_states.json`)
+### Key State Persistence
 *   **Purpose:** Remembers rate-limited keys to avoid checking them immediately after restarts.
-*   **Location:** Saved as `key_states.json` inside the container (`/app/`). Its state is ephemeral and will be reset if the container is recreated.
-*   **Reset Logic:** Daily midnight Pacific Time (America/Los_Angeles).
-*   **Management:** Automatic. Deleting the file (or recreating the container) resets the state memory.
-*   **.gitignore:** Included by default.
+*   **Storage Options:** 
+    - **Redis (Recommended):** Configure `redis_url` in `config.yaml` for persistent, scalable storage
+    - **In-Memory:** Default fallback when Redis is not configured
+*   **Management:** Automatic. Key states are managed internally by the proxy.
+*   **Scaling:** Redis storage allows multiple proxy instances to share key state information.
 
 The proxy is designed to handle errors from the Gemini API gracefully:
 
@@ -308,8 +321,17 @@ The proxy is designed to handle errors from the Gemini API gracefully:
 ## Security Considerations
 
 *   **API Keys:** Do not commit `config.yaml` to version control if it contains API keys. The file is included in `.gitignore` by default.
-*   **Files:** Do not commit `key_states.json` to Git.
 *   **Network:** Expose the proxy only to trusted networks. Consider a reverse proxy (Nginx/Caddy) for TLS and advanced access control if needed.
+*   **Admin Panel:** If using the admin panel, ensure `admin_token` is set to a strong, unique value.
+*   **Security Improvements:** See [SECURITY.md](SECURITY.md) for details on recent security enhancements and best practices.
+
+## Admin Panel
+
+The proxy includes a web-based admin panel for monitoring and managing API keys:
+
+*   **Access:** Available at `/admin/` when `admin_token` is configured in `config.yaml`
+*   **Features:** View key status, add/remove keys, monitor system health, manage configuration
+*   **Security:** Protected by token-based authentication and CSRF protection
 
 ## Contributing
 

@@ -39,11 +39,9 @@ groups:
 #[tokio::test]
 async fn test_model_specific_key_selection() {
     let (_temp_dir, config_path) = create_test_config_with_groups().await;
-    
-    let (app, _config) = run(Some(config_path))
-        .await
-        .expect("Failed to create app");
-    
+
+    let (app, _config) = run(Some(config_path)).await.expect("Failed to create app");
+
     let server = TestServer::new(app).expect("Failed to create test server");
 
     // Test request for gemini-1.5-flash should use Group1 keys
@@ -63,11 +61,9 @@ async fn test_model_specific_key_selection() {
 #[tokio::test]
 async fn test_model_specific_key_selection_different_group() {
     let (_temp_dir, config_path) = create_test_config_with_groups().await;
-    
-    let (app, _config) = run(Some(config_path))
-        .await
-        .expect("Failed to create app");
-    
+
+    let (app, _config) = run(Some(config_path)).await.expect("Failed to create app");
+
     let server = TestServer::new(app).expect("Failed to create test server");
 
     // Test request for gemini-1.5-pro should use Group2 keys
@@ -86,11 +82,9 @@ async fn test_model_specific_key_selection_different_group() {
 #[tokio::test]
 async fn test_unknown_model_uses_default_group() {
     let (_temp_dir, config_path) = create_test_config_with_groups().await;
-    
-    let (app, _config) = run(Some(config_path))
-        .await
-        .expect("Failed to create app");
-    
+
+    let (app, _config) = run(Some(config_path)).await.expect("Failed to create app");
+
     let server = TestServer::new(app).expect("Failed to create test server");
 
     // Test request for unknown model should use default rotation
@@ -109,11 +103,9 @@ async fn test_unknown_model_uses_default_group() {
 #[tokio::test]
 async fn test_model_alias_matching() {
     let (_temp_dir, config_path) = create_test_config_with_groups().await;
-    
-    let (app, _config) = run(Some(config_path))
-        .await
-        .expect("Failed to create app");
-    
+
+    let (app, _config) = run(Some(config_path)).await.expect("Failed to create app");
+
     let server = TestServer::new(app).expect("Failed to create test server");
 
     // Test that model aliases work correctly
@@ -132,11 +124,9 @@ async fn test_model_alias_matching() {
 #[tokio::test]
 async fn test_case_insensitive_model_matching() {
     let (_temp_dir, config_path) = create_test_config_with_groups().await;
-    
-    let (app, _config) = run(Some(config_path))
-        .await
-        .expect("Failed to create app");
-    
+
+    let (app, _config) = run(Some(config_path)).await.expect("Failed to create app");
+
     let server = TestServer::new(app).expect("Failed to create test server");
 
     // Test case insensitive matching

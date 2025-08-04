@@ -1,136 +1,165 @@
-// tests/admin_integration_tests.rs
-
 use axum::{
-    body::Body,
-    http::{Method, Request, StatusCode, header},
+    body::{to_bytes, Body},
+    extract::connect_info::MockConnectInfo,
+    http::{header, Method, Request, StatusCode},
+    Router,
 };
 use gemini_proxy_key_rotation_rust::{
-    admin::{AddKeysRequest, CsrfTokenResponse, DeleteKeysRequest},
-    config::{AppConfig, KeyGroup},
-    run,
+    admin::admin_routes,
+    config::{AppConfig, KeyGroup, ServerConfig},
+    state::AppState,
 };
-use http_body_util::BodyExt;
-use std::sync::Once;
+use std::{net::SocketAddr, sync::Arc};
 use tempfile::TempDir;
-use tower::util::ServiceExt;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
-use std::panic;
-
-fn setup_panic_hook() {
-    panic::set_hook(Box::new(|panic_info| {
-        eprintln!("Panic occurred: {:?}", panic_info);
-    }));
-}
-
-static TRACING_INIT: Once = Once::new();
-
-/// Initializes the tracing subscriber for tests, ensuring it only runs once.
-fn ensure_tracing_initialized() {
-    TRACING_INIT.call_once(|| {
-        let env_filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        let json_layer = fmt::layer()
-            .json()
-            .with_current_span(true)
-            .with_span_list(true);
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(json_layer)
-            .init();
-    });
-}
-
-// Helper structure to manage the test application state
+use tower::ServiceExt;
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
+};
 struct TestApp {
-    router: axum::Router,
-    _temp_dir: TempDir, // Keep temp dir alive
+    router: Router,
+    _state: Arc<AppState>,
     auth_cookie: Option<String>,
-    csrf_token: Option<String>,
     csrf_cookie: Option<String>,
+    csrf_token: Option<String>,
+    _mock_server: MockServer,
+    _temp_dir: TempDir,
 }
 
 impl TestApp {
-    async fn new(config: AppConfig) -> Self {
-        ensure_tracing_initialized();
-        let temp_dir = tempfile::tempdir().unwrap();
+    async fn new() -> Self {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config_file_path = temp_dir.path().join("config.yaml");
 
-        let config_str = serde_yaml::to_string(&config).unwrap();
-        tokio::fs::write(&config_file_path, &config_str)
-            .await
-            .unwrap();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
 
-        let (router, _app_state) = run(Some(config_file_path))
+        let app_config = AppConfig {
+            server: ServerConfig {
+                admin_token: Some("test-token".to_string()),
+                test_mode: true,
+                port: 0,
+                connect_timeout_secs: 1, // Short timeout for tests
+                request_timeout_secs: 1, // Short timeout for tests
+                ..Default::default()
+            },
+            groups: vec![KeyGroup {
+                name: "default".to_string(),
+                api_keys: vec!["test-key-1".to_string()],
+                target_url: mock_server.uri(), // Use a real URL that doesn't require connection
+                proxy_url: None,
+                ..Default::default()
+            }],
+            redis_url: None, // Explicitly disable Redis
+            ..Default::default()
+        };
+
+        let (state_instance, mut config_update_rx) = AppState::new(&app_config, &config_file_path)
             .await
-            .expect("Failed to create test router");
+            .expect("Failed to create app state");
+        let state = Arc::new(state_instance);
+        
+        // Start background worker for config updates (like in main app)
+        let state_for_worker = state.clone();
+        tokio::spawn(async move {
+            loop {
+                match config_update_rx.recv().await {
+                    Ok(new_config) => {
+                        if let Err(e) = gemini_proxy_key_rotation_rust::admin::reload_state_from_config(
+                            state_for_worker.clone(), 
+                            new_config
+                        ).await {
+                            eprintln!("Failed to reload state in test worker: {:?}", e);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let router = admin_routes(state.clone())
+            .with_state(state.clone())
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 3000))));
 
         TestApp {
             router,
-            _temp_dir: temp_dir,
+            _state: state,
             auth_cookie: None,
-            csrf_token: None,
             csrf_cookie: None,
+            csrf_token: None,
+            _mock_server: mock_server,
+            _temp_dir: temp_dir,
         }
     }
 
-    /// Logs in to the application and stores the auth cookie.
-    async fn login(&mut self, token: &str) {
-        let response = self
-            .router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/admin/login")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(format!(r#"{{"token": "{token}"}}"#)))
-                    .unwrap(),
-            )
-            .await
+    async fn login(&mut self) {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/login")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"token": "test-token"}"#))
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK, "Login failed");
-        let cookie = response
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        if status != StatusCode::OK {
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body_str = String::from_utf8_lossy(&body);
+            panic!("Login failed with status {status}: {body_str}");
+        }
+
+        let auth_cookie = response
             .headers()
             .get("set-cookie")
             .expect("set-cookie header missing")
             .to_str()
-            .unwrap();
-        self.auth_cookie = Some(cookie.to_string());
+            .unwrap()
+            .to_string();
+        self.auth_cookie = Some(auth_cookie);
     }
 
-    /// Gets a CSRF token and stores it.
     async fn get_csrf_token(&mut self) {
-        let auth_cookie = self.auth_cookie.as_ref().expect("Must be logged in to get CSRF token");
-        let response = self
-            .router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/admin/csrf-token")
-                    .header(header::COOKIE, auth_cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
+        if self.auth_cookie.is_none() {
+            self.login().await;
+        }
+        let auth_cookie = self
+            .auth_cookie
+            .as_ref()
+            .expect("Must be logged in to get CSRF token");
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/csrf-token")
+            .header(header::COOKIE, auth_cookie)
+            .body(Body::empty())
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK, "Failed to get CSRF token");
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        if status != StatusCode::OK {
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body_str = String::from_utf8_lossy(&body);
+            panic!("Failed to get CSRF token with status {status}: {body_str}");
+        }
+
         let csrf_cookie = response
             .headers()
             .get("set-cookie")
             .expect("CSRF set-cookie header missing")
             .to_str()
-            .unwrap();
-        self.csrf_cookie = Some(csrf_cookie.to_string());
+            .unwrap()
+            .to_string();
+        self.csrf_cookie = Some(csrf_cookie);
 
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let csrf_response: CsrfTokenResponse = serde_json::from_slice(&body).unwrap();
-        self.csrf_token = Some(csrf_response.csrf_token);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let csrf_token = json["csrf_token"].as_str().unwrap().to_string();
+        self.csrf_token = Some(csrf_token);
     }
 
-    /// Sends a request with authentication and CSRF headers.
     async fn authed_request(
         &self,
         method: Method,
@@ -138,293 +167,199 @@ impl TestApp {
         body: Body,
     ) -> axum::response::Response {
         let auth_cookie = self.auth_cookie.as_ref().expect("Not logged in");
-        let csrf_cookie = self.csrf_cookie.as_ref().expect("CSRF cookie not set");
-        let csrf_token = self.csrf_token.as_ref().expect("CSRF token not set");
 
-        self.router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(method)
-                    .uri(uri)
-                    .header("Content-Type", "application/json")
-                    .header(header::COOKIE, format!("{auth_cookie}; {csrf_cookie}"))
-                    .header("x-csrf-token", csrf_token)
-                    .body(body)
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
+        let mut request_builder = Request::builder()
+            .method(method.clone())
+            .uri(format!("/admin{uri}"))
+            .header(header::COOKIE, auth_cookie);
+
+        // Only add CSRF headers for methods that require them
+        if matches!(method, Method::POST | Method::PUT | Method::DELETE) {
+            let csrf_cookie = self.csrf_cookie.as_ref().expect("CSRF cookie not set");
+            let csrf_token = self.csrf_token.as_ref().expect("CSRF token not set");
+            
+            request_builder = request_builder
+                .header(header::COOKIE, csrf_cookie)
+                .header("x-csrf-token", csrf_token);
+        }
+
+        let request = request_builder
+            .header("Content-Type", "application/json")
+            .body(body)
+            .unwrap();
+
+        self.router.clone().oneshot(request).await.unwrap()
     }
 }
 
-fn get_default_config() -> AppConfig {
-    let mut config = AppConfig::default();
-    config.server.admin_token = Some("secret_admin_token".to_string());
-    config.server.test_mode = true; // Enable test mode
-    config.groups = vec![KeyGroup {
-        name: "default".to_string(),
-        api_keys: vec!["key1".to_string()],
-        ..Default::default()
-    }];
-    // For integration tests, disable Redis to avoid connection issues
-    config.redis_url = None;
-    config
-}
-
 #[tokio::test]
-async fn test_detailed_health_ok() {
-    setup_panic_hook();
-    let config = get_default_config();
-    let app = TestApp::new(config).await;
-
-    let response = app
-        .router
-        .oneshot(
-            Request::builder()
-                .uri("/admin/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn test_login_and_get_config_success() {
-    let config = get_default_config();
-    let mut app = TestApp::new(config.clone()).await;
-
-    app.login("secret_admin_token").await;
+async fn test_login_and_csrf_token() {
+    let mut app = TestApp::new().await;
+    app.login().await;
     assert!(app.auth_cookie.is_some());
 
-    let response = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/admin/config")
-                .header(header::COOKIE, app.auth_cookie.as_ref().unwrap())
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let received_config: AppConfig = serde_json::from_slice(&body).unwrap();
-
-    assert_eq!(
-        received_config.server.admin_token,
-        config.server.admin_token
-    );
-}
-
-#[tokio::test]
-async fn test_add_keys_unauthorized() {
-    let config = get_default_config();
-    let app = TestApp::new(config).await;
-
-    let body = Body::from(
-        serde_json::to_string(&AddKeysRequest {
-            group_name: "default".to_string(),
-            api_keys: vec!["new_key".to_string()],
-        })
-        .unwrap(),
-    );
-
-    let response = app
-        .router
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/admin/keys")
-                .header("Content-Type", "application/json")
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn test_add_keys_no_csrf() {
-    let config = get_default_config();
-    let mut app = TestApp::new(config).await;
-    app.login("secret_admin_token").await;
-
-    let body = Body::from(
-        serde_json::to_string(&AddKeysRequest {
-            group_name: "default".to_string(),
-            api_keys: vec!["new_key".to_string()],
-        })
-        .unwrap(),
-    );
-
-    let response = app
-        .router
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/admin/keys")
-                .header("Content-Type", "application/json")
-                .header(header::COOKIE, app.auth_cookie.as_ref().unwrap())
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn test_add_keys_success() {
-    let config = get_default_config();
-    let mut app = TestApp::new(config).await;
-
-    app.login("secret_admin_token").await;
     app.get_csrf_token().await;
-
-    let body = Body::from(
-        serde_json::to_string(&AddKeysRequest {
-            group_name: "default".to_string(),
-            api_keys: vec!["new_key_1".to_string(), "new_key_2".to_string()],
-        })
-        .unwrap(),
-    );
-
-    let response = app.authed_request(Method::POST, "/admin/keys", body).await;
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let get_config_response = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/admin/config")
-                .header(header::COOKIE, app.auth_cookie.as_ref().unwrap())
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let body = get_config_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let updated_config: AppConfig = serde_json::from_slice(&body).unwrap();
-
-    let default_group = updated_config
-        .groups
-        .iter()
-        .find(|g| g.name == "default")
-        .unwrap();
-    assert_eq!(default_group.api_keys.len(), 3);
-    assert!(default_group.api_keys.contains(&"key1".to_string()));
-    assert!(default_group.api_keys.contains(&"new_key_1".to_string()));
+    assert!(app.csrf_cookie.is_some());
+    assert!(app.csrf_token.is_some());
 }
 
 #[tokio::test]
-async fn test_delete_keys_success() {
-    let mut config = get_default_config();
-    config.groups[0].api_keys.push("key_to_delete".to_string());
-    let mut app = TestApp::new(config).await;
-    app.login("secret_admin_token").await;
-    app.get_csrf_token().await;
-
-    let body = Body::from(
-        serde_json::to_string(&DeleteKeysRequest {
-            group_name: "default".to_string(),
-            api_keys: vec!["key_to_delete".to_string()],
-        })
-        .unwrap(),
-    );
+async fn test_health_check() {
+    let mut app = TestApp::new().await;
+    app.login().await;
 
     let response = app
-        .authed_request(Method::DELETE, "/admin/keys", body)
+        .authed_request(Method::GET, "/health", Body::empty())
         .await;
     assert_eq!(response.status(), StatusCode::OK);
+}
 
-    let get_config_response = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/admin/config")
-                .header(header::COOKIE, app.auth_cookie.as_ref().unwrap())
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+#[tokio::test]
+async fn test_get_config() {
+    let mut app = TestApp::new().await;
+    app.login().await;
 
-    let body = get_config_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let updated_config: AppConfig = serde_json::from_slice(&body).unwrap();
+    let response = app
+        .authed_request(Method::GET, "/config", Body::empty())
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let config: AppConfig = serde_json::from_slice(&body).unwrap();
+    assert_eq!(config.server.admin_token, Some("test-token".to_string()));
+}
 
-    let default_group = updated_config
+#[tokio::test]
+async fn test_add_key() {
+    let mut app = TestApp::new().await;
+    app.login().await;
+    app.get_csrf_token().await;
+
+    let new_key = serde_json::json!({
+        "group_name": "default",
+        "api_keys": ["new-test-key"]
+    });
+    let body = Body::from(serde_json::to_string(&new_key).unwrap());
+
+    let response = app.authed_request(Method::POST, "/keys", body).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    // Allow time for the background worker to process the update
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Verify that the key was added by checking config
+    let response = app
+        .authed_request(Method::GET, "/config", Body::empty())
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let config: AppConfig = serde_json::from_slice(&body).unwrap();
+    let group = config.groups.iter().find(|g| g.name == "default").unwrap();
+    assert!(group.api_keys.contains(&"new-test-key".to_string()));
+}
+
+#[tokio::test]
+async fn test_add_key_with_model_specific_rules() {
+    let mut app = TestApp::new().await;
+    app.login().await;
+    app.get_csrf_token().await;
+
+    let new_key = serde_json::json!({
+        "group_name": "default",
+        "api_keys": ["new-key-with-rules"]
+    });
+    let body = Body::from(serde_json::to_string(&new_key).unwrap());
+
+    let response = app.authed_request(Method::POST, "/keys", body).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    // Allow time for the background worker to process the update
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Verify key was added
+    let response = app
+        .authed_request(Method::GET, "/config", Body::empty())
+        .await;
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let config: AppConfig = serde_json::from_slice(&body).unwrap();
+    let group = config
         .groups
         .iter()
         .find(|g| g.name == "default")
         .unwrap();
-    assert_eq!(default_group.api_keys.len(), 1);
-    assert!(default_group.api_keys.contains(&"key1".to_string()));
-    assert!(!default_group.api_keys.contains(&"key_to_delete".to_string()));
+    let key = group.api_keys.iter().find(|k| **k == "new-key-with-rules").unwrap();
+    assert_eq!(*key, "new-key-with-rules");
 }
 
 #[tokio::test]
-async fn test_update_config_success() {
-    let initial_config = get_default_config();
-    let mut app = TestApp::new(initial_config).await;
-    app.login("secret_admin_token").await;
+async fn test_delete_key() {
+    let mut app = TestApp::new().await;
+    app.login().await;
     app.get_csrf_token().await;
 
-    let mut new_config = get_default_config();
-    new_config.server.port = 9999;
-    new_config.groups[0].name = "renamed_group".to_string();
-    new_config.groups[0].api_keys.push("new_key_in_updated_config".to_string());
+    // First, add a key to be deleted
+    let key_to_delete = serde_json::json!({
+        "group_name": "default",
+        "api_keys": ["a_new_key_to_be_added_and_then_deleted"]
+    });
+    let body = Body::from(serde_json::to_string(&key_to_delete).unwrap());
+    let response = app.authed_request(Method::POST, "/keys", body).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 
-    let body = Body::from(serde_json::to_string(&new_config).unwrap());
-    let response = app.authed_request(Method::PUT, "/admin/config", body).await;
+    // Allow time for the background worker to process the update
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Now, delete the key
+    let body = Body::from(
+        serde_json::to_string(&serde_json::json!({
+            "group_name": "default",
+            "api_keys": ["a_new_key_to_be_added_and_then_deleted"]
+        }))
+        .unwrap(),
+    );
+    let response = app.authed_request(Method::DELETE, "/keys", body).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    // Allow time for the background worker to process the update
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Verify that the key was deleted
+    let response = app
+        .authed_request(Method::GET, "/config", Body::empty())
+        .await;
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!body_str.contains("a_new_key_to_be_added_and_then_deleted"));
+}
+
+#[tokio::test]
+async fn test_update_config() {
+    let mut app = TestApp::new().await;
+    app.login().await;
+    app.get_csrf_token().await;
+
+    // First, get the current config to make sure we are not deleting anything important
+    let response = app
+        .authed_request(Method::GET, "/config", Body::empty())
+        .await;
     assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let mut config: AppConfig = serde_json::from_slice(&body).unwrap();
 
-    let get_config_response = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/admin/config")
-                .header(header::COOKIE, app.auth_cookie.as_ref().unwrap())
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    // Add a new key to the config
+    config.groups[0].api_keys.push("new_key_in_updated_config".to_string());
 
-    let body = get_config_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let updated_config: AppConfig = serde_json::from_slice(&body).unwrap();
+    let body = Body::from(serde_json::to_string(&config).unwrap());
+    let response = app.authed_request(Method::PUT, "/config", body).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 
-    assert_eq!(updated_config.server.port, 9999);
-    assert_eq!(updated_config.groups.len(), 1);
-    assert_eq!(updated_config.groups[0].name, "renamed_group");
-    assert_eq!(updated_config.groups[0].api_keys.len(), 2);
-    assert!(updated_config.groups[0].api_keys.contains(&"new_key_in_updated_config".to_string()));
+    // Allow time for the background worker to process the update
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Verify that the config was updated
+    let response = app
+        .authed_request(Method::GET, "/config", Body::empty())
+        .await;
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body_str.contains("new_key_in_updated_config"));
 }

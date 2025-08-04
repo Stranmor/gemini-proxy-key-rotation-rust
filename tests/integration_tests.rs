@@ -1,12 +1,12 @@
 // tests/integration_tests.rs
 
+use axum::body::to_bytes;
 use axum::{
     // body::Bytes as _, // Removed unused import placeholder
     extract::{Request, State},
     http::{/* header, */ Method, StatusCode, Uri}, // Removed unused header
     response::Response,
 };
-use axum::body::to_bytes;
 use gemini_proxy_key_rotation_rust::key_manager::KeyManagerTrait;
 use gemini_proxy_key_rotation_rust::{
     config::{AppConfig, KeyGroup, ServerConfig},
@@ -19,8 +19,8 @@ use std::{
     fs::File,
     path::PathBuf,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 use tempfile::tempdir;
@@ -37,24 +37,24 @@ static TEST_DB_COUNTER: AtomicUsize = AtomicUsize::new(2);
 
 // Helper function to create a basic AppConfig for testing
 fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, _db_num: usize) -> AppConfig {
-   AppConfig {
-       server: ServerConfig {
-           port: server_port,
-           top_p: None,
-           admin_token: Some("test_token".to_string()),
-           test_mode: true,
-           connect_timeout_secs: 10,
-           request_timeout_secs: 60,
-       },
-       groups,
-       redis_url: None, // Disable Redis for tests
-       redis_key_prefix: None,
-       internal_retries: 3,
-       temporary_block_minutes: 1,
-       top_p: None,
-       max_failures_threshold: Some(10),
-   }
- }
+    AppConfig {
+        server: ServerConfig {
+            port: server_port,
+            top_p: None,
+            admin_token: Some("test_token".to_string()),
+            test_mode: true,
+            connect_timeout_secs: 10,
+            request_timeout_secs: 60,
+        },
+        groups,
+        redis_url: None, // Disable Redis for tests
+        redis_key_prefix: None,
+        internal_retries: 3,
+        temporary_block_minutes: 1,
+        top_p: None,
+        max_failures_threshold: Some(10),
+    }
+}
 
 // Helper to create a dummy config file path within a temp dir
 fn create_dummy_config_path_for_test(dir: &tempfile::TempDir) -> PathBuf {
@@ -122,11 +122,10 @@ async fn test_forward_request_openai_compat_success_no_proxy() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9999, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    ); // Wrap in Arc
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance); // Wrap in Arc
 
     // 3. Call handler directly
     let response =
@@ -186,11 +185,10 @@ async fn test_handler_retries_on_429_and_succeeds() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9998, db_num); // Different port just in case
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler
     // We expect the handler to try key1, get 429, mark it, try key2, get 200, and return 200.
@@ -261,11 +259,10 @@ async fn test_handler_returns_last_429_on_exhaustion() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9997, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler
     // We expect the handler to try key1 (429), try key2 (429), run out of keys, and return the *last* 429 response.
@@ -292,106 +289,105 @@ async fn test_handler_returns_last_429_on_exhaustion() {
 
 #[tokio::test]
 async fn test_handler_group_round_robin() {
-        // 1. Setup Mock Server
-        let server = MockServer::start().await;
-        let test_path = "/v1/chat/completions"; // Use a path that expects a body
-        let expected_path = "/v1beta/openai/chat/completions";
-    
-        let g1_key1 = "g1-key-1";
-        let g1_key2 = "g1-key-2";
-        let g2_key1 = "g2-key-1"; // Other groups, should not be used
-    
-        // Mock successful responses for the keys in the target group
-        for key in [g1_key1, g1_key2] {
-            Mock::given(method("POST")) // Expect POST now
-                .and(path(expected_path))
-                .and(query_param("key", key))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{key}\"}}")),
-                )
-                .mount(&server)
-                .await;
-        }
-    
-        // 2. Setup Config and State
-        let db_num = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let temp_dir = tempdir().expect("Failed to create temp dir");
-        let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
-        let groups = vec![
-            KeyGroup {
-                name: "group1".to_string(),
-                api_keys: vec![g1_key1.to_string(), g1_key2.to_string()],
-                model_aliases: vec!["test-model".to_string()], // This is the key for routing
-                target_url: server.uri(),
-                proxy_url: None,
-                top_p: None,
-            },
-            KeyGroup {
-                name: "group2".to_string(),
-                api_keys: vec![g2_key1.to_string()],
-                model_aliases: vec!["other-model".to_string()],
-                target_url: server.uri(),
-                proxy_url: None,
-                top_p: None,
-            },
-        ];
-        let config = create_test_config(groups, 9996, db_num);
-        let app_state = Arc::new(
-            AppState::new(&config, &dummy_config_path)
-                .await
-                .expect("AppState failed"),
-        );
-    
-        // Helper to extract key from response body
-        async fn get_key_from_response(response: Response) -> String {
-            let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .expect("Failed to read response body");
-            let body_json: serde_json::Value =
-                serde_json::from_slice(&body_bytes).expect("Invalid JSON");
-            body_json["key_used"].as_str().unwrap().to_string()
-        }
-    
-        // Create a request body that specifies the model for routing
-        let request_body = serde_json::json!({
-            "model": "test-model",
-            "messages": [{"role": "user", "content": "Hello"}]
-        });
-        let body_bytes = serde_json::to_vec(&request_body).unwrap();
-    
-        // 3. Call handler multiple times and check key rotation WITHIN the group
-        // Expected sequence for group1: g1k1, g1k2, g1k1, ...
-    
-        let res1 = call_proxy_handler(
-            Arc::clone(&app_state),
-            Method::POST,
-            test_path,
-            axum::body::Body::from(body_bytes.clone()),
-        )
-        .await;
-        assert_eq!(res1.status(), StatusCode::OK);
-        assert_eq!(get_key_from_response(res1).await, g1_key1);
-    
-        let res2 = call_proxy_handler(
-            Arc::clone(&app_state),
-            Method::POST,
-            test_path,
-            axum::body::Body::from(body_bytes.clone()),
-        )
-        .await;
-        assert_eq!(res2.status(), StatusCode::OK);
-        assert_eq!(get_key_from_response(res2).await, g1_key2); // Next key in the SAME group
-    
-        let res3 = call_proxy_handler(
-            Arc::clone(&app_state),
-            Method::POST,
-            test_path,
-            axum::body::Body::from(body_bytes.clone()),
-        )
-        .await;
-        assert_eq!(res3.status(), StatusCode::OK);
-        assert_eq!(get_key_from_response(res3).await, g1_key1); // Rotated back to the start of the group
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let test_path = "/v1/chat/completions"; // Use a path that expects a body
+    let expected_path = "/v1beta/openai/chat/completions";
+
+    let g1_key1 = "g1-key-1";
+    let g1_key2 = "g1-key-2";
+    let g2_key1 = "g2-key-1"; // Other groups, should not be used
+
+    // Mock successful responses for the keys in the target group
+    for key in [g1_key1, g1_key2] {
+        Mock::given(method("POST")) // Expect POST now
+            .and(path(expected_path))
+            .and(query_param("key", key))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{{\"key_used\": \"{key}\"}}")),
+            )
+            .mount(&server)
+            .await;
     }
+
+    // 2. Setup Config and State
+    let db_num = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    let groups = vec![
+        KeyGroup {
+            name: "group1".to_string(),
+            api_keys: vec![g1_key1.to_string(), g1_key2.to_string()],
+            model_aliases: vec!["test-model".to_string()], // This is the key for routing
+            target_url: server.uri(),
+            proxy_url: None,
+            top_p: None,
+        },
+        KeyGroup {
+            name: "group2".to_string(),
+            api_keys: vec![g2_key1.to_string()],
+            model_aliases: vec!["other-model".to_string()],
+            target_url: server.uri(),
+            proxy_url: None,
+            top_p: None,
+        },
+    ];
+    let config = create_test_config(groups, 9996, db_num);
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
+
+    // Helper to extract key from response body
+    async fn get_key_from_response(response: Response) -> String {
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("Failed to read response body");
+        let body_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON");
+        body_json["key_used"].as_str().unwrap().to_string()
+    }
+
+    // Create a request body that specifies the model for routing
+    let request_body = serde_json::json!({
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Hello"}]
+    });
+    let body_bytes = serde_json::to_vec(&request_body).unwrap();
+
+    // 3. Call handler multiple times and check key rotation WITHIN the group
+    // Expected sequence for group1: g1k1, g1k2, g1k1, ...
+
+    let res1 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::POST,
+        test_path,
+        axum::body::Body::from(body_bytes.clone()),
+    )
+    .await;
+    assert_eq!(res1.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res1).await, g1_key1);
+
+    let res2 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::POST,
+        test_path,
+        axum::body::Body::from(body_bytes.clone()),
+    )
+    .await;
+    assert_eq!(res2.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res2).await, g1_key2); // Next key in the SAME group
+
+    let res3 = call_proxy_handler(
+        Arc::clone(&app_state),
+        Method::POST,
+        test_path,
+        axum::body::Body::from(body_bytes.clone()),
+    )
+    .await;
+    assert_eq!(res3.status(), StatusCode::OK);
+    assert_eq!(get_key_from_response(res3).await, g1_key1); // Rotated back to the start of the group
+}
 
 // TODO: Add more tests from the plan:
 // - Test with POST /v1/chat/completions and body forwarding (similar structure, just change method and add body to request/mocks)
@@ -436,25 +432,24 @@ async fn test_openai_top_p_injection_correctly() {
     let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
 
     // Create a new AppConfig with top_p at the server level for this test
-   let mut config = create_test_config(
-       vec![KeyGroup {
-           name: "openai-top-p-group".to_string(),
-           api_keys: vec![test_api_key.to_string()],
-           model_aliases: vec![],
-           target_url: server.uri(),
-           proxy_url: None,
-           top_p: None, // Group level top_p is not used for this path
-       }],
-       9993,
-       db_num,
-   );
-   config.top_p = Some(top_p_value);
-
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
+    let mut config = create_test_config(
+        vec![KeyGroup {
+            name: "openai-top-p-group".to_string(),
+            api_keys: vec![test_api_key.to_string()],
+            model_aliases: vec![],
+            target_url: server.uri(),
+            proxy_url: None,
+            top_p: None, // Group level top_p is not used for this path
+        }],
+        9993,
+        db_num,
     );
+    config.top_p = Some(top_p_value);
+
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler with a standard OpenAI body
     let original_body = serde_json::json!({
@@ -508,11 +503,10 @@ async fn test_health_detailed_maps_to_models_endpoint() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9992, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler for the /health/detailed path
     let response = call_proxy_handler(
@@ -598,25 +592,24 @@ async fn test_content_length_is_updated_after_top_p_injection() {
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
 
-   let mut config = create_test_config(
-       vec![KeyGroup {
-           name: "content-length-group".to_string(),
-           api_keys: vec![test_api_key.to_string()],
-           model_aliases: vec![],
-           target_url: server.uri(),
-           proxy_url: None,
-           top_p: None,
-       }],
-       9991,
-       db_num,
-   );
-   config.top_p = Some(top_p_value);
-
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
+    let mut config = create_test_config(
+        vec![KeyGroup {
+            name: "content-length-group".to_string(),
+            api_keys: vec![test_api_key.to_string()],
+            model_aliases: vec![],
+            target_url: server.uri(),
+            proxy_url: None,
+            top_p: None,
+        }],
+        9991,
+        db_num,
     );
+    config.top_p = Some(top_p_value);
+
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler
     let body_bytes = serde_json::to_vec(&original_body).unwrap();
@@ -683,11 +676,10 @@ async fn test_top_p_client_precedence() {
         top_p: Some(server_top_p), // Set a server-side value
     };
     let config = create_test_config(vec![test_group], 9994, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler with a body that already contains topP
     let original_body = serde_json::json!({
@@ -746,11 +738,10 @@ async fn test_url_translation_for_v1_path() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9990, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler with the original `/v1/...` path
     let response = call_proxy_handler(
@@ -770,6 +761,46 @@ async fn test_url_translation_for_v1_path() {
     // The mock server implicitly verifies that the path was translated correctly.
     // If the request had gone to the original path, the mock would not have matched,
     // and wiremock would have returned a 404, failing the test.
+}
+
+#[tokio::test]
+async fn test_proxy_handler_returns_502_on_internal_error_from_try_request_with_key() {
+    // Configure an invalid target_url to force URL parse/join error inside try_request_with_key,
+    // which should be treated as non-UpstreamServiceError and mapped to 502 by proxy_handler.
+    let test_api_key = "any-key";
+    let invalid_target = "http:// invalid url"; // space makes it invalid
+
+    let db_num = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+
+    let test_group = KeyGroup {
+        name: "invalid-target-group".to_string(),
+        api_keys: vec![test_api_key.to_string()],
+        model_aliases: vec![],
+        target_url: invalid_target.to_string(),
+        proxy_url: None,
+        top_p: None,
+    };
+    let config = create_test_config(vec![test_group], 9985, db_num);
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
+
+    let response = call_proxy_handler(
+        app_state,
+        Method::GET,
+        "/v1/models",
+        axum::body::Body::empty(),
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "Non-upstream service errors must map to 502"
+    );
 }
 
 #[tokio::test]
@@ -803,11 +834,10 @@ async fn test_url_translation_for_non_v1_path() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9989, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler with the non-v1 path
     let response = call_proxy_handler(
@@ -876,11 +906,10 @@ async fn test_rotates_on_400_with_api_key_invalid_body() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9988, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler
     let response = call_proxy_handler(
@@ -897,10 +926,19 @@ async fn test_rotates_on_400_with_api_key_invalid_body() {
         StatusCode::OK,
         "Expected status OK (200) after retry on 400 with API_KEY_INVALID"
     );
-// Verify that the first key is now marked as invalid
-let key_states = app_state.key_manager.read().await.get_key_states().await.unwrap();
-let key1_state = key_states.get(key1_invalid).unwrap();
-assert!(key1_state.is_blocked, "Expected the first key to be marked as blocked");
+    // Verify that the first key is now marked as invalid
+    let key_states = app_state
+        .key_manager
+        .read()
+        .await
+        .get_key_states()
+        .await
+        .unwrap();
+    let key1_state = key_states.get(key1_invalid).unwrap();
+    assert!(
+        key1_state.is_blocked,
+        "Expected the first key to be marked as blocked"
+    );
 }
 #[tokio::test]
 async fn test_returns_immediately_on_400_with_other_body() {
@@ -945,11 +983,10 @@ async fn test_returns_immediately_on_400_with_other_body() {
         top_p: None,
     };
     let config = create_test_config(vec![test_group], 9987, db_num);
-    let app_state = Arc::new(
-        AppState::new(&config, &dummy_config_path)
-            .await
-            .expect("AppState failed"),
-    );
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
 
     // 3. Call handler
     let response = call_proxy_handler(
@@ -977,7 +1014,13 @@ async fn test_returns_immediately_on_400_with_other_body() {
     );
 
     // Verify that the first key was NOT marked as invalid
-    let key_states = app_state.key_manager.read().await.get_key_states().await.unwrap();
+    let key_states = app_state
+        .key_manager
+        .read()
+        .await
+        .get_key_states()
+        .await
+        .unwrap();
     let key1_state = key_states.get(key1).unwrap();
     assert!(
         !key1_state.is_blocked,

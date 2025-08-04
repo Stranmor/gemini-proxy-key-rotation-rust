@@ -31,7 +31,7 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            max_requests: 10, // 10 requests per window
+            max_requests: 10,                         // 10 requests per window
             window_duration: Duration::from_secs(60), // 1 minute window
         }
     }
@@ -58,18 +58,20 @@ pub async fn rate_limit_middleware(
 
     let now = Instant::now();
     let mut store_guard = store.write().await;
-    
-    let entry = store_guard.entry(client_key.clone()).or_insert(RateLimitEntry {
-        count: 0,
-        window_start: now,
-    });
-    
+
+    let entry = store_guard
+        .entry(client_key.clone())
+        .or_insert(RateLimitEntry {
+            count: 0,
+            window_start: now,
+        });
+
     // Reset window if expired
     if now.duration_since(entry.window_start) >= config.window_duration {
         entry.count = 0;
         entry.window_start = now;
     }
-    
+
     // Check rate limit
     if entry.count >= config.max_requests {
         warn!(
@@ -80,19 +82,26 @@ pub async fn rate_limit_middleware(
         );
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
-    
+
     // Increment counter
     entry.count += 1;
-    
+
     debug!(
         client_ip = %addr.ip(),
         count = entry.count,
         max_requests = config.max_requests,
         "Rate limit check passed"
     );
-    
+
+    // Cleanup old entries periodically to prevent memory leaks
+    // Remove entries that haven't been accessed for more than 2 window durations
+    let cleanup_threshold = config.window_duration * 2;
+    store_guard.retain(|_, entry| {
+        now.duration_since(entry.window_start) < cleanup_threshold
+    });
+
     drop(store_guard);
-    
+
     Ok(next.run(request).await)
 }
 
@@ -101,12 +110,8 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use axum::{
-        body::Body,
-        extract::connect_info::MockConnectInfo,
-        http::Method,
-        middleware::from_fn_with_state,
-        routing::get,
-        Router,
+        Router, body::Body, extract::connect_info::MockConnectInfo, http::Method,
+        middleware::from_fn_with_state, routing::get,
     };
     use std::net::SocketAddr;
     use tempfile::tempdir;
@@ -120,7 +125,8 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let config_path = temp_dir.path().join("config.yaml");
         let config = AppConfig::default();
-        let state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
+        let (app_state_instance, _) = AppState::new(&config, &config_path).await.unwrap();
+        let state = Arc::new(app_state_instance);
 
         Router::new()
             .route("/test", get(dummy_handler))

@@ -47,11 +47,10 @@ async fn main() -> Result<(), AppError> {
         .init();
 
     // --- Initialize Tokenizer ---
-    if let Err(e) = initialize_tokenizer("google/gemma-2-2b").await {
+    if let Err(e) = initialize_tokenizer("gpt2").await {
         error!(error = ?e, "Failed to initialize tokenizer. Exiting.");
         return Err(AppError::TokenizerInitializationError(e.to_string()));
     }
-
 
     // The `run` function now configures the app and returns both the router and the config.
     let (app, config) = run(None).await.map_err(|e| {

@@ -11,6 +11,19 @@ use std::sync::Arc;
 use tower_cookies::Cookies;
 use tracing::{info, warn};
 
+/// Constant-time string comparison to prevent timing attacks
+fn secure_compare(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    
+    let mut result = 0u8;
+    for (byte_a, byte_b) in a.bytes().zip(b.bytes()) {
+        result |= byte_a ^ byte_b;
+    }
+    result == 0
+}
+
 const ADMIN_TOKEN_COOKIE: &str = "admin_token";
 
 /// Middleware for admin authentication.
@@ -31,7 +44,7 @@ pub async fn admin_auth_middleware(
                 .map(|cookie| cookie.value().to_string());
 
             match cookie_token {
-                Some(token) if token == expected => {
+                Some(token) if secure_compare(&token, expected) => {
                     info!("Admin authentication successful");
                     Ok(next.run(req).await)
                 }

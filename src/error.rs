@@ -1,8 +1,8 @@
 // src/error.rs
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -117,8 +117,8 @@ pub enum AppError {
     #[error("HTTP response builder error: {0}")]
     HttpResponseBuilder(#[from] http::Error),
 
-   #[error("Invalid HTTP header")]
-   InvalidHttpHeader,
+    #[error("Invalid HTTP header")]
+    InvalidHttpHeader,
 
     #[error("Internal retry mechanism exhausted without a final response")]
     InternalRetryExhausted,
@@ -274,7 +274,8 @@ impl AppError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorDetails {
                         error_type: "HTTP_RESPONSE_BUILD_ERROR".to_string(),
-                        message: "An internal error occurred while building an HTTP response".to_string(),
+                        message: "An internal error occurred while building an HTTP response"
+                            .to_string(),
                         details: Some(e.to_string()),
                     },
                 )
@@ -283,7 +284,8 @@ impl AppError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ErrorDetails {
                     error_type: "INTERNAL_RETRY_EXHAUSTED".to_string(),
-                    message: "Internal retry mechanism failed to produce a final response".to_string(),
+                    message: "Internal retry mechanism failed to produce a final response"
+                        .to_string(),
                     details: None,
                 },
             ),
@@ -293,7 +295,8 @@ impl AppError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorDetails {
                         error_type: "TOKENIZER_INIT_FAILURE".to_string(),
-                        message: "Internal server error: critical component failed to initialize.".to_string(),
+                        message: "Internal server error: critical component failed to initialize."
+                            .to_string(),
                         details: None, // Do not expose internal details to the client
                     },
                 )
@@ -318,7 +321,9 @@ impl AppError {
                     "timeout" => "Upstream request timed out".to_string(),
                     "connect" => "Internal error setting up upstream request".to_string(),
                     "request_setup" => "Internal error setting up upstream request".to_string(),
-                    "body_or_decode" => "Error processing response body from upstream service".to_string(),
+                    "body_or_decode" => {
+                        "Error processing response body from upstream service".to_string()
+                    }
                     _ => "Error communicating with upstream service".to_string(),
                 };
 
@@ -332,7 +337,10 @@ impl AppError {
                 )
             }
             Self::UpstreamServiceError { status, body } => {
-                error!("Upstream service returned error: Status={}, Body='{}'", status, body);
+                error!(
+                    "Upstream service returned error: Status={}, Body='{}'",
+                    status, body
+                );
                 (
                     *status,
                     ErrorDetails {
@@ -357,7 +365,8 @@ impl AppError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorDetails {
                     error_type: "NO_AVAILABLE_KEYS".to_string(),
-                    message: "No available API keys to process the request at this time".to_string(),
+                    message: "No available API keys to process the request at this time"
+                        .to_string(),
                     details: None,
                 },
             ),
@@ -425,14 +434,14 @@ impl AppError {
                     details: None,
                 },
             ),
-           Self::InvalidHttpHeader => (
-               StatusCode::INTERNAL_SERVER_ERROR,
-               ErrorDetails {
-                   error_type: "INVALID_HTTP_HEADER".to_string(),
-                   message: "Failed to construct a valid HTTP header".to_string(),
-                   details: None,
-               },
-           ),
+            Self::InvalidHttpHeader => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorDetails {
+                    error_type: "INVALID_HTTP_HEADER".to_string(),
+                    message: "Failed to construct a valid HTTP header".to_string(),
+                    details: None,
+                },
+            ),
         }
     }
 }
@@ -451,7 +460,6 @@ impl IntoResponse for AppError {
         (status, body).into_response()
     }
 }
-
 
 // Optional: Define a type alias for Result using the AppError
 pub type Result<T> = std::result::Result<T, AppError>;

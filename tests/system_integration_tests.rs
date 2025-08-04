@@ -8,12 +8,12 @@ use gemini_proxy_key_rotation_rust::{
     state::AppState,
 };
 use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use std::{fs::File, sync::Arc};
 use tempfile::tempdir;
 use wiremock::{
-    matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
 };
 
 fn generate_prefix() -> String {
@@ -41,25 +41,26 @@ async fn create_test_system(
         top_p: None,
     };
 
-   let config = AppConfig {
-       server: ServerConfig {
-           port: 8080,
-           top_p: None,
-           admin_token: Some("test_token".to_string()),
-           test_mode: true,
-           connect_timeout_secs: 10,
-           request_timeout_secs: 60,
-       },
-       groups: vec![test_group],
-       redis_url: None, // Disable Redis for tests
-       redis_key_prefix: Some(format!("test:{}", generate_prefix())),
-       internal_retries,
-       temporary_block_minutes: 1,
-       top_p: None,
-       max_failures_threshold: Some(10),
-   };
- 
-     let app_state = Arc::new(AppState::new(&config, &config_path).await.unwrap());
+    let config = AppConfig {
+        server: ServerConfig {
+            port: 8080,
+            top_p: None,
+            admin_token: Some("test_token".to_string()),
+            test_mode: true,
+            connect_timeout_secs: 10,
+            request_timeout_secs: 60,
+        },
+        groups: vec![test_group],
+        redis_url: None, // Disable Redis for tests
+        redis_key_prefix: Some(format!("test:{}", generate_prefix())),
+        internal_retries,
+        temporary_block_minutes: 1,
+        top_p: None,
+        max_failures_threshold: Some(10),
+    };
+
+    let (app_state_instance, _) = AppState::new(&config, &config_path).await.unwrap();
+    let app_state = Arc::new(app_state_instance);
 
     (app_state, server, temp_dir)
 }

@@ -3,22 +3,22 @@
 use crate::{
     config::{self, AppConfig},
     error::{AppError, Result},
-    key_manager::{FlattenedKeyInfo, KeyManagerTrait},
+    key_manager::{FlattenedKeyInfo, KeyManager, KeyManagerTrait},
     state::{AppState, KeyState},
 };
 use axum::{
-    Router,
     body::Body,
     extract::{Path, Query, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
     routing::{delete, get, post, put},
+    Router,
 };
 use chrono::{DateTime, Utc};
-use cookie::{SameSite, time::Duration as CookieDuration};
+use cookie::{time::Duration as CookieDuration, SameSite};
 use http::HeaderName;
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -36,10 +36,7 @@ const ADMIN_TOKEN_COOKIE: &str = "admin_token";
 /// The name of the cookie storing the CSRF token.
 const CSRF_TOKEN_COOKIE: &str = "csrf_token";
 /// Default system refresh interval in seconds.
-const DEFAULT_SYSTEM_REFRESH_INTERVAL: u64 = 5;
-
 // --- System Info Collector ---
-
 /// Collector for system information.
 ///
 /// This struct holds a `System` instance and is designed to be updated by a background task.
@@ -149,7 +146,10 @@ pub fn admin_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/keys/:key_id/reset", post(reset_key))
         .route("/config", put(update_config))
         .route_layer(middleware::from_fn(csrf_middleware))
-        .route_layer(middleware::from_fn_with_state(state.clone(), crate::middleware::admin_auth_middleware));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::admin_auth_middleware,
+        ));
 
     // Combine all admin routes under a common `/admin` prefix.
     Router::new().nest(
@@ -317,6 +317,19 @@ pub struct CsrfTokenResponse {
 
 // --- Middleware ---
 
+/// Constant-time string comparison to prevent timing attacks
+fn secure_compare(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    
+    let mut result = 0u8;
+    for (byte_a, byte_b) in a.bytes().zip(b.bytes()) {
+        result |= byte_a ^ byte_b;
+    }
+    result == 0
+}
+
 /// Middleware for Cross-Site Request Forgery (CSRF) protection.
 ///
 /// It expects a `csrf_token` in a cookie and a matching token in the `X-CSRF-Token` header.
@@ -332,7 +345,11 @@ async fn csrf_middleware(cookies: Cookies, req: Request<Body>, next: Next) -> Re
         .map(String::from);
 
     match (cookie_token, header_token) {
-        (Some(c_token), Some(h_token)) if !c_token.is_empty() && c_token == h_token => {
+        (Some(c_token), Some(h_token)) 
+            if !c_token.is_empty() 
+            && c_token.len() <= 128  // Reasonable limit for CSRF tokens
+            && h_token.len() <= 128
+            && secure_compare(&c_token, &h_token) => {
             info!("CSRF token matched.");
             Ok(next.run(req).await)
         }
@@ -405,7 +422,7 @@ pub async fn list_keys(
             query
                 .group
                 .as_ref()
-                .map_or(true, |g| g == &key_info.group_name)
+                .is_none_or(|g| g == &key_info.group_name)
         })
         .filter_map(|key_info| {
             let key_state = key_states.get(&key_info.key);
@@ -413,7 +430,7 @@ pub async fn list_keys(
             if query
                 .status
                 .as_ref()
-                .map_or(true, |s| s == &api_key_info.status)
+                .is_none_or(|s| s == &api_key_info.status)
             {
                 Some(api_key_info)
             } else {
@@ -462,27 +479,26 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Result<Json<AppCo
     Ok(Json(config.clone()))
 }
 
-/// Updates the entire configuration and reloads the application state.
+/// Принимает новую конфигурацию, отправляет ее в канал для фоновой обработки.
 #[axum::debug_handler]
 pub async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(new_config): Json<AppConfig>,
 ) -> Result<StatusCode> {
-    info!("Attempting to update application configuration.");
-    modify_config_and_reload(&state, "admin_update", new_config, |_| Ok(())).await?;
-    info!("Application configuration updated successfully.");
-    Ok(StatusCode::OK)
+    info!("Received request to update application configuration.");
+    create_and_send_new_config(&state, "admin_update", |_| Ok(new_config)).await?;
+    info!("Configuration update command sent successfully.");
+    Ok(StatusCode::ACCEPTED)
 }
 
-/// Adds new API keys to a specified group, avoiding duplicates.
+/// Добавляет новые ключи API в указанную группу и отправляет обновленную конфигурацию на перезагрузку.
 #[axum::debug_handler]
 pub async fn add_keys(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AddKeysRequest>,
 ) -> Result<StatusCode> {
-    info!("Attempting to add keys to group '{}'.", request.group_name);
-    let config_base = state.config.read().await.clone();
-    modify_config_and_reload(&state, "admin_add_keys", config_base, |config| {
+    info!("Received request to add keys to group '{}'.", request.group_name);
+    create_and_send_new_config(&state, "admin_add_keys", |config| {
         let group = config
             .groups
             .iter_mut()
@@ -504,27 +520,26 @@ pub async fn add_keys(
             }
         }
         info!(
-            "Added {} new keys to group '{}'.",
+            "Prepared {} new keys for group '{}'.",
             added_count, request.group_name
         );
-        Ok(())
+        Ok(config.clone())
     })
     .await?;
-    Ok(StatusCode::OK)
+    Ok(StatusCode::ACCEPTED)
 }
 
-/// Removes specified API keys from a group.
+/// Удаляет указанные ключи API из группы и отправляет обновленную конфигурацию на перезагрузку.
 #[axum::debug_handler]
 pub async fn delete_keys(
     State(state): State<Arc<AppState>>,
     Json(request): Json<DeleteKeysRequest>,
 ) -> Result<StatusCode> {
     info!(
-        "Attempting to delete keys from group '{}'.",
+        "Received request to delete keys from group '{}'.",
         request.group_name
     );
-    let config_base = state.config.read().await.clone();
-    modify_config_and_reload(&state, "admin_delete_keys", config_base, |config| {
+    create_and_send_new_config(&state, "admin_delete_keys", |config| {
         let group = config
             .groups
             .iter_mut()
@@ -544,13 +559,13 @@ pub async fn delete_keys(
             .retain(|k| !keys_to_delete.contains(k.as_str()));
         let deleted_count = initial_count - group.api_keys.len();
         info!(
-            "Deleted {} keys from group '{}'.",
+            "Prepared deletion of {} keys from group '{}'.",
             deleted_count, request.group_name
         );
-        Ok(())
+        Ok(config.clone())
     })
     .await?;
-    Ok(StatusCode::OK)
+    Ok(StatusCode::ACCEPTED)
 }
 
 /// Provides a summary of application metrics (placeholder).
@@ -664,31 +679,71 @@ pub async fn serve_keys_management_page() -> Html<String> {
 
 // --- Helper Functions ---
 
-/// Atomically modifies, validates, saves, and reloads the application configuration.
-async fn modify_config_and_reload<F>(
+/// A generic helper to create a new configuration based on a modification
+/// function and send it to the background worker channel.
+async fn create_and_send_new_config<F>(
     state: &Arc<AppState>,
     source: &str,
-    mut config: AppConfig,
     modification: F,
 ) -> Result<()>
 where
-    F: FnOnce(&mut AppConfig) -> Result<()>,
+    F: FnOnce(&mut AppConfig) -> Result<AppConfig>,
 {
-    modification(&mut config)?;
+    let mut config_clone = state.config.read().await.clone();
+    let new_config = modification(&mut config_clone)?;
 
-    if !config::validate_config(&mut config, source) {
+    // The send method returns the number of active receivers.
+    // If it's 0, it means the worker has died, which is a critical state.
+    if state.config_update_tx.send(new_config).is_err() {
+        let msg = "Configuration update channel is closed. The background worker may have crashed.";
+        error!("{}", msg);
+        return Err(AppError::Internal(msg.to_string()));
+    }
+
+    info!(
+        "Successfully sent configuration update command from source: '{}'",
+        source
+    );
+    Ok(())
+}
+
+/// This function is executed by the background worker to apply configuration changes.
+/// It contains the logic previously in `modify_config_and_reload`.
+pub async fn reload_state_from_config(
+    state: Arc<AppState>,
+    mut new_config: AppConfig,
+) -> Result<()> {
+    let source = "background_worker";
+    // Preserve the original test_mode flag to ensure it's not overwritten by the incoming config
+    // or lost during the reload process. This is crucial for test environments.
+    let is_test_mode = state.config.read().await.server.test_mode;
+
+    // Restore the test_mode flag before validation and reloading.
+    new_config.server.test_mode = is_test_mode;
+
+    if !config::validate_config(&mut new_config, source) {
         let msg =
             format!("Validation failed for new configuration from '{source}'; changes not saved.");
         error!("{}", msg);
         return Err(AppError::Config(msg));
     }
 
-    config::save_config(&config, &state.config_path).await?;
+    config::save_config(&new_config, &state.config_path).await?;
     info!("Configuration saved to disk from '{}'.", source);
 
-    // Atomically swap the in-memory config and reload state.
-    *state.config.write().await = config;
-    state.reload_state_from_config().await?;
+    // Perform the state reload logic directly here to avoid RwLock deadlocks.
+    let new_http_clients = crate::state::build_http_clients(&new_config).await?;
+    let new_key_manager = KeyManager::new(&new_config, state.redis_pool.clone()).await?;
+
+    // Atomically swap all parts of the state that depend on the configuration.
+    let mut config_guard = state.config.write().await;
+    let mut http_clients_guard = state.http_clients.write().await;
+    let mut key_manager_guard = state.key_manager.write().await;
+
+    *config_guard = new_config;
+    *http_clients_guard = new_http_clients;
+    *key_manager_guard = new_key_manager;
+
     info!(
         "Application state reloaded successfully after config update from '{}'.",
         source
@@ -767,7 +822,7 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
-        http::{Request, StatusCode, header},
+        http::{header, Request, StatusCode},
         routing::post,
     };
     use tower::util::ServiceExt;

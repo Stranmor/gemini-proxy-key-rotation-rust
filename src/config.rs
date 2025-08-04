@@ -142,11 +142,17 @@ fn validate_server_config(server: &ServerConfig) -> bool {
         }
     }
     if server.connect_timeout_secs == 0 || server.connect_timeout_secs > 300 {
-        error!(err = "connect_timeout_secs out of range", timeout = server.connect_timeout_secs);
+        error!(
+            err = "connect_timeout_secs out of range",
+            timeout = server.connect_timeout_secs
+        );
         errors += 1;
     }
     if server.request_timeout_secs == 0 || server.request_timeout_secs > 600 {
-        error!(err = "request_timeout_secs out of range", timeout = server.request_timeout_secs);
+        error!(
+            err = "request_timeout_secs out of range",
+            timeout = server.request_timeout_secs
+        );
         errors += 1;
     }
     errors == 0
@@ -342,8 +348,6 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> Result<()> {
         error!(error = %e, "Failed to serialize AppConfig to YAML");
         AppError::Config(format!("Failed to serialize config: {e}"))
     })?;
-
-    
 
     let parent_dir = path.parent().ok_or_else(|| {
         error!("Config file path has no parent directory");

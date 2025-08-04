@@ -6,10 +6,10 @@ use crate::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{header, HeaderMap, HeaderValue, Method},
+    http::{HeaderMap, HeaderValue, Method, header},
     response::Response,
 };
-use futures_util::{TryStreamExt};
+use futures_util::TryStreamExt;
 use once_cell::sync::Lazy; // Added for efficient static HashSet
 use std::collections::HashSet; // Added for HashSet
 use std::error::Error;
@@ -89,26 +89,26 @@ pub async fn forward_request(
     let response_headers = build_response_headers(target_response.headers());
 
     // Process the body differently based on the response status code.
-    let axum_response_body = if response_status.is_client_error() || response_status.is_server_error()
-    {
-        // For 4xx/5xx responses, buffer the body to log it, then forward.
-        let body_bytes = read_and_log_error_body(target_response, key_info).await?;
-        Body::from(body_bytes)
-    } else {
-        // For success responses, stream the body directly to the client.
-        let captured_response_status = response_status;
-        let response_body_stream = target_response.bytes_stream().map_err(move |e| {
-            warn!(
-                status = captured_response_status.as_u16(),
-                error = %e,
-                "Error reading upstream response body stream"
-            );
-            AppError::ResponseBodyError(format!(
-                "Upstream body stream error (status {captured_response_status}): {e}"
-            ))
-        });
-        Body::from_stream(response_body_stream)
-    };
+    let axum_response_body =
+        if response_status.is_client_error() || response_status.is_server_error() {
+            // For 4xx/5xx responses, buffer the body to log it, then forward.
+            let body_bytes = read_and_log_error_body(target_response, key_info).await?;
+            Body::from(body_bytes)
+        } else {
+            // For success responses, stream the body directly to the client.
+            let captured_response_status = response_status;
+            let response_body_stream = target_response.bytes_stream().map_err(move |e| {
+                warn!(
+                    status = captured_response_status.as_u16(),
+                    error = %e,
+                    "Error reading upstream response body stream"
+                );
+                AppError::ResponseBodyError(format!(
+                    "Upstream body stream error (status {captured_response_status}): {e}"
+                ))
+            });
+            Body::from_stream(response_body_stream)
+        };
 
     // Build the final response to the original client.
     let mut client_response = Response::builder()
@@ -146,13 +146,21 @@ fn handle_target_response(
             Ok(resp)
         }
         Err(e) => {
-            let error_kind = if e.is_timeout() { "timeout" }
-            else if e.is_connect() { "connect" }
-            else if e.is_redirect() { "redirect_policy" }
-            else if e.is_request() { "request_error" }
-            else if e.is_body() || e.is_decode() { "body/decode" }
-            else if e.is_builder() { "builder" }
-            else { "unknown" };
+            let error_kind = if e.is_timeout() {
+                "timeout"
+            } else if e.is_connect() {
+                "connect"
+            } else if e.is_redirect() {
+                "redirect_policy"
+            } else if e.is_request() {
+                "request_error"
+            } else if e.is_body() || e.is_decode() {
+                "body/decode"
+            } else if e.is_builder() {
+                "builder"
+            } else {
+                "unknown"
+            };
             let underlying_source = e.source().map(ToString::to_string);
 
             error!(
@@ -185,7 +193,9 @@ async fn read_and_log_error_body(
 
     let full_body = response.bytes().await.map_err(|e| {
         error!(status = status.as_u16(), error = %e, "Failed to read error response body");
-        AppError::ResponseBodyError(format!("Failed to read error response body (status {status}): {e}"))
+        AppError::ResponseBodyError(format!(
+            "Failed to read error response body (status {status}): {e}"
+        ))
     })?;
 
     let (truncated, body_to_log) = if full_body.len() > MAX_ERROR_BODY_SIZE {
@@ -193,7 +203,7 @@ async fn read_and_log_error_body(
     } else {
         (false, &full_body[..])
     };
-    
+
     let response_body_text = String::from_utf8_lossy(body_to_log);
     let truncated_msg = if truncated { " [TRUNCATED]" } else { "" };
 
@@ -257,11 +267,10 @@ fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{header, HeaderName, HeaderValue};
+    use axum::http::{HeaderName, HeaderValue, header};
 
     #[test]
     fn test_build_forward_headers_basic() {
@@ -270,12 +279,18 @@ mod tests {
         original_headers.insert("x-custom-header", HeaderValue::from_static("value1"));
         original_headers.insert("host", HeaderValue::from_static("original.host.com"));
         original_headers.insert("connection", HeaderValue::from_static("keep-alive"));
-        original_headers.insert("authorization", HeaderValue::from_static("Bearer old_token"));
+        original_headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer old_token"),
+        );
         original_headers.insert("x-goog-api-key", HeaderValue::from_static("old_key"));
 
         let result_headers = build_forward_headers(&original_headers, "test_key").unwrap();
 
-        assert_eq!(result_headers.get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            result_headers.get("content-type").unwrap(),
+            "application/json"
+        );
         assert_eq!(result_headers.get("x-custom-header").unwrap(), "value1");
         assert!(result_headers.get("host").is_none());
         assert!(result_headers.get("connection").is_none());
@@ -307,7 +322,10 @@ mod tests {
         upstream_headers.insert("x-upstream-specific", HeaderValue::from_static("value2"));
         upstream_headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
         upstream_headers.insert("connection", HeaderValue::from_static("close"));
-        upstream_headers.insert(HeaderName::from_static("keep-alive"), HeaderValue::from_static("timeout=15"));
+        upstream_headers.insert(
+            HeaderName::from_static("keep-alive"),
+            HeaderValue::from_static("timeout=15"),
+        );
 
         let result_headers = build_response_headers(&upstream_headers);
 
@@ -318,7 +336,7 @@ mod tests {
         assert!(result_headers.get("keep-alive").is_none());
         assert_eq!(result_headers.len(), 2);
     }
-    
+
     #[test]
     fn test_copy_non_hop_by_hop_headers() {
         let mut source = HeaderMap::new();
