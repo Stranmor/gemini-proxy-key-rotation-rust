@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Serialize;
 use thiserror::Error;
-use tracing::error;
+use tracing::{error, warn};
 
 /// Представляет структурированное тело ответа об ошибке.
 #[derive(Serialize, Debug)]
@@ -131,6 +131,12 @@ pub enum AppError {
 
     #[error("Tokenizer initialization failed: {0}")]
     TokenizerInitializationError(String),
+
+    #[error("Circuit breaker is open for target: {0}")]
+    CircuitBreakerOpen(String),
+
+    #[error("Request error: {0}")]
+    RequestError(String),
 }
 
 impl From<deadpool_redis::CreatePoolError> for AppError {
@@ -442,6 +448,30 @@ impl AppError {
                     details: None,
                 },
             ),
+
+            Self::CircuitBreakerOpen(target) => {
+                warn!("Circuit breaker is open for target: {}", target);
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ErrorDetails {
+                        error_type: "SERVICE_UNAVAILABLE".to_string(),
+                        message: "Service temporarily unavailable".to_string(),
+                        details: None,
+                    },
+                )
+            }
+
+            Self::RequestError(msg) => {
+                error!("Request error: {}", msg);
+                (
+                    StatusCode::BAD_GATEWAY,
+                    ErrorDetails {
+                        error_type: "REQUEST_ERROR".to_string(),
+                        message: "Error communicating with upstream service".to_string(),
+                        details: None,
+                    },
+                )
+            }
         }
     }
 }

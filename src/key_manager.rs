@@ -3,12 +3,13 @@ use crate::error::{AppError, Result};
 use crate::state::KeyState;
 use axum::async_trait;
 use deadpool_redis::Pool;
-use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
+use redis::AsyncCommands;
+use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, instrument, trace, warn};
 
@@ -23,14 +24,47 @@ fn key_state_key(api_key: &str) -> String {
 }
 
 // --- Data Structures ---
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FlattenedKeyInfo {
-    pub key: String,
+    #[serde(with = "secret_string")]
+    pub key: Secret<String>,
     pub group_name: String,
     pub target_url: String,
     pub proxy_url: Option<String>,
     // Suggestion: Move max_failures_threshold here from AppConfig for per-group limits
     // pub max_failures_threshold: u32,
+}
+
+impl std::fmt::Debug for FlattenedKeyInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlattenedKeyInfo")
+            .field("key", &"[REDACTED]")
+            .field("group_name", &self.group_name)
+            .field("target_url", &self.target_url)
+            .field("proxy_url", &self.proxy_url)
+            .finish()
+    }
+}
+
+// Helper module for serializing Secret<String>
+mod secret_string {
+    use secrecy::{ExposeSecret, Secret};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(secret: &Secret<String>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(secret.expose_secret())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Secret<String>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Secret::new(s))
+    }
 }
 
 // --- Main Trait for KeyManager ---
@@ -99,7 +133,7 @@ impl KeyManager {
             .flat_map(|group| {
                 group.api_keys.iter().map(|api_key| {
                     let flattened_info = FlattenedKeyInfo {
-                        key: api_key.clone(),
+                        key: Secret::new(api_key.clone()),
                         group_name: group.name.clone(),
                         target_url: group.target_url.clone(),
                         proxy_url: group.proxy_url.clone(),
@@ -110,7 +144,12 @@ impl KeyManager {
             .collect()
     }
 
-    pub fn preview_key(key: &str) -> String {
+    pub fn preview_key(key: &Secret<String>) -> String {
+        let key_str = key.expose_secret();
+        Self::preview_key_str(key_str)
+    }
+
+    pub fn preview_key_str(key: &str) -> String {
         if key.len() > 8 {
             format!("{}...{}", &key[..4], &key[key.len() - 4..])
         } else {
@@ -138,7 +177,7 @@ impl KeyManager {
         if state.is_blocked {
             warn!(
                 event = "key_blocked",
-                api_key.preview = %Self::preview_key(api_key),
+                api_key.preview = %Self::preview_key_str(api_key),
                 is_terminal,
                 failures = state.consecutive_failures,
                 max_failures = self.max_failures_threshold,
@@ -148,7 +187,7 @@ impl KeyManager {
         } else {
             info!(
                 event = "key_failure_recorded",
-                api_key.preview = %Self::preview_key(api_key),
+                api_key.preview = %Self::preview_key_str(api_key),
                 is_terminal,
                 failures = state.consecutive_failures,
                 max_failures = self.max_failures_threshold,
@@ -179,7 +218,7 @@ impl KeyManagerTrait for KeyManager {
             .filter(|info| group_name.is_none_or(|gn| info.group_name == gn))
             .collect();
 
-        candidate_keys.sort_by(|a, b| a.key.cmp(&b.key));
+        candidate_keys.sort_by(|a, b| a.key.expose_secret().cmp(b.key.expose_secret()));
 
         if candidate_keys.is_empty() {
             warn!(group_name, "No keys available for the specified group.");
@@ -196,7 +235,7 @@ impl KeyManagerTrait for KeyManager {
 
         for i in 0..candidate_keys.len() {
             let key_info = candidate_keys[(start_index + i) % candidate_keys.len()];
-            if let Ok(Some(state)) = self.store.get_key_state(&key_info.key).await {
+            if let Ok(Some(state)) = self.store.get_key_state(key_info.key.expose_secret()).await {
                 if !state.is_blocked {
                     self.log_key_selection(key_info, "round_robin", candidate_keys.len());
                     return Ok(Some(key_info.clone()));
@@ -216,7 +255,7 @@ impl KeyManagerTrait for KeyManager {
         Ok(None)
     }
 
-    #[instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %KeyManager::preview_key(api_key), is_terminal))]
+    #[instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %KeyManager::preview_key_str(api_key), is_terminal))]
     async fn handle_api_failure(&self, api_key: &str, is_terminal: bool) -> Result<()> {
         let updated_state = self
             .store
@@ -370,20 +409,23 @@ impl KeyStore for RedisStore {
         // Redis Set *per group*, e.g., "rotation_set:group_a", "rotation_set:group_b".
         // This would avoid fetching all keys and filtering in the application.
         let keys: Vec<String> = conn.smembers(self.prefix_key(ROTATION_SET_KEY)).await?;
-        trace!(
-            "RedisStore::get_candidate_keys: found {} keys",
-            keys.len()
-        );
+        trace!("RedisStore::get_candidate_keys: found {} keys", keys.len());
         Ok(keys)
     }
 
     async fn get_next_rotation_index(&self, group_id: &str) -> Result<usize> {
-        trace!("RedisStore::get_next_rotation_index: start for group '{}'", group_id);
+        trace!(
+            "RedisStore::get_next_rotation_index: start for group '{}'",
+            group_id
+        );
         let mut conn = self.pool.get().await?;
         trace!("RedisStore::get_next_rotation_index: got connection");
         let counter_key = self.prefix_key(&format!("{ROTATION_COUNTER_KEY}:{group_id}"));
         let index: usize = conn.incr(&counter_key, 1).await?;
-        trace!("RedisStore::get_next_rotation_index: new index is {}", index);
+        trace!(
+            "RedisStore::get_next_rotation_index: new index is {}",
+            index
+        );
         Ok(index)
     }
 
@@ -393,7 +435,10 @@ impl KeyStore for RedisStore {
         is_terminal: bool,
         max_failures: u32,
     ) -> Result<KeyState> {
-        trace!("RedisStore::update_failure_state: start for key '{}'", api_key);
+        trace!(
+            "RedisStore::update_failure_state: start for key '{}'",
+            api_key
+        );
         let mut conn = self.pool.get().await?;
         trace!("RedisStore::update_failure_state: got connection");
         let state_key = self.prefix_key(&key_state_key(api_key));
@@ -407,7 +452,10 @@ impl KeyStore for RedisStore {
             let _: () = conn.hset(&state_key, "is_blocked", true).await?;
         }
 
-        trace!("RedisStore::update_failure_state: updated state for key '{}'", api_key);
+        trace!(
+            "RedisStore::update_failure_state: updated state for key '{}'",
+            api_key
+        );
         Ok(KeyState {
             key: api_key.to_string(),
             group_name: self

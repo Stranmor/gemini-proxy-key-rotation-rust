@@ -4,6 +4,7 @@
 // Примечание: модуль `handler` был переименован в `handlers` для лучшего соответствия
 // общепринятым практикам именования (модуль, содержащий несколько обработчиков).
 pub mod admin;
+pub mod circuit_breaker;
 pub mod config;
 pub mod error;
 pub mod handlers; // <-- Переименовано с `handler`

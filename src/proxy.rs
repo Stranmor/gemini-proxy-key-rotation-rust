@@ -1,9 +1,11 @@
 // src/proxy.rs
 
 use crate::{
+    circuit_breaker::{CircuitBreaker, CircuitBreakerError},
     error::{AppError, Result},
     key_manager::FlattenedKeyInfo,
 };
+use secrecy::ExposeSecret;
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, Method, header},
@@ -13,6 +15,7 @@ use futures_util::TryStreamExt;
 use once_cell::sync::Lazy; // Added for efficient static HashSet
 use std::collections::HashSet; // Added for HashSet
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
@@ -57,8 +60,9 @@ pub async fn forward_request(
     target_url: Url,
     headers: HeaderMap,
     body_bytes: Bytes,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
 ) -> Result<Response> {
-    let outgoing_headers = build_forward_headers(&headers, &key_info.key)?;
+    let outgoing_headers = build_forward_headers(&headers, key_info.key.expose_secret())?;
 
     debug!(
         http.request.body = %String::from_utf8_lossy(&body_bytes),
@@ -73,17 +77,45 @@ pub async fn forward_request(
     );
 
     let start_time = Instant::now();
-    let target_response_result = client
-        .request(method, target_url.clone())
-        .headers(outgoing_headers)
-        .body(outgoing_reqwest_body)
-        .send()
-        .await;
+    
+    // Execute request through circuit breaker if available
+    let target_response_result = if let Some(cb) = circuit_breaker {
+        match cb.call(|| async {
+            client
+                .request(method.clone(), target_url.clone())
+                .headers(outgoing_headers.clone())
+                .body(outgoing_reqwest_body)
+                .send()
+                .await
+        }).await {
+            Ok(response) => Ok(response),
+            Err(cb_error) => match cb_error {
+                CircuitBreakerError::CircuitOpen => {
+                    warn!(target.url = %target_url, "Circuit breaker is open, failing fast");
+                    Err(AppError::CircuitBreakerOpen(target_url.to_string()))
+                }
+                CircuitBreakerError::OperationFailed(req_error) => {
+                    Err(AppError::RequestError(req_error.to_string()))
+                }
+            }
+        }
+    } else {
+        client
+            .request(method, target_url.clone())
+            .headers(outgoing_headers)
+            .body(outgoing_reqwest_body)
+            .send()
+            .await
+            .map_err(|e| AppError::RequestError(e.to_string()))
+    };
+    
     let elapsed_time = start_time.elapsed();
 
-    // Handle the response from the target, whether success or reqwest error
-    let target_response =
-        handle_target_response(target_response_result, elapsed_time, &target_url, key_info)?;
+    // Handle the response from the target, whether success or error
+    let target_response = match target_response_result {
+        Ok(response) => handle_target_response(Ok(response), elapsed_time, &target_url, key_info)?,
+        Err(app_error) => return Err(app_error),
+    };
 
     let response_status = target_response.status();
     let response_headers = build_response_headers(target_response.headers());
@@ -133,7 +165,7 @@ fn handle_target_response(
     target_url: &Url,
     key_info: &FlattenedKeyInfo,
 ) -> Result<reqwest::Response> {
-    let request_key_preview = format!("{}...", key_info.key.chars().take(4).collect::<String>());
+    let request_key_preview = format!("{}...", key_info.key.expose_secret().chars().take(4).collect::<String>());
 
     match response_result {
         Ok(resp) => {
@@ -189,7 +221,7 @@ async fn read_and_log_error_body(
 ) -> Result<Bytes> {
     const MAX_ERROR_BODY_SIZE: usize = 64 * 1024; // 64KB limit
     let status = response.status();
-    let request_key_preview = format!("{}...", key_info.key.chars().take(4).collect::<String>());
+    let request_key_preview = format!("{}...", key_info.key.expose_secret().chars().take(4).collect::<String>());
 
     let full_body = response.bytes().await.map_err(|e| {
         error!(status = status.as_u16(), error = %e, "Failed to read error response body");

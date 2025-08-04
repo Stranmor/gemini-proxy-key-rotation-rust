@@ -16,6 +16,7 @@ use crate::{
     proxy,
     state::AppState,
 };
+use secrecy::ExposeSecret;
 use axum::{
     body::{Body, Bytes, to_bytes},
     extract::{Request, State},
@@ -83,7 +84,7 @@ fn translate_path(path: &str) -> String {
 fn build_target_url(original_uri: &Uri, key_info: &FlattenedKeyInfo) -> Result<Url> {
     let mut url = Url::parse(&key_info.target_url)?.join(&translate_path(original_uri.path()))?;
     url.set_query(original_uri.query());
-    url.query_pairs_mut().append_pair("key", &key_info.key);
+    url.query_pairs_mut().append_pair("key", key_info.key.expose_secret());
     Ok(url)
 }
 
@@ -199,6 +200,7 @@ async fn try_request_with_key(
 ) -> Result<Response> {
     let url = build_target_url(req_context.uri, key_info)?;
     let client = state.get_client(key_info.proxy_url.as_deref()).await?;
+    let circuit_breaker = state.get_circuit_breaker(&key_info.target_url).await;
 
     let response = proxy::forward_request(
         &client,
@@ -207,6 +209,7 @@ async fn try_request_with_key(
         url,
         req_context.headers.clone(),
         req_context.body.clone(),
+        circuit_breaker,
     )
     .await
     .map_err(|e| {
@@ -318,7 +321,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
         // Check response handlers
         let action_to_take = response_handlers.iter().find_map(|handler| {
-            handler.handle(&response_for_analysis, &response_bytes, &key_info.key)
+            handler.handle(&response_for_analysis, &response_bytes, key_info.key.expose_secret())
         });
 
         let final_response = Response::from_parts(parts, Body::from(response_bytes));
@@ -331,7 +334,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                     .key_manager
                     .write()
                     .await
-                    .handle_api_failure(&key_info.key, false)
+                    .handle_api_failure(key_info.key.expose_secret(), false)
                     .await;
                 last_response = Some(final_response);
             }
@@ -341,7 +344,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                     .key_manager
                     .write()
                     .await
-                    .handle_api_failure(&key_info.key, true)
+                    .handle_api_failure(key_info.key.expose_secret(), true)
                     .await;
                 last_response = Some(final_response);
             }

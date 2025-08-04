@@ -1,6 +1,7 @@
 // src/state.rs
 
 use crate::admin::SystemInfoCollector;
+use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::config::AppConfig;
 use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
 use crate::handlers::base::ResponseHandler;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub metrics: Arc<MetricsCollector>,
     pub rate_limit_store: RateLimitStore,
     pub config_update_tx: broadcast::Sender<AppConfig>,
+    pub circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
 }
 
 impl fmt::Debug for AppState {
@@ -57,6 +59,7 @@ impl fmt::Debug for AppState {
             .field("system_info", &self.system_info)
             .field("config_path", &self.config_path)
             .field("redis_pool_present", &self.redis_pool.is_some())
+            .field("circuit_breakers_count", &"[circuit_breakers]")
             .finish_non_exhaustive()
     }
 }
@@ -315,6 +318,9 @@ impl AppState {
 
         let (tx, rx) = broadcast::channel(16);
 
+        // Initialize circuit breakers for each unique target URL
+        let circuit_breakers = Self::create_circuit_breakers(config).await;
+
         Ok((
             Self {
                 redis_pool,
@@ -328,9 +334,44 @@ impl AppState {
                 metrics: Arc::new(MetricsCollector::new()),
                 rate_limit_store: crate::middleware::rate_limit::create_rate_limit_store(),
                 config_update_tx: tx,
+                circuit_breakers: Arc::new(RwLock::new(circuit_breakers)),
             },
             rx,
         ))
+    }
+
+    /// Creates circuit breakers for each unique target URL.
+    async fn create_circuit_breakers(config: &AppConfig) -> HashMap<String, Arc<CircuitBreaker>> {
+        let mut circuit_breakers = HashMap::new();
+        let mut unique_targets = HashSet::new();
+
+        // Collect unique target URLs
+        for group in &config.groups {
+            unique_targets.insert(group.target_url.clone());
+        }
+
+        // Create circuit breaker for each unique target
+        for target_url in unique_targets {
+            let cb_config = CircuitBreakerConfig {
+                failure_threshold: 5,
+                recovery_timeout: Duration::from_secs(60),
+                success_threshold: 3,
+            };
+            
+            let circuit_breaker = Arc::new(CircuitBreaker::new(
+                format!("target_{}", target_url),
+                cb_config,
+            ));
+            
+            circuit_breakers.insert(target_url, circuit_breaker);
+        }
+
+        info!(
+            circuit_breakers_count = circuit_breakers.len(),
+            "Circuit breakers initialized for target URLs"
+        );
+
+        circuit_breakers
     }
 
     /// Creates a Redis connection pool if configured.
@@ -384,6 +425,12 @@ impl AppState {
             error!(proxy.url = ?proxy_url, error.message = %msg, "HTTP client lookup failed");
             AppError::Internal(msg)
         })
+    }
+
+    /// Returns a reference to the circuit breaker for the given target URL.
+    pub async fn get_circuit_breaker(&self, target_url: &str) -> Option<Arc<CircuitBreaker>> {
+        let breakers_guard = self.circuit_breakers.read().await;
+        breakers_guard.get(target_url).cloned()
     }
 }
 

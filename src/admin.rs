@@ -6,6 +6,7 @@ use crate::{
     key_manager::{FlattenedKeyInfo, KeyManager, KeyManagerTrait},
     state::{AppState, KeyState},
 };
+use secrecy::ExposeSecret;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -277,9 +278,9 @@ impl KeyInfo {
     /// Creates a new `KeyInfo` for API responses from internal key data.
     fn new(key_info: &FlattenedKeyInfo, key_state: Option<&KeyState>) -> Self {
         let (status_str, reset_time) = get_key_status_str(key_state);
-        let key_preview = Self::create_key_preview(&key_info.key);
+        let key_preview = Self::create_key_preview(key_info.key.expose_secret());
         Self {
-            id: format!("{:x}", md5::compute(&key_info.key)),
+            id: format!("{:x}", md5::compute(key_info.key.expose_secret())),
             group_name: key_info.group_name.clone(),
             key_preview,
             status: status_str.to_string(),
@@ -425,7 +426,7 @@ pub async fn list_keys(
                 .is_none_or(|g| g == &key_info.group_name)
         })
         .filter_map(|key_info| {
-            let key_state = key_states.get(&key_info.key);
+            let key_state = key_states.get(key_info.key.expose_secret());
             let api_key_info = KeyInfo::new(key_info, key_state);
             if query
                 .status
@@ -772,7 +773,7 @@ async fn calculate_key_status_summary(
     let mut groups_map: HashMap<String, GroupStatus> = HashMap::new();
 
     for key_info in all_key_info.values() {
-        let (status_str, _) = get_key_status_str(key_states.get(&key_info.key));
+        let (status_str, _) = get_key_status_str(key_states.get(key_info.key.expose_secret()));
         match status_str {
             "available" => summary.active_keys += 1,
             "limited" => summary.limited_keys += 1,
