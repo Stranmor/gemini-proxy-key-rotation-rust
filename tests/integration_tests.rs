@@ -19,16 +19,16 @@ use std::{
     fs::File,
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     },
 };
 use tempfile::tempdir;
 use wiremock::{
+    matchers::{method, path, query_param}, // Use path and query_param
     Mock,
     MockServer,
     ResponseTemplate,
-    matchers::{method, path, query_param}, // Use path and query_param
 };
 
 // Use a unique Redis DB for each test to ensure isolation when running in parallel.
@@ -49,10 +49,12 @@ fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, _db_num: usize) -
         groups,
         redis_url: None, // Disable Redis for tests
         redis_key_prefix: None,
-        internal_retries: 3,
-        temporary_block_minutes: 1,
+        internal_retries: Some(3),
+        temporary_block_minutes: Some(1),
         top_p: None,
         max_failures_threshold: Some(10),
+        rate_limit: None,
+        circuit_breaker: None,
     }
 }
 

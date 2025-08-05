@@ -53,10 +53,12 @@ async fn create_test_system(
         groups: vec![test_group],
         redis_url: None, // Disable Redis for tests
         redis_key_prefix: Some(format!("test:{}", generate_prefix())),
-        internal_retries,
-        temporary_block_minutes: 1,
+        internal_retries: Some(internal_retries),
+        temporary_block_minutes: Some(1),
         top_p: None,
         max_failures_threshold: Some(10),
+        rate_limit: None,
+        circuit_breaker: None,
     };
 
     let (app_state_instance, _) = AppState::new(&config, &config_path).await.unwrap();

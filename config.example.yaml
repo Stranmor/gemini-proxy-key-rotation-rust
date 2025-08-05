@@ -11,6 +11,16 @@ server:
   # HTTP client timeout settings (in seconds)
   connect_timeout_secs: 10  # Connection timeout (default: 10, max: 300)
   request_timeout_secs: 60  # Overall request timeout (default: 60, max: 600)
+  
+  # Admin panel access token (set to enable admin panel)
+  # admin_token: "your-secure-admin-token-here"
+  
+  # Security settings
+  security:
+    require_https: true
+    max_login_attempts: 5
+    lockout_duration_secs: 3600
+    session_timeout_secs: 86400
 
 # Redis connection URL
 redis_url: "redis://127.0.0.1:6380"

@@ -14,7 +14,9 @@ pub mod key_manager;
 pub mod key_manager_v2; // New refactored version
 pub mod metrics;
 pub mod middleware;
+pub mod monitoring;
 pub mod proxy;
+pub mod security;
 pub mod state;
 pub mod tokenizer;
 pub mod utils;

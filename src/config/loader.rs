@@ -75,11 +75,16 @@ pub async fn save_config(config: &AppConfig, config_path: &Path) -> Result<()> {
 }
 
 /// Validate configuration (for admin interface)
-pub fn validate_config(config: &mut AppConfig, _source: &str) -> bool {
+pub fn validate_config(config: &mut AppConfig, source: &str) -> bool {
     match ConfigValidator::validate(config) {
-        Ok(()) => true,
+        Ok(()) => {
+            debug!("Configuration validation passed for source: {}", source);
+            true
+        }
         Err(e) => {
-            warn!("Configuration validation failed: {}", e);
+            warn!("Configuration validation failed for source '{}': {}", source, e);
+            // Log more details about the config
+            debug!("Failed config groups: {:?}", config.groups.iter().map(|g| (&g.name, g.api_keys.len())).collect::<Vec<_>>());
             false
         }
     }

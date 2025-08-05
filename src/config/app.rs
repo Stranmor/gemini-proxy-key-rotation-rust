@@ -42,6 +42,8 @@ pub struct ServerConfig {
     pub test_mode: bool,
     #[serde(default)]
     pub admin_token: Option<String>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
 }
 
 impl Default for ServerConfig {
@@ -52,6 +54,7 @@ impl Default for ServerConfig {
             request_timeout_secs: default_request_timeout(),
             test_mode: false,
             admin_token: None,
+            top_p: None,
         }
     }
 }
@@ -74,6 +77,10 @@ pub struct AppConfig {
     pub circuit_breaker: Option<CircuitBreakerConfig>,
     #[serde(default)]
     pub top_p: Option<f32>,
+    #[serde(default)]
+    pub internal_retries: Option<u32>,
+    #[serde(default)]
+    pub temporary_block_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]

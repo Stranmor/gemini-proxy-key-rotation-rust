@@ -143,6 +143,15 @@ pub enum AppError {
 
     #[error("Request error: {0}")]
     RequestError(String),
+
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
+
+    #[error("Rate limit exceeded for {resource}: {details}")]
+    RateLimitExceeded { resource: String, details: String },
+
+    #[error("Key health check failed: {0}")]
+    KeyHealthCheckFailed(String),
 }
 
 impl From<deadpool_redis::CreatePoolError> for AppError {
@@ -496,6 +505,42 @@ impl AppError {
                     ErrorDetails {
                         error_type: "REQUEST_ERROR".to_string(),
                         message: "Error communicating with upstream service".to_string(),
+                        details: None,
+                    },
+                )
+            }
+
+            Self::SecurityViolation(msg) => {
+                error!("Security violation: {}", msg);
+                (
+                    StatusCode::FORBIDDEN,
+                    ErrorDetails {
+                        error_type: "SECURITY_VIOLATION".to_string(),
+                        message: "Access denied due to security policy".to_string(),
+                        details: None,
+                    },
+                )
+            }
+
+            Self::RateLimitExceeded { resource, details } => {
+                warn!("Rate limit exceeded for {}: {}", resource, details);
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    ErrorDetails {
+                        error_type: "RATE_LIMIT_EXCEEDED".to_string(),
+                        message: format!("Rate limit exceeded for {}", resource),
+                        details: Some("Please try again later".to_string()),
+                    },
+                )
+            }
+
+            Self::KeyHealthCheckFailed(msg) => {
+                error!("Key health check failed: {}", msg);
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ErrorDetails {
+                        error_type: "KEY_HEALTH_CHECK_FAILED".to_string(),
+                        message: "Service temporarily unavailable due to key health issues".to_string(),
                         details: None,
                     },
                 )

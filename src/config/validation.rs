@@ -10,13 +10,33 @@ pub struct ConfigValidator;
 
 impl ConfigValidator {
     pub fn validate(config: &AppConfig) -> Result<()> {
-        Self::validate_groups(config)?;
-        Self::validate_redis_config(config)?;
-        Self::validate_server_config(config)?;
+        debug!("Starting configuration validation");
+        
+        if let Err(e) = Self::validate_groups(config) {
+            warn!("Group validation failed: {}", e);
+            return Err(e);
+        }
+        debug!("Group validation passed");
+        
+        if let Err(e) = Self::validate_redis_config(config) {
+            warn!("Redis config validation failed: {}", e);
+            return Err(e);
+        }
+        debug!("Redis config validation passed");
+        
+        if let Err(e) = Self::validate_server_config(config) {
+            warn!("Server config validation failed: {}", e);
+            return Err(e);
+        }
+        debug!("Server config validation passed");
+        
+        debug!("Configuration validation completed successfully");
         Ok(())
     }
     
     fn validate_groups(config: &AppConfig) -> Result<()> {
+        debug!("Validating {} groups", config.groups.len());
+        
         if config.groups.is_empty() {
             return Err(AppError::ConfigValidationError(
                 "At least one key group must be configured".to_string()
@@ -50,6 +70,7 @@ impl ConfigValidator {
             }
             
             // Validate target URL
+            debug!("Validating target URL for group '{}': {}", group.name, group.target_url);
             Self::validate_url(&group.target_url, "target_url")?;
             
             // Validate proxy URL if present
@@ -71,9 +92,10 @@ impl ConfigValidator {
     }
     
     fn validate_server_config(config: &AppConfig) -> Result<()> {
-        if config.server.port == 0 {
+        // Allow port 0 in test mode (system will assign a free port)
+        if config.server.port == 0 && !config.server.test_mode {
             return Err(AppError::ConfigValidationError(
-                "Server port cannot be 0".to_string()
+                "Server port cannot be 0 (except in test mode)".to_string()
             ));
         }
         
