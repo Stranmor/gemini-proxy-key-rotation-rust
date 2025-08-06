@@ -1,6 +1,6 @@
 // tests/refactoring_tests.rs
 
-use crate::{
+use gemini_proxy::{
     config::{AppConfig, KeyGroup, ServerConfig},
     key_manager_v2::{KeyManager, KeyManagerTrait},
     storage::{InMemoryStore, KeyState, KeyStore},
@@ -68,7 +68,7 @@ async fn test_memory_store_operations() {
     let mut key_info_map = HashMap::new();
     key_info_map.insert(
         "test_key".to_string(),
-        crate::key_manager_v2::FlattenedKeyInfo {
+        gemini_proxy::key_manager_v2::FlattenedKeyInfo {
             key: Secret::new("test_key".to_string()),
             group_name: "test_group".to_string(),
             target_url: "https://api.example.com".to_string(),

@@ -1,6 +1,6 @@
 // tests/handlers_tests.rs
 
-use crate::{
+use gemini_proxy::{
     handlers::{
         base::ResponseHandler,
         success::SuccessHandler,

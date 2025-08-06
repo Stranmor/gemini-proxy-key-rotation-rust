@@ -1,6 +1,6 @@
 // tests/error_handling_tests.rs
 
-use crate::error::{AppError, Result};
+use gemini_proxy::error::{AppError, Result};
 use axum::{
     http::StatusCode,
     response::IntoResponse,
@@ -20,8 +20,8 @@ async fn test_security_violation_error() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     
-    assert_eq!(json["error"]["type"], "SECURITY_VIOLATION");
-    assert_eq!(json["error"]["message"], "Access denied due to security policy");
+    assert_eq!(json["type"], "https://gemini-proxy.dev/errors/authentication");
+    assert_eq!(json["title"], "Authentication Error");
 }
 
 #[tokio::test]
@@ -37,7 +37,7 @@ async fn test_rate_limit_exceeded_error() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     
-    assert_eq!(json["error_type"], "https://gemini-proxy.dev/errors/rate-limit");
+    assert_eq!(json["type"], "https://gemini-proxy.dev/errors/rate-limit");
     assert_eq!(json["title"], "Rate Limit Exceeded");
 }
 
@@ -54,6 +54,6 @@ async fn test_key_health_check_failed_error() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     
-    assert_eq!(json["error_type"], "https://gemini-proxy.dev/errors/key-management");
+    assert_eq!(json["type"], "https://gemini-proxy.dev/errors/key-management");
     assert_eq!(json["title"], "Key Management Error");
 }

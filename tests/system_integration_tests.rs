@@ -2,7 +2,7 @@
 
 use axum::http::{Method, StatusCode};
 use futures::future;
-use crate::{
+use gemini_proxy::{
     config::{AppConfig, KeyGroup, ServerConfig},
     handlers,
     state::AppState,

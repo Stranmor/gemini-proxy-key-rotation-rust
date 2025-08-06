@@ -179,7 +179,7 @@ impl AppError {
 
             // 401 Unauthorized
             Self::Authentication { .. } | 
-            Self::InvalidApiKey { .. } => StatusCode::UNAUTHORIZED,
+            Self::InvalidApiKey { .. } => StatusCode::FORBIDDEN,
 
             // 403 Forbidden
             Self::Authorization => StatusCode::FORBIDDEN,
@@ -214,7 +214,7 @@ impl AppError {
             Self::RedisOperation { .. } |
             Self::StoragePersistence { .. } |
             Self::KeyRotation { .. } |
-            Self::KeyHealthCheck { .. } => StatusCode::GATEWAY_TIMEOUT,
+            Self::KeyHealthCheck { .. } => StatusCode::SERVICE_UNAVAILABLE,
                 }
     }
 

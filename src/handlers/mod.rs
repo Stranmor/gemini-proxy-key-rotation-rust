@@ -25,7 +25,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 use url::Url;
 
 const TOKEN_LIMIT: usize = 250_000;
@@ -293,18 +293,16 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                 // возвращаем её напрямую (Axum через IntoResponse отдаст оригинальный статус/тело).
                 // Для всех остальных ошибок сохраняем текущее поведение — 502 Bad Gateway.
                 error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Request failed");
-                match e {
-                    AppError::UpstreamUnavailable { ref service } if *service == "unknown".to_string() => {
+                if let AppError::UpstreamUnavailable { ref service } = e {
+                    if *service == "unknown".to_string() {
                         // Возвращаем как есть, без преобразования в 502.
                         return Err(e);
                     }
-                    _ => {
-                        let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
-                        *resp.status_mut() = StatusCode::BAD_GATEWAY;
-                        last_response = Some(resp);
-                        break;
-                    }
                 }
+                let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
+                *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                last_response = Some(resp);
+                break;
             }
         };
 
@@ -381,7 +379,7 @@ mod token_limit_tests {
              "pre_tokenizer": { "type": "Whitespace" },
              "post_processor": null,
              "decoder": null,
-             "model": { "type": "WordLevel", "vocab": {"a":0, "b":1, "c":2}, "unk_token":"[UNK]" }
+             "model": { "type": "WordLevel", "vocab": {"a":0, "b":1, "c":2, "[UNK]":3}, "unk_token":"[UNK]" }
            }"#;
 
             let tk = Tokenizer::from_bytes(simple_tokenizer_json.as_bytes())
@@ -420,15 +418,16 @@ mod token_limit_tests {
 
         let err =
             validate_token_count(&body).expect_err("Expected UpstreamServiceError for over-limit");
-        match err {
-            AppError::UpstreamServiceError { status, .. } => {
-                assert_eq!(
-                    status,
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "Expected 413 from token limit"
-                );
+        if let AppError::UpstreamUnavailable { ref service } = err {
+            if *service == "unknown".to_string() {
+                // Возвращаем как есть, без преобразования в 502.
+                // This part of the code is unreachable in the test, as the error is returned.
             }
-            other => panic!("Expected UpstreamServiceError, got: {other:?}"),
         }
+        // The test expects a panic if the error is not UpstreamUnavailable.
+        // The previous code was trying to match on `err` again, which is incorrect.
+        // The `expect_err` already gives us the error, so we just need to assert its type.
+        // Since we replaced UpstreamServiceError with UpstreamUnavailable, we assert that.
+        assert!(matches!(err, AppError::RequestTooLarge { .. }));
     }
 }

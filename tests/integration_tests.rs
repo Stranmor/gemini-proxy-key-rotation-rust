@@ -7,8 +7,8 @@ use axum::{
     http::{/* header, */ Method, StatusCode, Uri}, // Removed unused header
     response::Response,
 };
-use crate::key_manager::KeyManagerTrait;
-use crate::{
+use gemini_proxy::key_manager::KeyManagerTrait;
+use gemini_proxy::{
     config::{AppConfig, KeyGroup, ServerConfig},
     handlers, // Import the handler module
     // key_manager::FlattenedKeyInfo, // Removed unused import

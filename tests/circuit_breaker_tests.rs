@@ -1,6 +1,6 @@
 // tests/circuit_breaker_tests.rs
 
-use crate::circuit_breaker::{
+use gemini_proxy::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitState
 };
 use std::time::Duration;

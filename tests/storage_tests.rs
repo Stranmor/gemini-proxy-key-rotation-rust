@@ -1,6 +1,6 @@
 // tests/storage_tests.rs
 
-use crate::{
+use gemini_proxy::{
     storage::{
         memory::InMemoryStore,
         traits::KeyStore,

@@ -1,6 +1,6 @@
 // tests/middleware_tests.rs
 
-use crate::middleware::{
+use gemini_proxy::middleware::{
     rate_limit::{RateLimitStore, create_rate_limit_store, RateLimitEntry},
     request_size_limit_middleware,
 };

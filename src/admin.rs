@@ -357,9 +357,7 @@ async fn csrf_middleware(cookies: Cookies, req: Request<Body>, next: Next) -> Re
         }
         _ => {
             warn!("CSRF token mismatch or missing. Access forbidden.");
-            Err(AppError::Authentication {
-                message: "CSRF token mismatch or missing".to_string(),
-            })
+            Err(AppError::Authorization)
         }
     }
 }

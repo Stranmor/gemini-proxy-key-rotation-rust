@@ -4,7 +4,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
     Router,
 };
-use crate::{
+use gemini_proxy::{
     admin::admin_routes,
     config::{AppConfig, KeyGroup, ServerConfig},
     state::AppState,
@@ -61,7 +61,7 @@ impl TestApp {
         let (state_instance, mut config_update_rx) = AppState::new(&app_config, &config_file_path)
             .await
             .expect("Failed to create app state");
-        let state = Arc::new(state_instance);
+        let state: Arc<AppState> = Arc::new(state_instance);
         
         // Start background worker for config updates (like in main app)
         let state_for_worker = state.clone();
@@ -69,7 +69,7 @@ impl TestApp {
             loop {
                 match config_update_rx.recv().await {
                     Ok(new_config) => {
-                        if let Err(e) = crate::admin::reload_state_from_config(
+                        if let Err(e) = gemini_proxy::admin::reload_state_from_config(
                             state_for_worker.clone(), 
                             new_config
                         ).await {

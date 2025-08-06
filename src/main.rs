@@ -1,14 +1,12 @@
 use anyhow::Result;
-use clap::Parser;
 use gemini_proxy::{
     cli::{Cli, Commands, KeyCommands, GenerateCommands},
-    config::AppConfig,
     error::{context::ErrorContext, AppError},
     run,
 };
 use std::{net::SocketAddr, path::PathBuf, process};
 use tokio::{net::TcpListener, signal};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::{
     fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry,
 };

@@ -1,6 +1,6 @@
 // tests/config_tests.rs
 
-use crate::config::{
+use gemini_proxy::config::{
     AppConfig, KeyGroup, ServerConfig, 
     validation::ConfigValidator,
 };

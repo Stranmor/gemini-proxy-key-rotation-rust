@@ -1,6 +1,6 @@
 // tests/monitoring_tests.rs
 
-use crate::{
+use gemini_proxy::{
     monitoring::{MonitoringSystem, key_health::KeyHealthMonitor},
     key_manager::{KeyManagerTrait, FlattenedKeyInfo},
     state::KeyState,
@@ -63,7 +63,7 @@ impl KeyManagerTrait for MockKeyManager {
     async fn get_next_available_key_info(
         &self,
         _group_name: Option<&str>,
-    ) -> Result<Option<FlattenedKeyInfo>, crate::error::AppError> {
+    ) -> Result<Option<FlattenedKeyInfo>, gemini_proxy::error::AppError> {
         // Возвращаем первый доступный ключ
         for (_, key_info) in &self.keys {
             if let Some(state) = self.key_states.get(key_info.key.expose_secret()) {
@@ -75,11 +75,11 @@ impl KeyManagerTrait for MockKeyManager {
         Ok(None)
     }
 
-    async fn handle_api_failure(&self, _api_key: &str, _is_terminal: bool) -> Result<(), crate::error::AppError> {
+    async fn handle_api_failure(&self, _api_key: &str, _is_terminal: bool) -> Result<(), gemini_proxy::error::AppError> {
         Ok(())
     }
 
-    async fn get_key_states(&self) -> Result<HashMap<String, KeyState>, crate::error::AppError> {
+    async fn get_key_states(&self) -> Result<HashMap<String, KeyState>, gemini_proxy::error::AppError> {
         Ok(self.key_states.clone())
     }
 

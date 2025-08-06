@@ -1,7 +1,7 @@
 // examples/circuit_breaker_demo.rs
 // Демонстрация работы circuit breaker
 
-use gemini_proxy_key_rotation_rust::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError};
+use gemini_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;

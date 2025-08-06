@@ -1,6 +1,6 @@
 // tests/security_tests.rs
 
-use crate::security::{SecurityMiddleware, token_manager::TokenManager};
+use gemini_proxy::security::{SecurityMiddleware, token_manager::TokenManager};
 use axum::{
     extract::ConnectInfo,
     http::{HeaderMap, HeaderValue, Method, Request, StatusCode},

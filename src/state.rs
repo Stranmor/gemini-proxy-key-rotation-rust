@@ -434,7 +434,6 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::config::{AppConfig, KeyGroup, ServerConfig};
-    use crate::error::ProxyConfigErrorKind;
     use std::fs::File;
     use tempfile::tempdir;
 
