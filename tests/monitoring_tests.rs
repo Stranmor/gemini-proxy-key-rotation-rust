@@ -9,7 +9,7 @@ use secrecy::{Secret, ExposeSecret};
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::time::sleep;
 

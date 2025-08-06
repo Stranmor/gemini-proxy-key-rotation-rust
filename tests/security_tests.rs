@@ -1,12 +1,7 @@
 // tests/security_tests.rs
 
 use gemini_proxy::security::{SecurityMiddleware, token_manager::TokenManager};
-use axum::{
-    extract::ConnectInfo,
-    http::{HeaderMap, HeaderValue, Method, Request, StatusCode},
-    response::Response,
-    body::Body,
-};
+use axum::http::{HeaderMap, HeaderValue};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[tokio::test]

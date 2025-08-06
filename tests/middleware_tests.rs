@@ -1,16 +1,10 @@
 // tests/middleware_tests.rs
 
-use gemini_proxy::middleware::{
-    rate_limit::{RateLimitStore, create_rate_limit_store, RateLimitEntry},
-    request_size_limit_middleware,
-};
+use gemini_proxy::middleware::rate_limit::{create_rate_limit_store, RateLimitEntry};
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
-    middleware::Next,
-    response::Response,
+    http::Request,
 };
-use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 #[tokio::test]

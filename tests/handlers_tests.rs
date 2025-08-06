@@ -1,19 +1,15 @@
 // tests/handlers_tests.rs
 
-use gemini_proxy::{
-    handlers::{
+use gemini_proxy::handlers::{
         base::ResponseHandler,
         success::SuccessHandler,
         rate_limit::RateLimitHandler,
         terminal_error::TerminalErrorHandler,
         invalid_api_key::InvalidApiKeyHandler,
         timeout::TimeoutHandler,
-    },
-    error::AppError,
-};
+    };
 use axum::{body::{Body, Bytes}, response::Response};
 use axum::http::StatusCode;
-use reqwest::Response as ReqwestResponse;
 
 // Helper to create mock response
 fn create_mock_response(status: StatusCode) -> Response<Body> {

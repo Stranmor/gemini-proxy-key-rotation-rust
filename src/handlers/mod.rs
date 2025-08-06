@@ -360,7 +360,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 #[cfg(test)]
 mod token_limit_tests {
     use super::*;
-    use axum::http::StatusCode;
+    
     use serde_json::json;
     use tokenizers::Tokenizer;
 

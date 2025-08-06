@@ -4,9 +4,6 @@ use gemini_proxy::config::{
     AppConfig, KeyGroup, ServerConfig, 
     validation::ConfigValidator,
 };
-use std::fs::File;
-use std::io::Write;
-use tempfile::tempdir;
 
 #[test]
 fn test_config_validation_valid_config() {

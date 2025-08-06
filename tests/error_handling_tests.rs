@@ -1,6 +1,6 @@
 // tests/error_handling_tests.rs
 
-use gemini_proxy::error::{AppError, Result};
+use gemini_proxy::error::AppError;
 use axum::{
     http::StatusCode,
     response::IntoResponse,
