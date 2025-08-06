@@ -21,7 +21,6 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use thiserror::Error;
 use tracing::{error, warn};
 use uuid::Uuid;

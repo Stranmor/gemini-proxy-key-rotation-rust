@@ -23,10 +23,9 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, Uri},
     response::Response,
 };
-use serde_json::json;
 use std::sync::Arc;
 
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{error, info, instrument, trace, warn};
 use url::Url;
 
 const TOKEN_LIMIT: usize = 250_000;

@@ -1,6 +1,6 @@
 // src/monitoring/key_health.rs
 
-use crate::error::{AppError, Result};
+use crate::error::Result;
 use crate::key_manager::{KeyManagerTrait};
 use std::collections::HashMap;
 use std::sync::Arc;

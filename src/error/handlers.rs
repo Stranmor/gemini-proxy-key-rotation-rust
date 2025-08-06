@@ -1,7 +1,6 @@
 //! Error handling utilities and middleware
 
-use super::{AppError, ErrorResponse};
-use crate::Result;
+use super::ErrorResponse;
 use axum::{
     extract::Request,
     http::StatusCode,
