@@ -128,32 +128,32 @@ The installer will:
 - ✅ Create systemd service (Linux)
 - ✅ Run tests to verify installation
 
-### 🐳 **Оптимизированная Docker сборка**
+### 🐳 **Optimized Docker Build**
 
-Полностью переработанная Docker сборка с максимальной эффективностью:
+Fully redesigned Docker build for maximum efficiency:
 
 ```bash
 git clone https://github.com/stranmor/gemini-proxy-key-rotation-rust.git
 cd gemini-proxy-key-rotation-rust
 
-# Автоматическая оптимизация и настройка
+# Automatic optimization and setup
 ./scripts/docker-optimize.sh
 
-# Или быстрый старт
+# Or quick start
 make quick-start
-nano config.yaml  # Добавьте ваши Gemini API ключи
+nano config.yaml  # Add your Gemini API keys
 
-# Запуск (выберите нужный режим)
-make docker-run              # Продакшн (порт 8080)
-make docker-run-dev          # Разработка (порт 8081)
-make docker-run-with-tools   # + Redis UI (порт 8082)
+# Run (select the desired mode)
+make docker-run              # Production (port 8080)
+make docker-run-dev          # Development (port 8081)
+make docker-run-with-tools   # + Redis UI (port 8082)
 ```
 
-**🚀 Ключевые улучшения:**
-- Размер образа уменьшен до ~50MB (Distroless)
-- Время сборки ускорено в 3-5 раз (cargo-chef)
-- Максимальная безопасность (непривилегированный пользователь)
-- Эффективное кэширование зависимостей
+**🚀 Key improvements:**
+- Image size reduced to ~50MB (Distroless)
+- Build time accelerated 3-5x (cargo-chef)
+- Maximum security (non-privileged user)
+- Efficient dependency caching
 
 ### 🛠 **Manual Installation**
 
@@ -526,31 +526,31 @@ The proxy is designed to handle errors from the Gemini API gracefully:
     *   These errors (`500 Internal Server Error`, `503 Service Unavailable`) suggest a temporary problem on Google's end.
     *   **Action:** The proxy will perform a fixed number of retries (currently 2) with the *same key* using a fixed 1-second delay between attempts. If all retries fail, the key is then temporarily disabled, and the system moves to the next key.
 
-### 🐳 Оптимизированные Docker команды
+### 🐳 Optimized Docker Commands
 
-**Основные команды:**
+**Core Commands:**
 ```bash
-make docker-run              # Запуск продакшн среды
-make docker-run-dev          # Режим разработки с hot-reload
-make docker-run-with-tools   # + Redis UI и мониторинг
-make docker-test             # Запуск тестов в контейнере
-make docker-coverage         # Анализ покрытия кода
+make docker-run              # Run production environment
+make docker-run-dev          # Development mode with hot-reload
+make docker-run-with-tools   # + Redis UI and monitoring
+make docker-test             # Run tests in a container
+make docker-coverage         # Analyze code coverage
 ```
 
-**Управление:**
+**Management:**
 ```bash
-make docker-logs             # Просмотр логов приложения
-make docker-logs-all         # Все логи сервисов
-make docker-stop             # Остановка сервисов
-make docker-restart          # Перезапуск
-make docker-clean            # Очистка ресурсов
+make docker-logs             # View application logs
+make docker-logs-all         # All service logs
+make docker-stop             # Stop services
+make docker-restart          # Restart
+make docker-clean            # Clean up resources
 ```
 
-**Сборка:**
+**Build:**
 ```bash
-make docker-build            # Оптимизированная сборка
-make docker-build-dev        # Сборка для разработки
-./scripts/docker-optimize.sh # Полная оптимизация
+make docker-build            # Optimized build
+make docker-build-dev        # Build for development
+./scripts/docker-optimize.sh # Full optimization
 ```
 
 ## 🔒 Security & Production Deployment
@@ -566,30 +566,30 @@ make docker-build-dev        # Сборка для разработки
 
 ### 🏭 **Production Deployment**
 
-#### **Оптимизированный Docker Compose**
+#### **Optimized Docker Compose**
 ```bash
-# Полная оптимизация системы
+# Full system optimization
 ./scripts/docker-optimize.sh
 
-# Продакшн развертывание
-make docker-run                    # Основные сервисы (50MB образ)
+# Production deployment
+make docker-run                    # Core services (50MB image)
 
-# С инструментами мониторинга
-make docker-run-with-tools         # + Redis UI, метрики
+# With monitoring tools
+make docker-run-with-tools         # + Redis UI, metrics
 
-# Горизонтальное масштабирование
+# Horizontal scaling
 docker-compose up -d --scale gemini-proxy=3
 
-# Проверка состояния
-make status                        # Статус всех сервисов
-make health-detailed               # Детальная диагностика
+# Check status
+make status                        # Status of all services
+make health-detailed               # Detailed diagnostics
 ```
 
-**📊 Преимущества оптимизированной сборки:**
-- Размер образа: ~50MB (вместо 1.2GB)
-- Время сборки: ускорение в 3-5 раз
-- Безопасность: Distroless + непривилегированный пользователь
-- Мониторинг: Встроенные health checks и метрики
+**📊 Advantages of the optimized build:**
+- Image size: ~50MB (instead of 1.2GB)
+- Build time: 3-5x faster
+- Security: Distroless + non-privileged user
+- Monitoring: Built-in health checks and metrics
 
 #### **Kubernetes Deployment**
 ```yaml
