@@ -152,8 +152,13 @@ pub async fn run(
 
     // 4. Настройка роутера и middleware
     let app = create_router(app_state)
-        .layer(axum::middleware::from_fn(crate::middleware::request_size_limit_middleware))
-        .layer(axum::middleware::from_fn(trace_requests));
+        .layer(axum::middleware::from_fn(
+            crate::middleware::request_size_limit_middleware,
+        ))
+        .layer(axum::middleware::from_fn(trace_requests))
+        .layer(axum::middleware::from_fn(
+            crate::metrics::middleware::metrics_middleware,
+        ));
 
     Ok((app, app_config))
 }

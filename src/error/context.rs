@@ -48,9 +48,9 @@ impl Default for ErrorContext {
     }
 }
 
-/// Thread-local storage for error context
+/* Thread-local storage for error context (doc hidden for macro expansion) */
 thread_local! {
-    static ERROR_CONTEXT: std::cell::RefCell<Option<ErrorContext>> = std::cell::RefCell::new(None);
+    static ERROR_CONTEXT: std::cell::RefCell<Option<ErrorContext>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Set the current error context for the thread
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn test_with_error_context_macro() {
         let context = ErrorContext::new("macro_test");
-        
+
         let result = with_error_context!(context, {
             let ctx = get_error_context();
             assert!(ctx.is_some());

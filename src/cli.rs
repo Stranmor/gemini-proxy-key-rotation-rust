@@ -44,44 +44,44 @@ pub enum Commands {
         /// Enable development mode with hot reload
         #[arg(long)]
         dev: bool,
-        
+
         /// Number of worker threads
         #[arg(long, env = "GEMINI_PROXY_WORKERS")]
         workers: Option<usize>,
     },
-    
+
     /// Validate configuration file
     Config {
         /// Configuration file to validate
         #[arg(value_name = "FILE")]
         file: Option<PathBuf>,
-        
+
         /// Show detailed validation output
         #[arg(short, long)]
         verbose: bool,
     },
-    
+
     /// Health check commands
     Health {
         /// Proxy server URL to check
         #[arg(short, long, default_value = "http://localhost:8080")]
         url: String,
-        
+
         /// Perform detailed health check
         #[arg(short, long)]
         detailed: bool,
-        
+
         /// Timeout in seconds
         #[arg(short, long, default_value = "10")]
         timeout: u64,
     },
-    
+
     /// Key management commands
     Keys {
         #[command(subcommand)]
         action: KeyCommands,
     },
-    
+
     /// Generate configuration templates
     Generate {
         #[command(subcommand)]
@@ -97,13 +97,13 @@ pub enum KeyCommands {
         #[arg(short, long)]
         verbose: bool,
     },
-    
+
     /// Test key validity
     Test {
         /// Specific key to test (by index or name)
         key: Option<String>,
     },
-    
+
     /// Rotate keys manually
     Rotate {
         /// Force rotation even if current key is healthy
@@ -119,33 +119,33 @@ pub enum GenerateCommands {
         /// Output file path
         #[arg(short, long, default_value = "config.yaml")]
         output: PathBuf,
-        
+
         /// Include advanced configuration options
         #[arg(short, long)]
         advanced: bool,
     },
-    
+
     /// Generate systemd service file
     Systemd {
         /// Output file path
         #[arg(short, long, default_value = "gemini-proxy.service")]
         output: PathBuf,
-        
+
         /// Binary path
         #[arg(short, long)]
         binary_path: Option<PathBuf>,
-        
+
         /// User to run service as
         #[arg(short, long, default_value = "gemini-proxy")]
         user: String,
     },
-    
+
     /// Generate Docker Compose file
     Docker {
         /// Output file path
         #[arg(short, long, default_value = "docker-compose.yml")]
         output: PathBuf,
-        
+
         /// Include monitoring stack
         #[arg(short, long)]
         monitoring: bool,

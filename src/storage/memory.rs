@@ -2,7 +2,7 @@
 
 use crate::error::{AppError, Result};
 use crate::key_manager_v2::FlattenedKeyInfo;
-use crate::storage::{KeyState, KeyStore, KeyStateStore};
+use crate::storage::{KeyState, KeyStateStore, KeyStore};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -61,16 +61,16 @@ impl KeyStore for InMemoryStore {
         trace!("InMemoryStore::update_failure_state: waiting for write lock");
         let mut states_guard = self.key_states.write().await;
         trace!("InMemoryStore::update_failure_state: got write lock");
-        
+
         if let Some(state) = states_guard.get_mut(api_key) {
             state.record_failure(is_terminal, max_failures);
             return Ok(state.clone());
         }
-        
+
         Err(AppError::Validation {
-                field: "api_key".to_string(),
-                message: format!("API Key '{}' not found.", api_key),
-            })
+            field: "api_key".to_string(),
+            message: format!("API Key '{api_key}' not found."),
+        })
     }
 
     async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>> {
@@ -92,27 +92,27 @@ impl KeyStore for InMemoryStore {
 impl KeyStateStore for InMemoryStore {
     async fn initialize_keys(&self, keys: &[String]) -> Result<()> {
         let mut states_guard = self.key_states.write().await;
-        
+
         for key in keys {
             if !states_guard.contains_key(key) {
                 let state = KeyState::new(key.clone(), "unknown".to_string());
                 states_guard.insert(key.clone(), state);
             }
         }
-        
+
         Ok(())
     }
 
     async fn reset_key_state(&self, key: &str) -> Result<()> {
         let mut states_guard = self.key_states.write().await;
-        
+
         if let Some(state) = states_guard.get_mut(key) {
             state.reset();
             Ok(())
         } else {
             Err(AppError::Validation {
                 field: "key".to_string(),
-                message: format!("Key '{}' not found.", key),
+                message: format!("Key '{key}' not found."),
             })
         }
     }

@@ -36,7 +36,7 @@ impl TokenManager {
     pub async fn generate_session_token(&self, client_ip: Option<String>) -> String {
         let token = self.generate_secure_token();
         let now = Instant::now();
-        
+
         let token_info = TokenInfo {
             created_at: now,
             last_used: now,
@@ -51,12 +51,12 @@ impl TokenManager {
 
         // Очищаем старые токены
         self.cleanup_expired_tokens().await;
-        
+
         info!(
             client_ip = ?client_ip.as_ref(),
             "Generated new session token"
         );
-        
+
         token
     }
 
@@ -69,10 +69,10 @@ impl TokenManager {
 
         // Проверяем сессионные токены
         let mut tokens = self.tokens.write().await;
-        
+
         if let Some(token_info) = tokens.get_mut(token) {
             let now = Instant::now();
-            
+
             // Проверяем срок действия
             if now.duration_since(token_info.created_at) > self.token_lifetime {
                 tokens.remove(token);
@@ -95,7 +95,7 @@ impl TokenManager {
             // Обновляем статистику использования
             token_info.last_used = now;
             token_info.usage_count += 1;
-            
+
             return true;
         }
 
@@ -122,11 +122,12 @@ impl TokenManager {
     pub async fn get_token_stats(&self) -> TokenStats {
         let tokens = self.tokens.read().await;
         let now = Instant::now();
-        
+
         let active_sessions = tokens.len();
         let total_usage: u64 = tokens.values().map(|t| t.usage_count).sum();
-        
-        let recent_activity = tokens.values()
+
+        let recent_activity = tokens
+            .values()
             .filter(|t| now.duration_since(t.last_used) < Duration::from_secs(3600))
             .count();
 
@@ -141,11 +142,11 @@ impl TokenManager {
         let mut tokens = self.tokens.write().await;
         let now = Instant::now();
         let initial_count = tokens.len();
-        
+
         tokens.retain(|_, token_info| {
             now.duration_since(token_info.created_at) <= self.token_lifetime
         });
-        
+
         let removed_count = initial_count - tokens.len();
         if removed_count > 0 {
             info!(removed_count, "Cleaned up expired session tokens");
@@ -160,8 +161,8 @@ impl TokenManager {
                 chars[rng.gen_range(0..chars.len())] as char
             })
             .collect();
-        
-        format!("st_{}", token) // session token prefix
+
+        format!("st_{token}") // session token prefix
     }
 }
 

@@ -35,10 +35,10 @@ impl KeyRotationStrategy for RoundRobinStrategy {
         }
 
         let start_index = store.get_next_rotation_index(group_id).await?;
-        
+
         for i in 0..candidates.len() {
             let key_info = candidates[(start_index + i) % candidates.len()];
-            
+
             match store.get_key_state(key_info.key.expose_secret()).await? {
                 Some(state) if state.is_available() => {
                     self.log_key_selection(key_info, candidates.len());
@@ -52,7 +52,7 @@ impl KeyRotationStrategy for RoundRobinStrategy {
                 _ => continue,
             }
         }
-        
+
         Ok(None)
     }
 }
@@ -79,11 +79,11 @@ impl KeySelector {
     pub fn new(strategy: Box<dyn KeyRotationStrategy>) -> Self {
         Self { strategy }
     }
-    
+
     pub fn with_round_robin() -> Self {
         Self::new(Box::new(RoundRobinStrategy))
     }
-    
+
     pub async fn select_available_key(
         &self,
         candidates: &[&FlattenedKeyInfo],

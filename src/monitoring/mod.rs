@@ -46,28 +46,28 @@ impl MonitoringSystem {
     /// Запускает все системы мониторинга
     pub async fn start(&self) -> Result<()> {
         info!("Starting monitoring systems");
-        
+
         // Запускаем мониторинг здоровья ключей
         self.key_health.start_monitoring().await;
-        
+
         // Запускаем систему алертов
         self.start_alerting_system().await;
-        
+
         info!("All monitoring systems started successfully");
         Ok(())
     }
 
     async fn start_alerting_system(&self) {
-        let key_health = &self.key_health;
+        let _key_health = &self.key_health;
         let thresholds = self.alert_thresholds.clone();
-        
+
         let key_health = self.key_health.clone();
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(60)); // Проверяем каждую минуту
-            
+
             loop {
                 interval.tick().await;
-                
+
                 if let Err(e) = Self::check_alerts(&key_health, &thresholds).await {
                     error!("Alert check failed: {}", e);
                 }
@@ -80,14 +80,14 @@ impl MonitoringSystem {
         thresholds: &AlertThresholds,
     ) -> Result<()> {
         let unhealthy_keys = key_health.get_unhealthy_keys(10).await;
-        
+
         if unhealthy_keys.len() >= thresholds.unhealthy_keys_threshold {
             warn!(
                 unhealthy_count = unhealthy_keys.len(),
                 threshold = thresholds.unhealthy_keys_threshold,
                 "ALERT: High number of unhealthy API keys detected"
             );
-            
+
             // Логируем детали нездоровых ключей
             for key_stat in &unhealthy_keys {
                 warn!(
@@ -104,10 +104,10 @@ impl MonitoringSystem {
         let all_stats = key_health.get_health_stats().await;
         let total_requests: u64 = all_stats.values().map(|s| s.total_requests).sum();
         let total_failures: u64 = all_stats.values().map(|s| s.failed_requests).sum();
-        
+
         if total_requests > 0 {
             let error_rate = total_failures as f64 / total_requests as f64;
-            
+
             if error_rate > thresholds.error_rate_threshold {
                 warn!(
                     error_rate = %format!("{:.2}%", error_rate * 100.0),
@@ -126,12 +126,12 @@ impl MonitoringSystem {
     pub async fn get_system_stats(&self) -> SystemStats {
         let uptime = self.start_time.elapsed();
         let key_stats = self.key_health.get_health_stats().await;
-        
+
         let total_keys = key_stats.len();
         let healthy_keys = key_stats.values().filter(|s| s.is_healthy).count();
         let total_requests: u64 = key_stats.values().map(|s| s.total_requests).sum();
         let total_failures: u64 = key_stats.values().map(|s| s.failed_requests).sum();
-        
+
         let error_rate = if total_requests > 0 {
             total_failures as f64 / total_requests as f64
         } else {

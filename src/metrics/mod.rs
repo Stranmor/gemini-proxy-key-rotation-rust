@@ -1,5 +1,5 @@
 //! Metrics collection and export module
-//! 
+//!
 //! Provides comprehensive metrics collection using the `metrics` crate
 //! with Prometheus export capabilities for production monitoring.
 
@@ -21,27 +21,27 @@ pub struct MetricsRegistry {
     pub requests_total: Counter,
     pub requests_duration: Histogram,
     pub requests_in_flight: Gauge,
-    
+
     // Key management metrics
     pub keys_total: Gauge,
     pub keys_healthy: Gauge,
     pub keys_unhealthy: Gauge,
     pub key_rotations_total: Counter,
     pub key_failures_total: Counter,
-    
+
     // Circuit breaker metrics
     pub circuit_breaker_state: Gauge,
     pub circuit_breaker_trips_total: Counter,
-    
+
     // Rate limiting metrics
     pub rate_limit_hits_total: Counter,
     pub rate_limit_blocks_total: Counter,
-    
+
     // Redis metrics
     pub redis_operations_total: Counter,
     pub redis_errors_total: Counter,
     pub redis_connection_pool_size: Gauge,
-    
+
     // System metrics
     pub memory_usage_bytes: Gauge,
     pub cpu_usage_percent: Gauge,
@@ -55,42 +55,51 @@ impl MetricsRegistry {
             requests_total: counter!("gemini_proxy_requests_total"),
             requests_duration: histogram!("gemini_proxy_request_duration_seconds"),
             requests_in_flight: gauge!("gemini_proxy_requests_in_flight"),
-            
+
             // Key management metrics
             keys_total: gauge!("gemini_proxy_keys_total"),
             keys_healthy: gauge!("gemini_proxy_keys_healthy"),
             keys_unhealthy: gauge!("gemini_proxy_keys_unhealthy"),
             key_rotations_total: counter!("gemini_proxy_key_rotations_total"),
             key_failures_total: counter!("gemini_proxy_key_failures_total"),
-            
+
             // Circuit breaker metrics
             circuit_breaker_state: gauge!("gemini_proxy_circuit_breaker_state"),
             circuit_breaker_trips_total: counter!("gemini_proxy_circuit_breaker_trips_total"),
-            
+
             // Rate limiting metrics
             rate_limit_hits_total: counter!("gemini_proxy_rate_limit_hits_total"),
             rate_limit_blocks_total: counter!("gemini_proxy_rate_limit_blocks_total"),
-            
+
             // Redis metrics
             redis_operations_total: counter!("gemini_proxy_redis_operations_total"),
             redis_errors_total: counter!("gemini_proxy_redis_errors_total"),
             redis_connection_pool_size: gauge!("gemini_proxy_redis_connection_pool_size"),
-            
+
             // System metrics
             memory_usage_bytes: gauge!("gemini_proxy_memory_usage_bytes"),
             cpu_usage_percent: gauge!("gemini_proxy_cpu_usage_percent"),
             uptime_seconds: gauge!("gemini_proxy_uptime_seconds"),
         }
     }
+}
 
+impl Default for MetricsRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MetricsRegistry {
     /// Record a request with labels
     pub fn record_request(&self, method: String, path: String, status: u16, duration: Duration) {
         self.requests_total.increment(1);
         self.requests_duration.record(duration.as_secs_f64());
-        
+
         // Record with labels using the metrics macros
         counter!("gemini_proxy_requests_total", "method" => method.clone(), "path" => path.clone(), "status" => status.to_string()).increment(1);
-        histogram!("gemini_proxy_request_duration_seconds", "method" => method, "path" => path).record(duration.as_secs_f64());
+        histogram!("gemini_proxy_request_duration_seconds", "method" => method, "path" => path)
+            .record(duration.as_secs_f64());
     }
 
     /// Record key health status
@@ -103,11 +112,13 @@ impl MetricsRegistry {
     /// Record key rotation
     pub fn record_key_rotation(&self, group: String, success: bool) {
         self.key_rotations_total.increment(1);
-        
+
         if success {
-            counter!("gemini_proxy_key_rotations_total", "group" => group, "result" => "success").increment(1);
+            counter!("gemini_proxy_key_rotations_total", "group" => group, "result" => "success")
+                .increment(1);
         } else {
-            counter!("gemini_proxy_key_rotations_total", "group" => group, "result" => "failure").increment(1);
+            counter!("gemini_proxy_key_rotations_total", "group" => group, "result" => "failure")
+                .increment(1);
             self.key_failures_total.increment(1);
         }
     }
@@ -119,7 +130,7 @@ impl MetricsRegistry {
             CircuitBreakerState::Open => 1.0,
             CircuitBreakerState::HalfOpen => 0.5,
         };
-        
+
         gauge!("gemini_proxy_circuit_breaker_state", "service" => service).set(state_value);
     }
 
@@ -133,7 +144,7 @@ impl MetricsRegistry {
     pub fn record_rate_limit(&self, resource: String, blocked: bool) {
         self.rate_limit_hits_total.increment(1);
         counter!("gemini_proxy_rate_limit_hits_total", "resource" => resource.clone()).increment(1);
-        
+
         if blocked {
             self.rate_limit_blocks_total.increment(1);
             counter!("gemini_proxy_rate_limit_blocks_total", "resource" => resource).increment(1);
@@ -143,10 +154,10 @@ impl MetricsRegistry {
     /// Record Redis operation
     pub fn record_redis_operation(&self, operation: String, success: bool) {
         self.redis_operations_total.increment(1);
-        
+
         let result = if success { "success" } else { "error" };
         counter!("gemini_proxy_redis_operations_total", "operation" => operation, "result" => result).increment(1);
-        
+
         if !success {
             self.redis_errors_total.increment(1);
         }
@@ -231,7 +242,7 @@ macro_rules! record_request_metrics {
 pub fn init_metrics() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the metrics registry
     Lazy::force(&METRICS);
-    
+
     tracing::info!("Metrics system initialized");
     Ok(())
 }
@@ -244,9 +255,14 @@ mod tests {
     #[test]
     fn test_metrics_registry_creation() {
         let registry = MetricsRegistry::new();
-        
+
         // Test that we can record metrics without panicking
-        registry.record_request("GET".to_string(), "/health".to_string(), 200, Duration::from_millis(100));
+        registry.record_request(
+            "GET".to_string(),
+            "/health".to_string(),
+            200,
+            Duration::from_millis(100),
+        );
         registry.record_key_health(5, 4, 1);
         registry.record_key_rotation("primary".to_string(), true);
         registry.record_circuit_breaker_state("upstream".to_string(), CircuitBreakerState::Closed);
@@ -259,7 +275,7 @@ mod tests {
         let timer = Timer::new();
         std::thread::sleep(Duration::from_millis(10));
         let elapsed = timer.elapsed();
-        
+
         assert!(elapsed >= Duration::from_millis(10));
         assert!(elapsed < Duration::from_millis(100)); // Should be much less
     }
@@ -270,7 +286,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
             42
         });
-        
+
         assert_eq!(result, 42);
         assert!(duration >= Duration::from_millis(10));
     }

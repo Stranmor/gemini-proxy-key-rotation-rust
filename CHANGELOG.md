@@ -2,39 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - 2025-01-XX
+## [Unreleased] - 2025-08-06
 
-### Security
-- **CRITICAL**: Fixed API key leakage in logs - keys are now properly masked
-- Added constant-time comparison for authentication tokens to prevent timing attacks
-- Added request size limits (10MB) to prevent DoS attacks through large requests
-- Added CSRF token size validation (128 character limit)
-- Improved Redis KEYS command safety - now restricted to test environments only
-- Added memory leak prevention in rate limiting middleware
-
-### Added
-- New `request_size_limit_middleware` for DoS protection
-- Security documentation in `SECURITY.md`
-- Admin panel with web interface for key management
-- Redis support for persistent key state storage
-- Comprehensive error handling and logging improvements
-
-### Changed
-- Updated Cargo.toml to use stable Rust 2021 edition
-- Improved README documentation with current architecture
-- Updated configuration examples with new options
-- Enhanced logging with structured tracing and security-safe key previews
-
-### Fixed
-- Fixed integration tests by adding background worker for config updates
-- Corrected file references in documentation
-- Updated configuration examples to match current implementation
-
-### Technical Improvements
-- Added comprehensive test coverage (64+ tests)
-- Improved error handling with structured error types
-- Enhanced middleware stack with security layers
-- Better separation of concerns in codebase architecture
+- Unify default port to 4806 across docs and configs (README, QUICKSTART, MONITORING, docs/openapi.yaml, docker-compose, k8s).
+- Add UAT target (make uat) with non-interactive health verification on 4806.
+- Fix docs to pass audit (README/MONITORING: healthcheck, troubleshooting, busybox note, port override docs).
+- Ensure cargo fmt/clippy compliance; tests green.
+- Dockerfile: distroless fixes (no RUN in runtime stage), healthcheck stability, permissions for runtime-cache.
 
 ## Previous Versions
 

@@ -3,7 +3,7 @@
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::key_manager_v2::FlattenedKeyInfo;
-use crate::storage::{KeyState, KeyStore, KeyStateStore};
+use crate::storage::{KeyState, KeyStateStore, KeyStore};
 use async_trait::async_trait;
 use deadpool_redis::{Connection as RedisConnection, Pool};
 use redis::AsyncCommands;
@@ -31,7 +31,7 @@ impl RedisStore {
             .redis_key_prefix
             .clone()
             .unwrap_or_else(|| "gemini_proxy:".to_string());
-        
+
         let keys_from_config: Vec<String> = key_info_map.keys().cloned().collect();
         let mut conn = pool.get().await?;
         let rotation_set_key = format!("{key_prefix}{ROTATION_SET_KEY}");
@@ -171,12 +171,18 @@ impl KeyStore for RedisStore {
     }
 
     async fn get_next_rotation_index(&self, group_id: &str) -> Result<usize> {
-        trace!("RedisStore::get_next_rotation_index: start for group '{}'", group_id);
+        trace!(
+            "RedisStore::get_next_rotation_index: start for group '{}'",
+            group_id
+        );
         let mut conn = self.get_connection().await?;
         trace!("RedisStore::get_next_rotation_index: got connection");
         let counter_key = self.prefix_key(&format!("{ROTATION_COUNTER_KEY}:{group_id}"));
         let index: usize = conn.incr(&counter_key, 1).await?;
-        trace!("RedisStore::get_next_rotation_index: new index is {}", index);
+        trace!(
+            "RedisStore::get_next_rotation_index: new index is {}",
+            index
+        );
         Ok(index)
     }
 
@@ -186,7 +192,10 @@ impl KeyStore for RedisStore {
         is_terminal: bool,
         max_failures: u32,
     ) -> Result<KeyState> {
-        trace!("RedisStore::update_failure_state: start for key '{}'", api_key);
+        trace!(
+            "RedisStore::update_failure_state: start for key '{}'",
+            api_key
+        );
         let mut conn = self.get_connection().await?;
         trace!("RedisStore::update_failure_state: got connection");
         let state_key = self.prefix_key(&format!("key_state:{api_key}"));
@@ -200,7 +209,10 @@ impl KeyStore for RedisStore {
             let _: () = conn.hset(&state_key, "is_blocked", true).await?;
         }
 
-        trace!("RedisStore::update_failure_state: updated state for key '{}'", api_key);
+        trace!(
+            "RedisStore::update_failure_state: updated state for key '{}'",
+            api_key
+        );
         Ok(KeyState {
             key: api_key.to_string(),
             group_name: self
@@ -246,36 +258,37 @@ impl KeyStateStore for RedisStore {
     async fn initialize_keys(&self, keys: &[String]) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let rotation_set_key = self.prefix_key(ROTATION_SET_KEY);
-        
+
         let _: () = conn.sadd(&rotation_set_key, keys).await?;
-        
+
         for key in keys {
             let state_key = self.prefix_key(&format!("key_state:{key}"));
-            let _: () = conn.hset_multiple(
-                &state_key,
-                &[
-                    ("is_blocked", "false"),
-                    ("consecutive_failures", "0"),
-                    ("group_name", "unknown"),
-                ],
-            ).await?;
+            let _: () = conn
+                .hset_multiple(
+                    &state_key,
+                    &[
+                        ("is_blocked", "false"),
+                        ("consecutive_failures", "0"),
+                        ("group_name", "unknown"),
+                    ],
+                )
+                .await?;
         }
-        
+
         Ok(())
     }
 
     async fn reset_key_state(&self, key: &str) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let state_key = self.prefix_key(&format!("key_state:{key}"));
-        
-        let _: () = conn.hset_multiple(
-            &state_key,
-            &[
-                ("is_blocked", "false"),
-                ("consecutive_failures", "0"),
-            ],
-        ).await?;
-        
+
+        let _: () = conn
+            .hset_multiple(
+                &state_key,
+                &[("is_blocked", "false"), ("consecutive_failures", "0")],
+            )
+            .await?;
+
         Ok(())
     }
 

@@ -1,11 +1,7 @@
 // tests/error_handling_tests.rs
 
+use axum::{body::to_bytes, http::StatusCode, response::IntoResponse};
 use gemini_proxy::error::AppError;
-use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-    body::to_bytes,
-};
 use serde_json::Value;
 
 #[tokio::test]
@@ -14,13 +10,16 @@ async fn test_security_violation_error() {
         message: "Unauthorized access attempt".to_string(),
     };
     let response = error.into_response();
-    
+
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    
+
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    
-    assert_eq!(json["type"], "https://gemini-proxy.dev/errors/authentication");
+
+    assert_eq!(
+        json["type"],
+        "https://gemini-proxy.dev/errors/authentication"
+    );
     assert_eq!(json["title"], "Authentication Error");
 }
 
@@ -31,12 +30,12 @@ async fn test_rate_limit_exceeded_error() {
         window: "5 minutes".to_string(),
     };
     let response = error.into_response();
-    
+
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    
+
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    
+
     assert_eq!(json["type"], "https://gemini-proxy.dev/errors/rate-limit");
     assert_eq!(json["title"], "Rate Limit Exceeded");
 }
@@ -48,12 +47,15 @@ async fn test_key_health_check_failed_error() {
         message: "All keys unhealthy".to_string(),
     };
     let response = error.into_response();
-    
+
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    
+
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    
-    assert_eq!(json["type"], "https://gemini-proxy.dev/errors/key-management");
+
+    assert_eq!(
+        json["type"],
+        "https://gemini-proxy.dev/errors/key-management"
+    );
     assert_eq!(json["title"], "Key Management Error");
 }

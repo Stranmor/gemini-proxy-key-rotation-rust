@@ -16,13 +16,13 @@ use crate::{
     proxy,
     state::AppState,
 };
-use secrecy::ExposeSecret;
 use axum::{
-    body::{Body, Bytes, to_bytes},
+    body::{to_bytes, Body, Bytes},
     extract::{Request, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::Response,
 };
+use secrecy::ExposeSecret;
 use std::sync::Arc;
 
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -83,7 +83,8 @@ fn translate_path(path: &str) -> String {
 fn build_target_url(original_uri: &Uri, key_info: &FlattenedKeyInfo) -> Result<Url> {
     let mut url = Url::parse(&key_info.target_url)?.join(&translate_path(original_uri.path()))?;
     url.set_query(original_uri.query());
-    url.query_pairs_mut().append_pair("key", key_info.key.expose_secret());
+    url.query_pairs_mut()
+        .append_pair("key", key_info.key.expose_secret());
     Ok(url)
 }
 
@@ -139,7 +140,6 @@ fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-
 fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes, HeaderMap)> {
     let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let mut headers = HeaderMap::new();
@@ -173,10 +173,11 @@ fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes,
                     let body_bytes = Bytes::from(new_body_bytes);
                     headers.insert(
                         "content-length",
-                        http::HeaderValue::from_str(&new_len.to_string())
-                            .map_err(|e| AppError::InvalidRequest {
-                                message: format!("Invalid header value created internally: {}", e),
-                            })?,
+                        http::HeaderValue::from_str(&new_len.to_string()).map_err(|e| {
+                            AppError::InvalidRequest {
+                                message: format!("Invalid header value created internally: {e}"),
+                            }
+                        })?,
                     );
                     return Ok((body_bytes, headers));
                 }
@@ -294,13 +295,14 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                 // Для всех остальных ошибок сохраняем текущее поведение — 502 Bad Gateway.
                 error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Request failed");
                 if let AppError::UpstreamUnavailable { ref service } = e {
-                    if *service == "unknown".to_string() {
+                    if service.as_str() == "unknown" {
                         // Возвращаем как есть, без преобразования в 502.
                         return Err(e);
                     }
                 }
                 let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
                 *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                // фиксируем ошибочный ответ в счетчике метрик — переносим учет только в middleware
                 last_response = Some(resp);
                 break;
             }
@@ -316,13 +318,25 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
         // Check response handlers
         let action_to_take = response_handlers.iter().find_map(|handler| {
-            handler.handle(&response_for_analysis, &response_bytes, key_info.key.expose_secret())
+            handler.handle(
+                &response_for_analysis,
+                &response_bytes,
+                key_info.key.expose_secret(),
+            )
         });
 
         let final_response = Response::from_parts(parts, Body::from(response_bytes));
 
         match action_to_take {
-            Some(Action::ReturnToClient(resp)) => return Ok(resp),
+            Some(Action::ReturnToClient(resp)) => {
+                // учет ошибок выполняется исключительно в metrics_middleware
+                return Ok(resp);
+            }
+            Some(Action::Terminal(resp)) => {
+                // Терминальный ответ — отдаем клиенту без дальнейших ретраев
+                // учет ошибок выполняется исключительно в metrics_middleware
+                return Ok(resp);
+            }
             Some(Action::RetryNextKey) => {
                 trace!("Retrying with next key");
                 let _ = state
@@ -360,7 +374,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 #[cfg(test)]
 mod token_limit_tests {
     use super::*;
-    
+
     use serde_json::json;
     use tokenizers::Tokenizer;
 
@@ -419,7 +433,7 @@ mod token_limit_tests {
         let err =
             validate_token_count(&body).expect_err("Expected UpstreamServiceError for over-limit");
         if let AppError::UpstreamUnavailable { ref service } = err {
-            if *service == "unknown".to_string() {
+            if service == "unknown" {
                 // Возвращаем как есть, без преобразования в 502.
                 // This part of the code is unreachable in the test, as the error is returned.
             }

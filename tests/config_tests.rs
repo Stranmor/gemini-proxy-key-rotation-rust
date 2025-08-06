@@ -1,9 +1,6 @@
 // tests/config_tests.rs
 
-use gemini_proxy::config::{
-    AppConfig, KeyGroup, ServerConfig, 
-    validation::ConfigValidator,
-};
+use gemini_proxy::config::{validation::ConfigValidator, AppConfig, KeyGroup, ServerConfig};
 
 #[test]
 fn test_config_validation_valid_config() {

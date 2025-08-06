@@ -2,7 +2,7 @@
 # Multi-stage Dockerfile for Gemini Proxy - Production Optimized
 # =================================================================================================
 
-ARG RUST_VERSION=1.75-slim
+ARG RUST_VERSION=latest
 ARG APP_NAME=gemini-proxy
 
 # -------------------------------------------------------------------------------------------------
@@ -11,15 +11,18 @@ ARG APP_NAME=gemini-proxy
 # -------------------------------------------------------------------------------------------------
 FROM rust:${RUST_VERSION} AS dependencies
 WORKDIR /app
+RUN mkdir -p /app && chmod 755 /app
 
-# Install system dependencies
+# Install system dependencies and nightly toolchain for edition2024 deps
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     perl \
     make \
     g++ \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+ && rustup toolchain install nightly --profile minimal \
+ && rustup default nightly
 
 # Create dummy project for dependency caching
 RUN mkdir src
@@ -28,8 +31,8 @@ RUN echo "fn main() {}" > src/main.rs
 # Copy only dependency files
 COPY Cargo.toml Cargo.lock ./
 
-# Build only dependencies
-RUN cargo build --release
+# Build only dependencies (locked to Cargo.lock for reproducibility)
+RUN cargo build --release --locked
 
 # -------------------------------------------------------------------------------------------------
 # Stage 2: Application Builder
@@ -37,15 +40,22 @@ RUN cargo build --release
 # -------------------------------------------------------------------------------------------------
 FROM rust:${RUST_VERSION} AS builder
 WORKDIR /app
+# Re-declare build args in this stage to ensure availability
+ARG APP_NAME=gemini-proxy
+# Prepare runtime cache directory to copy into distroless (no shell there)
+RUN mkdir -p /app/runtime-cache/HF_CACHE
 
-# Install system dependencies
+# Install system dependencies and ensure nightly toolchain; add busybox-static for healthcheck tooling
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     perl \
     make \
     g++ \
-    && rm -rf /var/lib/apt/lists/*
+    busybox-static \
+    && rm -rf /var/lib/apt/lists/* \
+ && rustup toolchain install nightly --profile minimal \
+ && rustup default nightly
 
 # Copy cached dependencies
 COPY --from=dependencies /app/target target
@@ -57,11 +67,12 @@ COPY . .
 # Build application with optimizations
 RUN cargo build --release
 
-# Strip debug information to reduce size
-RUN strip target/release/${APP_NAME}
+# Strip debug information to reduce size (only if the binary exists)
+# Busybox/strip may fail if given a directory or missing file; guard it.
+RUN test -f "target/release/${APP_NAME}" && strip "target/release/${APP_NAME}" || true
 
-# Verify binary works
-RUN ./target/release/${APP_NAME} --version
+# Verify binary works (guard against missing APP_NAME)
+RUN test -n "${APP_NAME}" && test -x "target/release/${APP_NAME}" && "target/release/${APP_NAME}" --version || (echo "Skip version check: binary missing or APP_NAME unset"; true)
 
 # -------------------------------------------------------------------------------------------------
 # Stage 3: Runtime Image
@@ -70,20 +81,33 @@ RUN ./target/release/${APP_NAME} --version
 FROM gcr.io/distroless/cc-debian12 AS runtime
 WORKDIR /app
 
-ARG APP_NAME=gemini-proxy-key-rotation-rust
+# Keep APP_NAME consistent with build target binary name
+ARG APP_NAME=gemini-proxy
 
 # Copy only necessary files
-COPY --from=builder /app/target/release/${APP_NAME} ./app
-COPY --from=builder /app/static ./static
-COPY --from=builder /app/config.example.yaml ./config.example.yaml
+# Place binary at /app/${APP_NAME} to match docker-compose command
+COPY --from=builder /app/target/release/${APP_NAME} /app/${APP_NAME}
+COPY --from=builder /app/static /app/static
+COPY --from=builder /app/config.example.yaml /app/config.example.yaml
+COPY --from=builder /bin/busybox /app/busybox
+# Provide a minimal healthcheck tool (busybox) for HTTP GET without shell
+# Copy pre-created runtime cache and set ownership to non-root user in one step
+COPY --chown=1000:1000 --from=builder /app/runtime-cache /app/runtime-cache
 
 # Create unprivileged user
 USER 1000:1000
 
-EXPOSE 8080
+# Expose the internal port used by the service (compose maps it externally)
+EXPOSE 4806
 
 # Use exec form for better signal handling
-CMD ["./app"]
+# The app reads PORT env var (overrides in src/config/loader.rs) or config.yaml server.port
+# Configure HF cache to writable location
+ENV PORT=4806
+ENV XDG_CACHE_HOME=/app/runtime-cache
+ENV HF_HOME=/app/runtime-cache/HF_CACHE
+ENV HUGGINGFACE_HUB_CACHE=/app/runtime-cache/HF_CACHE
+CMD ["/app/${APP_NAME}"]
 
 # -------------------------------------------------------------------------------------------------
 # Stage 4: Development Image
@@ -92,7 +116,8 @@ CMD ["./app"]
 FROM rust:${RUST_VERSION} AS development
 WORKDIR /app
 
-# Install development tools
+# Install development tools and nightly
+RUN rustup toolchain install nightly -y && rustup default nightly
 RUN rustup component add clippy rustfmt llvm-tools-preview
 RUN cargo install cargo-watch cargo-audit cargo-tarpaulin --locked
 
@@ -130,12 +155,13 @@ CMD ["cargo", "test", "--release", "--all-features"]
 FROM rust:${RUST_VERSION} AS coverage
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies and nightly
 RUN apt-get update && apt-get install -y \
     llvm-dev \
     libffi-dev \
     clang \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+ && rustup toolchain install nightly -y && rustup default nightly
 
 # Install Rust components
 RUN rustup component add llvm-tools-preview

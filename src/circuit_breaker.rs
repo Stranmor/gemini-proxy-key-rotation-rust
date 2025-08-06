@@ -216,7 +216,10 @@ mod tests {
         // Simulate failures
         for _ in 0..3 {
             let result = cb.call(|| async { Err::<(), &str>("error") }).await;
-            assert!(matches!(result, Err(CircuitBreakerError::OperationFailed(_))));
+            assert!(matches!(
+                result,
+                Err(CircuitBreakerError::OperationFailed(_))
+            ));
         }
 
         // Circuit should be open now

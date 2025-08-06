@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// Global error handler for unhandled errors
 pub async fn global_error_handler(err: Box<dyn std::error::Error + Send + Sync>) -> Response {
     let request_id = Uuid::new_v4().to_string();
-    
+
     error!(
         error = %err,
         request_id = %request_id,
@@ -26,7 +26,7 @@ pub async fn global_error_handler(err: Box<dyn std::error::Error + Send + Sync>)
         title: "Internal Server Error".to_string(),
         status: 500,
         detail: "An unexpected error occurred".to_string(),
-        instance: format!("/errors/{}", request_id),
+        instance: format!("/errors/{request_id}"),
         request_id: Some(request_id),
         extensions: serde_json::Map::new(),
     };
@@ -90,13 +90,13 @@ pub fn create_error_response(
     request_id: Option<String>,
 ) -> ErrorResponse {
     let request_id = request_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    
+
     ErrorResponse {
         error_type: error_type.to_string(),
         title: title.to_string(),
         status: status.as_u16(),
         detail: detail.to_string(),
-        instance: format!("/errors/{}", request_id),
+        instance: format!("/errors/{request_id}"),
         request_id: Some(request_id),
         extensions: serde_json::Map::new(),
     }

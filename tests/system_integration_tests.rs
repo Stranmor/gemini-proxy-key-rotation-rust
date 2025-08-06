@@ -8,12 +8,12 @@ use gemini_proxy::{
     state::AppState,
 };
 use rand::distributions::Alphanumeric;
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 use std::{fs::File, sync::Arc};
 use tempfile::tempdir;
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
 };
 
 fn generate_prefix() -> String {

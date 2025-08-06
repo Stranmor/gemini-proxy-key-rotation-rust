@@ -64,7 +64,7 @@ impl From<deadpool_redis::PoolError> for AppError {
 impl From<axum::http::header::InvalidHeaderValue> for AppError {
     fn from(err: axum::http::header::InvalidHeaderValue) -> Self {
         Self::InvalidRequest {
-            message: format!("Invalid header value: {}", err),
+            message: format!("Invalid header value: {err}"),
         }
     }
 }
@@ -81,7 +81,7 @@ impl From<hyper::Error> for AppError {
 impl From<url::ParseError> for AppError {
     fn from(err: url::ParseError) -> Self {
         Self::InvalidRequest {
-            message: format!("Invalid URL: {}", err),
+            message: format!("Invalid URL: {err}"),
         }
     }
 }
@@ -92,7 +92,9 @@ impl From<config::ConfigError> for AppError {
             config::ConfigError::NotFound(_) => Self::ConfigNotFound {
                 path: "config file".to_string(),
             },
-            config::ConfigError::Type { .. } => Self::config_validation(err.to_string(), None::<String>),
+            config::ConfigError::Type { .. } => {
+                Self::config_validation(err.to_string(), None::<String>)
+            }
             _ => Self::ConfigParse {
                 message: err.to_string(),
                 line: None,
@@ -101,19 +103,22 @@ impl From<config::ConfigError> for AppError {
     }
 }
 
-
-
 impl From<deadpool::managed::CreatePoolError<deadpool_redis::ConfigError>> for AppError {
     fn from(err: deadpool::managed::CreatePoolError<deadpool_redis::ConfigError>) -> Self {
         Self::RedisConnection {
-            message: format!("Failed to create Redis pool: {}", err),
+            message: format!("Failed to create Redis pool: {err}"),
         }
     }
 }
 
 impl From<validator::ValidationErrors> for AppError {
     fn from(err: validator::ValidationErrors) -> Self {
-        let field = err.field_errors().keys().next().unwrap_or(&"unknown").to_string();
+        let field = err
+            .field_errors()
+            .keys()
+            .next()
+            .unwrap_or(&"unknown")
+            .to_string();
         let message = err.to_string();
         Self::Validation { field, message }
     }

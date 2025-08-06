@@ -4,7 +4,7 @@
 use crate::config::AppConfig;
 use crate::core::KeySelector;
 use crate::error::Result;
-use crate::storage::{KeyState, KeyStore, InMemoryStore, RedisStore};
+use crate::storage::{InMemoryStore, KeyState, KeyStore, RedisStore};
 use deadpool_redis::Pool;
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Deserializer, Serializer};
@@ -57,11 +57,11 @@ pub trait KeyManagerTrait: Send + Sync {
         &self,
         group_name: Option<&str>,
     ) -> Result<Option<FlattenedKeyInfo>>;
-    
+
     async fn handle_api_failure(&self, api_key: &str, is_terminal: bool) -> Result<()>;
-    
+
     async fn get_key_states(&self) -> Result<HashMap<String, KeyState>>;
-    
+
     async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo>;
 }
 
@@ -76,9 +76,9 @@ pub struct KeyManager {
 impl KeyManager {
     pub async fn new(config: &AppConfig, redis_pool: Option<Pool>) -> Result<Self> {
         trace!("KeyManager::new started");
-        
+
         let key_info_map = Self::build_key_info_map(config);
-        
+
         let store: Arc<dyn KeyStore> = match redis_pool {
             Some(pool) => {
                 info!("Redis pool provided. KeyManager will operate in Redis mode.");
@@ -91,9 +91,9 @@ impl KeyManager {
                 Arc::new(in_memory_store)
             }
         };
-        
+
         let selector = KeySelector::with_round_robin();
-        
+
         trace!("KeyManager::new finished");
         Ok(Self {
             store,
@@ -102,7 +102,7 @@ impl KeyManager {
             max_failures_threshold: config.max_failures_threshold.unwrap_or(3),
         })
     }
-    
+
     fn build_key_info_map(config: &AppConfig) -> HashMap<String, FlattenedKeyInfo> {
         config
             .groups
@@ -120,12 +120,12 @@ impl KeyManager {
             })
             .collect()
     }
-    
+
     pub fn preview_key(key: &Secret<String>) -> String {
         let key_str = key.expose_secret();
         Self::preview_key_str(key_str)
     }
-    
+
     pub fn preview_key_str(key: &str) -> String {
         if key.len() > 8 {
             format!("{}...{}", &key[..4], &key[key.len() - 4..])
@@ -133,11 +133,8 @@ impl KeyManager {
             key.to_string()
         }
     }
-    
-    fn filter_keys_by_group<'a>(
-        &'a self,
-        group_name: Option<&str>,
-    ) -> Vec<&'a FlattenedKeyInfo> {
+
+    fn filter_keys_by_group<'a>(&'a self, group_name: Option<&str>) -> Vec<&'a FlattenedKeyInfo> {
         self.key_info_map
             .values()
             .filter(|info| group_name.map_or(true, |gn| info.group_name == gn))
@@ -152,44 +149,54 @@ impl KeyManagerTrait for KeyManager {
         group_name: Option<&str>,
     ) -> Result<Option<FlattenedKeyInfo>> {
         trace!("get_next_available_key_info: start");
-        
+
         let all_keys = self.store.get_candidate_keys().await?;
-        trace!("get_next_available_key_info: got {} candidate keys", all_keys.len());
-        
+        trace!(
+            "get_next_available_key_info: got {} candidate keys",
+            all_keys.len()
+        );
+
         let mut candidate_keys = self.filter_keys_by_group(group_name);
         candidate_keys.retain(|info| all_keys.contains(info.key.expose_secret()));
         candidate_keys.sort_by(|a, b| a.key.expose_secret().cmp(b.key.expose_secret()));
-        
+
         if candidate_keys.is_empty() {
             warn!(group_name, "No keys available for the specified group.");
             return Ok(None);
         }
-        
+
         let group_id = group_name.unwrap_or(DEFAULT_GROUP_ID);
-        
-        match self.selector.select_available_key(candidate_keys.as_slice(), group_id, self.store.clone()).await? {
+
+        match self
+            .selector
+            .select_available_key(candidate_keys.as_slice(), group_id, self.store.clone())
+            .await?
+        {
             Some(key_info) => Ok(Some(key_info)),
             None => {
-                warn!(group_name, "All keys for the specified group are currently blocked.");
+                warn!(
+                    group_name,
+                    "All keys for the specified group are currently blocked."
+                );
                 Ok(None)
             }
         }
     }
-    
+
     async fn handle_api_failure(&self, api_key: &str, is_terminal: bool) -> Result<()> {
         let updated_state = self
             .store
             .update_failure_state(api_key, is_terminal, self.max_failures_threshold)
             .await?;
-        
+
         self.log_failure_handling(api_key, is_terminal, &updated_state);
         Ok(())
     }
-    
+
     async fn get_key_states(&self) -> Result<HashMap<String, KeyState>> {
         self.store.get_all_key_states().await
     }
-    
+
     async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo> {
         self.key_info_map.as_ref().clone()
     }

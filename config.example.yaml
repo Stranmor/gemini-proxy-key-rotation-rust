@@ -3,7 +3,7 @@
 # Server settings
 server:
   # Port the proxy will listen on
-  port: 8081
+  port: 4806
   # Optional: Default top_p value for generation, must be between 0.0 and 1.0.
   # This value will be injected into the request body if it's not already present.
   # top_p: 0.9
@@ -23,12 +23,15 @@ server:
     session_timeout_secs: 86400
 
 # Redis connection URL
-redis_url: "redis://127.0.0.1:6380"
+redis_url: "redis://127.0.0.1:6379"
 
 # API key groups. The proxy will rotate through keys in a round-robin fashion.
 groups:
   # Default group. You can have multiple groups.
   - name: "Default"
+    # Target upstream URL for this group (required)
+    # Must be a valid URL. Example provided uses Google's Generative Language API host.
+    target_url: "https://generativelanguage.googleapis.com"
     # List of your Google Gemini API keys
     api_keys:
       - "your-gemini-api-key-1"
@@ -43,7 +46,7 @@ groups:
   #   api_keys:
   #     - "your-other-gemini-key-A"
   #     - "your-other-gemini-key-B"
-  #   proxy_url: "http://proxy.example.com:8080"
+  #   proxy_url: "http://proxy.example.com:4806"  # Example aligned with default host port
 
 # Number of times to retry a request to the upstream service with the SAME key
 # if a retriable server error (5xx) occurs. Defaults to 2.

@@ -16,7 +16,7 @@ fn secure_compare(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    
+
     let mut result = 0u8;
     for (byte_a, byte_b) in a.bytes().zip(b.bytes()) {
         result |= byte_a ^ byte_b;
@@ -51,7 +51,8 @@ pub async fn admin_auth_middleware(
                 _ => {
                     warn!("Admin authentication failed: invalid or missing token");
                     Err(AppError::Authentication {
-                        message: "Admin authentication failed: invalid or missing token".to_string(),
+                        message: "Admin authentication failed: invalid or missing token"
+                            .to_string(),
                     })
                 }
             }

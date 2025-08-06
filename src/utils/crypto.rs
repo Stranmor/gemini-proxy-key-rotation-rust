@@ -9,11 +9,11 @@ impl SecureString {
     pub fn new(value: String) -> Self {
         Self(Secret::new(value))
     }
-    
+
     pub fn expose_secret(&self) -> &str {
         self.0.expose_secret()
     }
-    
+
     pub fn preview(&self) -> String {
         let value = self.0.expose_secret();
         if value.len() > 8 {

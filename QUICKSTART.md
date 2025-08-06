@@ -68,16 +68,16 @@ Choose your preferred method:
 make docker-run
 
 # Services will start:
-# 🔗 Proxy: http://localhost:8081
+# 🔗 Proxy: http://localhost:4806
 # 🗄️ Redis: localhost:6379
-# 📊 Admin: http://localhost:8081/admin/
+# 📊 Admin: http://localhost:4806/admin/
 ```
 
 ### Direct Binary (Development)
 ```bash
 make run
 
-# Proxy starts at: http://localhost:8081
+# Proxy starts at: http://localhost:4806
 ```
 
 ### Systemd Service (Linux Production)
@@ -90,19 +90,19 @@ sudo systemctl status gemini-proxy
 
 1. **Check health**:
    ```bash
-   curl http://localhost:8081/health
+   curl http://localhost:4806/health
    # Expected: HTTP 200 OK
    ```
 
 2. **Test with detailed health check**:
    ```bash
-   curl http://localhost:8081/health/detailed
+   curl http://localhost:4806/health/detailed
    # Expected: JSON response with key validation
    ```
 
 3. **View admin dashboard** (if configured):
    ```bash
-   open http://localhost:8081/admin/
+   open http://localhost:4806/admin/
    ```
 
 ## 🔌 Connect Your Application
@@ -112,7 +112,7 @@ sudo systemctl status gemini-proxy
 import openai
 
 client = openai.OpenAI(
-    base_url="http://localhost:8081",
+    base_url="http://localhost:4806",
     api_key="dummy-key"  # Ignored, real keys managed by proxy
 )
 
@@ -128,7 +128,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'http://localhost:8081',
+  baseURL: 'http://localhost:4806',
   apiKey: 'dummy-key', // Ignored, real keys managed by proxy
 });
 
@@ -142,7 +142,7 @@ console.log(response.choices[0].message.content);
 
 ### cURL
 ```bash
-curl http://localhost:8081/v1/chat/completions \
+curl http://localhost:4806/v1/chat/completions \
   -H "Authorization: Bearer dummy-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -166,7 +166,7 @@ make health
 ```
 
 ### Web Dashboard
-Visit `http://localhost:8081/admin/` to see:
+Visit `http://localhost:4806/admin/` to see:
 - 📈 Real-time key health scores
 - 📊 Request success rates and response times
 - 🔧 Key management and configuration
@@ -212,6 +212,33 @@ sudo systemctl stop gemini-proxy
 
 ## 🆘 Troubleshooting
 
+### UAT
+
+To run a full non-interactive verification:
+
+```bash
+make uat
+```
+
+Expected:
+- Build completes
+- Services up
+- Healthcheck OK at http://localhost:4806/health
+
+### Troubleshooting healthcheck
+
+1) Check /app/busybox exists in container:
+```bash
+docker compose exec gemini-proxy ls -l /app/busybox || echo "busybox not present"
+```
+
+2) Verify docker-compose healthcheck path/port:
+- http://localhost:4806/health
+
+3) Port conflict
+- Do not kill processes on occupied port.
+- Change port via env `PORT` or set `server.port` in config.yaml and re-run docker compose.
+
 ### Proxy Won't Start
 1. **Check configuration**:
    ```bash
@@ -221,8 +248,8 @@ sudo systemctl stop gemini-proxy
 
 2. **Check port availability**:
    ```bash
-   # See if port 8081 is in use
-   lsof -i :8081
+   # See if port 4806 is in use
+   lsof -i :4806
    ```
 
 3. **Check logs**:

@@ -26,7 +26,8 @@ impl ResponseHandler for TerminalErrorHandler {
                 headers.clone_from(response.headers());
             }
             let resp = builder.body(Body::from(body_bytes.clone())).unwrap();
-            Some(Action::ReturnToClient(resp))
+            // Явно помечаем как терминальный исход
+            Some(Action::Terminal(resp))
         } else {
             None
         }

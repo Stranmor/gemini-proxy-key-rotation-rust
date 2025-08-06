@@ -96,9 +96,7 @@ pub async fn rate_limit_middleware(
     // Cleanup old entries periodically to prevent memory leaks
     // Remove entries that haven't been accessed for more than 2 window durations
     let cleanup_threshold = config.window_duration * 2;
-    store_guard.retain(|_, entry| {
-        now.duration_since(entry.window_start) < cleanup_threshold
-    });
+    store_guard.retain(|_, entry| now.duration_since(entry.window_start) < cleanup_threshold);
 
     drop(store_guard);
 
@@ -110,8 +108,8 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use axum::{
-        Router, body::Body, extract::connect_info::MockConnectInfo, http::Method,
-        middleware::from_fn_with_state, routing::get,
+        body::Body, extract::connect_info::MockConnectInfo, http::Method,
+        middleware::from_fn_with_state, routing::get, Router,
     };
     use std::net::SocketAddr;
     use tempfile::tempdir;

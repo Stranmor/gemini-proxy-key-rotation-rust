@@ -1,12 +1,6 @@
 // src/middleware/request_size_limit.rs
 
-use axum::{
-    body::Body,
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, extract::Request, http::StatusCode, middleware::Next, response::Response};
 use tracing::warn;
 
 const MAX_REQUEST_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
@@ -18,7 +12,10 @@ pub async fn request_size_limit_middleware(
 ) -> Result<Response, StatusCode> {
     // Only check Content-Length for methods that typically have bodies
     let method = request.method();
-    if matches!(method, &axum::http::Method::POST | &axum::http::Method::PUT | &axum::http::Method::PATCH) {
+    if matches!(
+        method,
+        &axum::http::Method::POST | &axum::http::Method::PUT | &axum::http::Method::PATCH
+    ) {
         // Check Content-Length header if present
         if let Some(content_length) = request.headers().get("content-length") {
             if let Ok(length_str) = content_length.to_str() {
@@ -43,13 +40,7 @@ pub async fn request_size_limit_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{
-        body::Body,
-        http::Method,
-        middleware::from_fn,
-        routing::post,
-        Router,
-    };
+    use axum::{body::Body, http::Method, middleware::from_fn, routing::post, Router};
     use tower::ServiceExt;
 
     async fn dummy_handler() -> &'static str {

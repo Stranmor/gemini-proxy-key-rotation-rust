@@ -6,8 +6,6 @@ use crate::{
     key_manager::{FlattenedKeyInfo, KeyManager, KeyManagerTrait},
     state::{AppState, KeyState},
 };
-use secrecy::ExposeSecret;
-use md5;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -20,7 +18,9 @@ use axum::{
 use chrono::{DateTime, Utc};
 use cookie::{time::Duration as CookieDuration, SameSite};
 use http::HeaderName;
+use md5;
 use rand::{thread_rng, Rng};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -324,7 +324,7 @@ fn secure_compare(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    
+
     let mut result = 0u8;
     for (byte_a, byte_b) in a.bytes().zip(b.bytes()) {
         result |= byte_a ^ byte_b;
@@ -351,7 +351,8 @@ async fn csrf_middleware(cookies: Cookies, req: Request<Body>, next: Next) -> Re
             if !c_token.is_empty()
             && c_token.len() <= 128  // Reasonable limit for CSRF tokens
             && h_token.len() <= 128
-            && secure_compare(&c_token, &h_token) => {
+            && secure_compare(&c_token, &h_token) =>
+        {
             info!("CSRF token matched.");
             Ok(next.run(req).await)
         }
@@ -424,7 +425,7 @@ pub async fn list_keys(
             query
                 .group
                 .as_ref()
-                .is_none_or(|g| g == &key_info.group_name)
+                .map_or(true, |val| val == &key_info.group_name)
         })
         .filter_map(|key_info| {
             let key_state = key_states.get(key_info.key.expose_secret());
@@ -432,7 +433,7 @@ pub async fn list_keys(
             if query
                 .status
                 .as_ref()
-                .is_none_or(|s| s == &api_key_info.status)
+                .map_or(true, |val| val == &api_key_info.status)
             {
                 Some(api_key_info)
             } else {
@@ -499,7 +500,10 @@ pub async fn add_keys(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AddKeysRequest>,
 ) -> Result<StatusCode> {
-    info!("Received request to add keys to group '{}'.", request.group_name);
+    info!(
+        "Received request to add keys to group '{}'.",
+        request.group_name
+    );
     create_and_send_new_config(&state, "admin_add_keys", |config| {
         let group = config
             .groups
@@ -707,7 +711,9 @@ where
     if state.config_update_tx.send(new_config).is_err() {
         let msg = "Configuration update channel is closed. The background worker may have crashed.";
         error!("{}", msg);
-        return Err(AppError::Internal { message: msg.to_string() });
+        return Err(AppError::Internal {
+            message: msg.to_string(),
+        });
     }
 
     info!(

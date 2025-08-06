@@ -144,8 +144,8 @@ make quick-start
 nano config.yaml  # Add your Gemini API keys
 
 # Run (select the desired mode)
-make docker-run              # Production (port 8080)
-make docker-run-dev          # Development (port 8081)
+make docker-run              # Production (port 4806)
+make docker-run-dev          # Development (port 4806)
 make docker-run-with-tools   # + Redis UI (port 8082)
 ```
 
@@ -211,16 +211,16 @@ make run
 3. **Verify & Use**
    ```bash
    # Check health
-   curl http://localhost:8081/health
+   curl http://localhost:4806/health
    
    # Test with your OpenAI client
-   # Base URL: http://localhost:8081
+   # Base URL: http://localhost:4806
    # API Key: any-dummy-key (ignored, real keys managed internally)
    ```
 
 ### 📊 **Monitoring Dashboard**
 
-Access the admin panel at `http://localhost:8081/admin/` (configure `admin_token` in config.yaml):
+Access the admin panel at `http://localhost:4806/admin/` (configure `admin_token` in config.yaml):
 
 - 📈 Real-time key health scores
 - 📊 Request success rates and response times  
@@ -298,7 +298,7 @@ Use this primarily for development.
 Once the proxy is running, configure your OpenAI client (e.g., Python/JS libraries, Roo Code/Cline, etc.) as follows:
 
 1.  **Set the Base URL / API Host:** Point the client to the proxy's address (protocol, host, port only).
-    *   Example: `http://localhost:8081` (or the host port you set in `config.yaml`)
+    *   Example: `http://localhost:4806` (or the host port you set in `config.yaml`)
     *   **Do NOT include `/v1` or other paths in the Base URL.**
 
 2.  **Set the API Key:** Enter **any non-empty placeholder** (e.g., "dummy-key", "ignored"). The proxy manages the *real* Gemini keys internally and **ignores the key sent by the client**, but the field usually requires input.
@@ -307,14 +307,46 @@ Once the proxy is running, configure your OpenAI client (e.g., Python/JS librari
 
 ### Example (`curl` to proxy)
 
+#### UAT
+
+Run a non-interactive end-to-end verification:
+
+```bash
+make uat
+```
+
+Expected result:
+- docker images build
+- services up
+- healthcheck OK at http://localhost:4806/health
+- sample endpoints respond as expected
+
+#### Troubleshooting healthcheck
+
+If healthcheck fails:
+
+1) Check health binary inside container:
+```bash
+docker compose exec gemini-proxy ls -l /app/busybox || echo "busybox not present"
+```
+
+2) Verify healthcheck configuration in compose:
+- test: ["/app/busybox","wget","-qO-","http://localhost:4806/health"]
+- interval: 10s, timeout: 5s
+
+3) Port conflicts:
+- Do not kill user processes.
+- To change port, set environment variable PORT or edit server.port in config.yaml (e.g., 0 for auto-assign or specific free port).
+- Then re-run: docker compose up -d
+
 **Example `curl` request:**
 ```bash
-# Example request to list models via the proxy (replace 8081 with your host port)
-curl http://localhost:8081/v1/models \
+# Example request to list models via the proxy (listening on 4806 by default)
+curl http://localhost:4806/v1/models \
   -H "Authorization: Bearer dummy-ignored-key" # This header is ignored/replaced
 
-# Example request for chat completion via the proxy (replace 8081 with your host port)
-curl http://localhost:8081/v1/chat/completions \
+# Example request for chat completion via the proxy (listening on 4806 by default)
+curl http://localhost:4806/v1/chat/completions \
   -H "Authorization: Bearer dummy-ignored-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -327,7 +359,7 @@ curl http://localhost:8081/v1/chat/completions \
 ## Configuration
 
 1.  In API settings, select **"OpenAI Compatible"** as **API Provider**.
-2.  Set **Base URL** to the proxy address (e.g., `http://localhost:8081`).
+2.  Set **Base URL** to the proxy address (e.g., `http://localhost:4806`).
 3.  Set **API Key** to any non-empty placeholder (e.g., "dummy").
 
 **Example Configuration Screenshot:**
@@ -344,7 +376,7 @@ The proxy exposes a minimal set of HTTP endpoints designed for compatibility wit
     *   **Description:** Returns a `200 OK` status code if the proxy is running and responsive. This is useful for load balancers, Docker health checks, and basic monitoring. Note that a more comprehensive check is available at `GET /health/detailed`.
     *   **Example:**
         ```bash
-        curl http://localhost:8081/health
+        curl http://localhost:4806/health
         # Expected Response: HTTP/1.1 200 OK (empty body)
         ```
 
@@ -353,7 +385,7 @@ The proxy exposes a minimal set of HTTP endpoints designed for compatibility wit
     *   **Description:** Performs a live, lightweight API call to Google using one of the available keys to ensure it's valid and not rate-limited. This provides a stronger guarantee that the proxy is fully functional.
     *   **Example:**
         ```bash
-        curl http://localhost:8081/health/detailed
+        curl http://localhost:4806/health/detailed
         # Expected Response: HTTP/1.1 200 OK (with JSON body confirming success)
         ```
 
@@ -377,7 +409,7 @@ The `config.yaml` file is your single source of truth. Start with the example:
 ```yaml
 # config.yaml - Production Configuration
 server:
-  port: 8081
+  port: 4806
   admin_token: "your-secure-admin-token-here"  # Generate with: openssl rand -hex 32
   
   # Security settings
@@ -455,18 +487,18 @@ export REDIS_URL=redis://localhost:6379
 
 ```bash
 # Basic health check (liveness probe)
-curl http://localhost:8081/health
+curl http://localhost:4806/health
 
 # Detailed health with key validation (readiness probe)
-curl http://localhost:8081/health/detailed
+curl http://localhost:4806/health/detailed
 
 # Metrics endpoint (Prometheus compatible)
-curl http://localhost:8081/metrics
+curl http://localhost:4806/metrics
 ```
 
 ### 🎛️ **Admin Dashboard**
 
-Access the web-based admin panel at `http://localhost:8081/admin/`:
+Access the web-based admin panel at `http://localhost:4806/admin/`:
 
 - **Real-time Metrics**: Key health scores, success rates, response times
 - **Key Management**: View status, manually disable/enable keys
@@ -612,18 +644,18 @@ spec:
       - name: gemini-proxy
         image: gemini-proxy:latest
         ports:
-        - containerPort: 8081
+        - containerPort: 4806
         env:
         - name: RUST_LOG
           value: "info"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8081
+            port: 4806
         readinessProbe:
           httpGet:
             path: /health/detailed
-            port: 8081
+            port: 4806
 ```
 
 #### **Systemd Service (Linux)**

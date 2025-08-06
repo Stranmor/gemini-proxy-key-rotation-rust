@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{warn, error};
+use tracing::{error, warn};
 
 pub mod token_manager;
 
@@ -34,7 +34,7 @@ impl SecurityMiddleware {
     pub fn new() -> Self {
         Self {
             rate_limiter: Arc::new(RwLock::new(HashMap::new())),
-            max_attempts: 5, // 5 попыток
+            max_attempts: 5,                           // 5 попыток
             window_duration: Duration::from_secs(300), // за 5 минут
         }
     }
@@ -48,14 +48,16 @@ impl SecurityMiddleware {
         next: Next,
     ) -> Result<Response> {
         let client_ip = addr.ip().to_string();
-        
+
         // Проверяем rate limit
         if self.is_rate_limited(&client_ip).await {
             warn!(
                 client_ip = %client_ip,
                 "Admin panel access blocked due to rate limiting"
             );
-            return Err(AppError::Authentication { message: "Unauthorized".to_string() });
+            return Err(AppError::Authentication {
+                message: "Unauthorized".to_string(),
+            });
         }
 
         // Проверяем HTTPS в продакшене
@@ -64,11 +66,13 @@ impl SecurityMiddleware {
                 client_ip = %client_ip,
                 "Admin panel access attempted over insecure connection"
             );
-            return Err(AppError::Authentication { message: "Unauthorized".to_string() });
+            return Err(AppError::Authentication {
+                message: "Unauthorized".to_string(),
+            });
         }
 
         let response = next.run(request).await;
-        
+
         // Если аутентификация не удалась, записываем попытку
         if response.status() == StatusCode::UNAUTHORIZED {
             self.record_failed_attempt(&client_ip).await;
@@ -80,12 +84,14 @@ impl SecurityMiddleware {
     pub async fn is_rate_limited(&self, client_ip: &str) -> bool {
         let mut limiter = self.rate_limiter.write().await;
         let now = Instant::now();
-        
-        let entry = limiter.entry(client_ip.to_string()).or_insert(RateLimitEntry {
-            attempts: 0,
-            window_start: now,
-            blocked_until: None,
-        });
+
+        let entry = limiter
+            .entry(client_ip.to_string())
+            .or_insert(RateLimitEntry {
+                attempts: 0,
+                window_start: now,
+                blocked_until: None,
+            });
 
         // Проверяем блокировку
         if let Some(blocked_until) = entry.blocked_until {
@@ -111,12 +117,14 @@ impl SecurityMiddleware {
     pub async fn record_failed_attempt(&self, client_ip: &str) {
         let mut limiter = self.rate_limiter.write().await;
         let now = Instant::now();
-        
-        let entry = limiter.entry(client_ip.to_string()).or_insert(RateLimitEntry {
-            attempts: 0,
-            window_start: now,
-            blocked_until: None,
-        });
+
+        let entry = limiter
+            .entry(client_ip.to_string())
+            .or_insert(RateLimitEntry {
+                attempts: 0,
+                window_start: now,
+                blocked_until: None,
+            });
 
         entry.attempts += 1;
 
@@ -138,14 +146,16 @@ impl SecurityMiddleware {
         }
 
         // Проверяем заголовки HTTPS
-        headers.get("x-forwarded-proto")
+        headers
+            .get("x-forwarded-proto")
             .and_then(|v| v.to_str().ok())
             .map(|v| v == "https")
             .unwrap_or(false)
-        || headers.get("x-forwarded-ssl")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v == "on")
-            .unwrap_or(false)
+            || headers
+                .get("x-forwarded-ssl")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v == "on")
+                .unwrap_or(false)
     }
 }
 

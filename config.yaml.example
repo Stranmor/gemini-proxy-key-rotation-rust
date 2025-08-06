@@ -3,7 +3,7 @@
 
 # Server and Log settings
 server:
-  port: 4805
+  port: 4806
   top_p: 0.7
   # IMPORTANT: Set a strong admin token for admin panel access
   admin_token: "your-secure-admin-token-here"

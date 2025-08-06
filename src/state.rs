@@ -20,8 +20,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{RwLock, broadcast};
-use tracing::{Instrument, debug, error, info, instrument, warn};
+use tokio::sync::{broadcast, RwLock};
+use tracing::{debug, error, info, instrument, warn, Instrument};
 use url::Url;
 
 /// Represents the state of a single API key, designed to be stored in Redis.
@@ -113,7 +113,7 @@ impl HttpClientBuilder {
             .map_err(|e| {
                 error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
                 AppError::HttpClient {
-                    message: format!("Failed to build base HTTP client: {}", e),
+                    message: format!("Failed to build base HTTP client: {e}"),
                     status_code: None,
                 }
             })
@@ -127,7 +127,7 @@ impl HttpClientBuilder {
             let parsed_proxy_url = Url::parse(proxy_url).map_err(|e| {
                 error!(error = %e, "Failed to parse proxy URL string.");
                 AppError::ConfigValidation {
-                    message: format!("Failed to parse proxy URL: {}", e),
+                    message: format!("Failed to parse proxy URL: {e}"),
                     field: Some(proxy_url.to_string()),
                 }
             })?;
@@ -144,7 +144,7 @@ impl HttpClientBuilder {
                 .map_err(|e| {
                     error!(proxy.scheme = %scheme, error = ?e, "Failed to build reqwest client for proxy.");
                     AppError::HttpClient {
-                        message: format!("Failed to build reqwest client for proxy: {}", e),
+                        message: format!("Failed to build reqwest client for proxy: {e}"),
                         status_code: None,
                     }
                 })
@@ -162,7 +162,7 @@ impl HttpClientBuilder {
             _ => {
                 error!(proxy.scheme = %scheme, "Unsupported proxy scheme");
                 return Err(AppError::ConfigValidation {
-                    message: format!("Unsupported proxy scheme: {}", scheme),
+                    message: format!("Unsupported proxy scheme: {scheme}"),
                     field: Some(proxy_url.to_string()),
                 });
             }
@@ -170,7 +170,7 @@ impl HttpClientBuilder {
         .map_err(|e| {
             error!(error = %e, proxy.scheme = %scheme, "Invalid proxy definition");
             AppError::ConfigValidation {
-                message: format!("Invalid proxy definition: {}", e),
+                message: format!("Invalid proxy definition: {e}"),
                 field: Some(proxy_url.to_string()),
             }
         })
@@ -205,7 +205,7 @@ pub async fn build_http_clients(
             .timeout(Duration::from_millis(10))
             .build()
             .map_err(|e| AppError::HttpClient {
-                message: format!("Failed to build dummy client: {}", e),
+                message: format!("Failed to build dummy client: {e}"),
                 status_code: None,
             })?;
         http_clients.insert(None, Arc::new(dummy_client));
@@ -280,7 +280,10 @@ fn should_fail_fast(error: &AppError) -> bool {
             // For now, treat all config validation errors as fail-fast
             true
         }
-        AppError::HttpClient { message, status_code: None } => true, // Base client failure
+        AppError::HttpClient {
+            message: _message,
+            status_code: None,
+        } => true, // Base client failure
         _ => false,
     }
 }
@@ -353,12 +356,12 @@ impl AppState {
                 recovery_timeout: Duration::from_secs(60),
                 success_threshold: 3,
             };
-            
+
             let circuit_breaker = Arc::new(CircuitBreaker::new(
-                format!("target_{}", target_url),
+                format!("target_{target_url}"),
                 cb_config,
             ));
-            
+
             circuit_breakers.insert(target_url, circuit_breaker);
         }
 
@@ -489,12 +492,10 @@ mod tests {
         drop(clients_guard);
 
         assert!(state.get_client(None).await.is_ok());
-        assert!(
-            state
-                .get_client(Some("http://nonexistent.proxy"))
-                .await
-                .is_err()
-        );
+        assert!(state
+            .get_client(Some("http://nonexistent.proxy"))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

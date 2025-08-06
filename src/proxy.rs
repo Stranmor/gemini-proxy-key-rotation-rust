@@ -5,14 +5,14 @@ use crate::{
     error::{AppError, Result},
     key_manager::FlattenedKeyInfo,
 };
-use secrecy::ExposeSecret;
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, HeaderValue, Method, header},
+    http::{header, HeaderMap, HeaderValue, Method},
     response::Response,
 };
 use futures_util::TryStreamExt;
 use once_cell::sync::Lazy; // Added for efficient static HashSet
+use secrecy::ExposeSecret;
 use std::collections::HashSet; // Added for HashSet
 use std::error::Error;
 use std::sync::Arc;
@@ -77,27 +77,32 @@ pub async fn forward_request(
     );
 
     let start_time = Instant::now();
-    
+
     // Execute request through circuit breaker if available
     let target_response_result = if let Some(cb) = circuit_breaker {
-        match cb.call(|| async {
-            client
-                .request(method.clone(), target_url.clone())
-                .headers(outgoing_headers.clone())
-                .body(outgoing_reqwest_body)
-                .send()
-                .await
-        }).await {
+        match cb
+            .call(|| async {
+                client
+                    .request(method.clone(), target_url.clone())
+                    .headers(outgoing_headers.clone())
+                    .body(outgoing_reqwest_body)
+                    .send()
+                    .await
+            })
+            .await
+        {
             Ok(response) => Ok(response),
             Err(cb_error) => match cb_error {
                 CircuitBreakerError::CircuitOpen => {
                     warn!(target.url = %target_url, "Circuit breaker is open, failing fast");
-                    Err(AppError::CircuitBreakerOpen { service: target_url.to_string() })
+                    Err(AppError::CircuitBreakerOpen {
+                        service: target_url.to_string(),
+                    })
                 }
                 CircuitBreakerError::OperationFailed(req_error) => {
                     Err(AppError::internal(req_error.to_string()))
                 }
-            }
+            },
         }
     } else {
         client
@@ -108,7 +113,7 @@ pub async fn forward_request(
             .await
             .map_err(|e| AppError::internal(e.to_string()))
     };
-    
+
     let elapsed_time = start_time.elapsed();
 
     // Handle the response from the target, whether success or error
@@ -124,7 +129,9 @@ pub async fn forward_request(
     let axum_response_body =
         if response_status.is_client_error() || response_status.is_server_error() {
             // For 4xx/5xx responses, buffer the body to log it, then forward.
-            let body_bytes: Vec<u8> = read_and_log_error_body(target_response, key_info).await?.to_vec();
+            let body_bytes: Vec<u8> = read_and_log_error_body(target_response, key_info)
+                .await?
+                .to_vec();
             Body::from(body_bytes)
         } else {
             // For success responses, stream the body directly to the client.
@@ -165,7 +172,15 @@ fn handle_target_response(
     target_url: &Url,
     key_info: &FlattenedKeyInfo,
 ) -> Result<reqwest::Response> {
-    let request_key_preview = format!("{}...", key_info.key.expose_secret().chars().take(4).collect::<String>());
+    let request_key_preview = format!(
+        "{}...",
+        key_info
+            .key
+            .expose_secret()
+            .chars()
+            .take(4)
+            .collect::<String>()
+    );
 
     match response_result {
         Ok(resp) => {
@@ -221,7 +236,15 @@ async fn read_and_log_error_body(
 ) -> Result<Bytes> {
     const MAX_ERROR_BODY_SIZE: usize = 64 * 1024; // 64KB limit
     let status = response.status();
-    let request_key_preview = format!("{}...", key_info.key.expose_secret().chars().take(4).collect::<String>());
+    let request_key_preview = format!(
+        "{}...",
+        key_info
+            .key
+            .expose_secret()
+            .chars()
+            .take(4)
+            .collect::<String>()
+    );
 
     let full_body = response.bytes().await.map_err(|e| {
         error!(status = status.as_u16(), error = %e, "Failed to read error response body");
@@ -302,7 +325,7 @@ fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{HeaderName, HeaderValue, header};
+    use axum::http::{header, HeaderName, HeaderValue};
 
     #[test]
     fn test_build_forward_headers_basic() {

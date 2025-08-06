@@ -2,6 +2,12 @@
 # A script to build and run the Rust application using Podman or Docker.
 set -e # Exit immediately if a command exits with a non-zero status.
 
+# Respect .dev.lock to avoid interfering with user's manual work
+if [ -f ".dev.lock" ]; then
+  echo "⛔ Environment is locked by user via .dev.lock. Aborting."
+  exit 2
+fi
+
 # Auto-detect container runtime
 if command -v podman &> /dev/null; then
     CONTAINER_RUNTIME="podman"

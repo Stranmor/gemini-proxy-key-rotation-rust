@@ -1,15 +1,13 @@
 use anyhow::Result;
 use gemini_proxy::{
-    cli::{Cli, Commands, KeyCommands, GenerateCommands},
+    cli::{Cli, Commands, GenerateCommands, KeyCommands},
     error::{context::ErrorContext, AppError},
     run,
 };
 use std::{net::SocketAddr, path::PathBuf, process};
 use tokio::{net::TcpListener, signal};
 use tracing::{error, info};
-use tracing_subscriber::{
-    fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
 /// Initialize structured logging with configurable output format
 fn init_logging(json_logs: bool, log_level: &str, no_color: bool) -> Result<()> {
@@ -28,7 +26,7 @@ fn init_logging(json_logs: bool, log_level: &str, no_color: bool) -> Result<()> 
             .with_thread_ids(true)
             .with_file(true)
             .with_line_number(true);
-        
+
         registry.with(json_layer).init();
     } else {
         let fmt_layer = fmt::layer()
@@ -37,7 +35,7 @@ fn init_logging(json_logs: bool, log_level: &str, no_color: bool) -> Result<()> 
             .with_file(true)
             .with_line_number(true)
             .with_ansi(!no_color);
-        
+
         registry.with(fmt_layer).init();
     }
 
@@ -95,7 +93,10 @@ async fn serve_command(
 
         // Configure tokio runtime if workers specified
         if let Some(worker_count) = workers {
-            info!(workers = worker_count, "Configuring custom worker thread count");
+            info!(
+                workers = worker_count,
+                "Configuring custom worker thread count"
+            );
         }
 
         // Initialize tokenizer if feature is enabled
@@ -104,9 +105,10 @@ async fn serve_command(
             use gemini_proxy::tokenizer::initialize_tokenizer;
             if let Err(e) = initialize_tokenizer("gpt2").await {
                 error!(error = %e, "Failed to initialize tokenizer");
-                return Err(AppError::TokenizerInit { 
-                    message: e.to_string() 
-                }.into());
+                return Err(AppError::TokenizerInit {
+                    message: e.to_string(),
+                }
+                .into());
             }
         }
 
@@ -116,7 +118,7 @@ async fn serve_command(
         // Override port if specified via CLI
         let server_port = port.unwrap_or(config.server.port);
         let addr = SocketAddr::from(([0, 0, 0, 0], server_port));
-        
+
         let listener = TcpListener::bind(addr).await.map_err(|e| {
             error!(
                 address = %addr,
@@ -124,7 +126,7 @@ async fn serve_command(
                 "Failed to bind to address"
             );
             AppError::Internal {
-                message: format!("Failed to bind to {}: {}", addr, e),
+                message: format!("Failed to bind to {addr}: {e}"),
             }
         })?;
 
@@ -141,7 +143,7 @@ async fn serve_command(
             .map_err(|e| {
                 error!(error = %e, "Server error occurred");
                 AppError::Internal {
-                    message: format!("Server error: {}", e),
+                    message: format!("Server error: {e}"),
                 }
             })?;
 
@@ -155,25 +157,23 @@ async fn serve_command(
 /// Validate configuration file
 async fn config_command(file: Option<PathBuf>, verbose: bool) -> Result<()> {
     let config_path = file.unwrap_or_else(|| PathBuf::from("config.yaml"));
-    
+
     info!(path = %config_path.display(), "Validating configuration file");
 
     match gemini_proxy::config::load_config(&config_path) {
         Ok(config) => {
             info!("✅ Configuration is valid");
-            
+
             if verbose {
                 println!("Configuration details:");
                 println!("  Server port: {}", config.server.port);
                 println!("  Groups: {}", config.groups.len());
-                
-                let total_keys: usize = config.groups.iter()
-                    .map(|g| g.api_keys.len())
-                    .sum();
-                println!("  Total API keys: {}", total_keys);
-                
+
+                let total_keys: usize = config.groups.iter().map(|g| g.api_keys.len()).sum();
+                println!("  Total API keys: {total_keys}");
+
                 if let Some(redis_url) = &config.redis_url {
-                    println!("  Redis URL: {}", redis_url);
+                    println!("  Redis URL: {redis_url}");
                 }
             }
         }
@@ -193,9 +193,9 @@ async fn health_command(url: String, detailed: bool, timeout: u64) -> Result<()>
         .build()?;
 
     let endpoint = if detailed {
-        format!("{}/health/detailed", url)
+        format!("{url}/health/detailed")
     } else {
-        format!("{}/health", url)
+        format!("{url}/health")
     };
 
     info!(endpoint = %endpoint, "Performing health check");
@@ -208,7 +208,7 @@ async fn health_command(url: String, detailed: bool, timeout: u64) -> Result<()>
             if status.is_success() {
                 info!(status = %status, "✅ Health check passed");
                 if detailed && !body.is_empty() {
-                    println!("Response: {}", body);
+                    println!("Response: {body}");
                 }
             } else {
                 error!(status = %status, body = %body, "❌ Health check failed");
@@ -227,7 +227,7 @@ async fn health_command(url: String, detailed: bool, timeout: u64) -> Result<()>
 /// Handle key management commands
 async fn keys_command(action: KeyCommands) -> Result<()> {
     match action {
-        KeyCommands::List { verbose } => {
+        KeyCommands::List { verbose: _verbose } => {
             info!("Listing configured API keys");
             // TODO: Implement key listing
             println!("Key listing not yet implemented");
@@ -254,7 +254,11 @@ async fn generate_command(template: GenerateCommands) -> Result<()> {
             // TODO: Implement config generation
             println!("Config generation not yet implemented");
         }
-        GenerateCommands::Systemd { output, binary_path, user } => {
+        GenerateCommands::Systemd {
+            output,
+            binary_path,
+            user,
+        } => {
             info!(
                 path = %output.display(),
                 binary_path = ?binary_path,
@@ -283,38 +287,34 @@ async fn main() -> Result<()> {
 
     // Initialize logging first
     if let Err(e) = init_logging(cli.json_logs, &cli.log_level, cli.no_color) {
-        eprintln!("Failed to initialize logging: {}", e);
+        eprintln!("Failed to initialize logging: {e}");
         process::exit(1);
     }
 
     // Set global error context
     let context = ErrorContext::new("main")
         .with_metadata("version", env!("CARGO_PKG_VERSION"))
-        .with_metadata("args", format!("{:?}", std::env::args().collect::<Vec<_>>()));
+        .with_metadata(
+            "args",
+            format!("{:?}", std::env::args().collect::<Vec<_>>()),
+        );
     gemini_proxy::error::context::set_error_context(context);
 
-    info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "Starting Gemini Proxy"
-    );
+    info!(version = env!("CARGO_PKG_VERSION"), "Starting Gemini Proxy");
 
     // Handle commands
     let result = match cli.command {
         Some(Commands::Serve { dev, workers }) => {
             serve_command(cli.config, cli.host, cli.port, dev, workers).await
         }
-        Some(Commands::Config { file, verbose }) => {
-            config_command(file, verbose).await
-        }
-        Some(Commands::Health { url, detailed, timeout }) => {
-            health_command(url, detailed, timeout).await
-        }
-        Some(Commands::Keys { action }) => {
-            keys_command(action).await
-        }
-        Some(Commands::Generate { template }) => {
-            generate_command(template).await
-        }
+        Some(Commands::Config { file, verbose }) => config_command(file, verbose).await,
+        Some(Commands::Health {
+            url,
+            detailed,
+            timeout,
+        }) => health_command(url, detailed, timeout).await,
+        Some(Commands::Keys { action }) => keys_command(action).await,
+        Some(Commands::Generate { template }) => generate_command(template).await,
         None => {
             // Default to serve command
             serve_command(cli.config, cli.host, cli.port, false, None).await

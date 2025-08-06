@@ -108,14 +108,14 @@ impl KeyManager {
 
         let store: Arc<dyn KeyStore> = match redis_pool {
             Some(pool) => {
-            info!("Redis pool provided. KeyManager will operate in Redis mode.");
-            let redis_store = RedisStore::new(pool, config, &key_info_map).await?;
-            Arc::new(redis_store)
+                info!("Redis pool provided. KeyManager will operate in Redis mode.");
+                let redis_store = RedisStore::new(pool, config, &key_info_map).await?;
+                Arc::new(redis_store)
             }
             None => {
-            info!("No Redis pool provided. KeyManager will operate in in-memory mode.");
-            let in_memory_store = InMemoryStore::new(&key_info_map);
-            Arc::new(in_memory_store)
+                info!("No Redis pool provided. KeyManager will operate in in-memory mode.");
+                let in_memory_store = InMemoryStore::new(&key_info_map);
+                Arc::new(in_memory_store)
             }
         };
 
@@ -211,19 +211,16 @@ impl KeyManager {
                 }
                 Ok(None) => {
                     // If state is missing, assume it's usable
-                self.log_key_selection(key_info, "round_robin", candidate_keys.len());
+                    self.log_key_selection(key_info, "round_robin", candidate_keys.len());
                     return Some(key_info.clone());
-            }
+                }
                 _ => continue,
-        }
+            }
         }
         None
     }
 
-    fn filter_keys_by_group<'a>(
-        &'a self,
-        group_name: Option<&str>,
-    ) -> Vec<&'a FlattenedKeyInfo> {
+    fn filter_keys_by_group<'a>(&'a self, group_name: Option<&str>) -> Vec<&'a FlattenedKeyInfo> {
         self.key_info_map
             .values()
             .filter(|info| group_name.map_or(true, |gn| info.group_name == gn))
@@ -240,7 +237,7 @@ impl KeyManagerTrait for KeyManager {
         group_name: Option<&str>,
     ) -> Result<Option<FlattenedKeyInfo>> {
         trace!("get_next_available_key_info: start");
-        
+
         let all_keys = self.store.get_candidate_keys().await?;
         trace!(
             "get_next_available_key_info: got {} candidate keys from store",
@@ -398,7 +395,7 @@ impl RedisStore {
             let state_keys: Vec<_> = all_keys
                 .iter()
                 .map(|k| format!("{key_prefix}{}", key_state_key(k)))
-            .collect();
+                .collect();
             let _: () = conn.del(state_keys).await?;
         }
         let _: () = conn.del(rotation_set_key).await?;
@@ -409,10 +406,10 @@ impl RedisStore {
             let counters: Vec<String> = conn.keys(&counter_pattern).await?;
             if !counters.is_empty() {
                 let _: () = conn.del(counters).await?;
-    }
+            }
         } else {
             warn!("Skipping KEYS command cleanup in production environment for safety");
-}
+        }
         info!("Cleared stale KeyManager keys from Redis for test isolation.");
         Ok(())
     }
@@ -508,7 +505,7 @@ impl KeyStore for RedisStore {
             consecutive_failures: new_failure_count,
             last_failure: Some(chrono::Utc::now()),
         })
-            }
+    }
     async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>> {
         trace!("RedisStore::get_key_state: start for key '{}'", key);
         let mut conn = self.get_connection().await?;
@@ -519,7 +516,7 @@ impl KeyStore for RedisStore {
 
         if redis_state.is_empty() {
             return Ok(None);
-    }
+        }
 
         let state = self.parse_key_state(key, redis_state);
         Ok(Some(state))
@@ -531,8 +528,8 @@ impl KeyStore for RedisStore {
         for key in &keys {
             if let Ok(Some(state)) = self.get_key_state(key).await {
                 states.insert(key.to_string(), state);
-    }
-}
+            }
+        }
         Ok(states)
     }
 }
@@ -603,7 +600,7 @@ impl KeyStore for InMemoryStore {
         }
         Err(AppError::Validation {
             field: "api_key".to_string(),
-            message: format!("API Key '{}' not found in in-memory store.", api_key),
+            message: format!("API Key '{api_key}' not found in in-memory store."),
         })
     }
 

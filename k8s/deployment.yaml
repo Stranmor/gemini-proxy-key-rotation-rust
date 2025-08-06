@@ -22,15 +22,17 @@ spec:
         version: v1
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
+        prometheus.io/port: "4806"
         prometheus.io/path: "/metrics"
     spec:
       containers:
       - name: gemini-proxy
         image: gemini-proxy:latest
         imagePullPolicy: IfNotPresent
+        command: ["/app/gemini-proxy"]
+        args: ["--config", "/app/config.yaml"]
         ports:
-        - containerPort: 8080
+        - containerPort: 4806
           name: http
           protocol: TCP
         env:
@@ -38,6 +40,16 @@ spec:
           value: "info"
         - name: RUST_BACKTRACE
           value: "1"
+        - name: PORT
+          value: "4806"
+        - name: XDG_CACHE_HOME
+          value: "/app/runtime-cache"
+        - name: HF_HOME
+          value: "/app/runtime-cache/HF_CACHE"
+        - name: HUGGINGFACE_HUB_CACHE
+          value: "/app/runtime-cache/HF_CACHE"
+        - name: REDIS_URL
+          value: "redis://redis:6379/0"
         - name: GEMINI_PROXY_GROUP_DEFAULT_API_KEYS
           valueFrom:
             secretKeyRef:
@@ -53,7 +65,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 4806
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
@@ -61,7 +73,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 4806
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 3
@@ -71,6 +83,8 @@ spec:
           mountPath: /app/config.yaml
           subPath: config.yaml
           readOnly: true
+        - name: runtime-cache
+          mountPath: /app/runtime-cache
         - name: key-states
           mountPath: /app/key_states.json
           subPath: key_states.json
@@ -78,6 +92,8 @@ spec:
       - name: config
         configMap:
           name: gemini-proxy-config
+      - name: runtime-cache
+        emptyDir: {}
       - name: key-states
         persistentVolumeClaim:
           claimName: gemini-proxy-state
@@ -96,7 +112,7 @@ spec:
   type: ClusterIP
   ports:
   - port: 80
-    targetPort: 8080
+    targetPort: 4806
     protocol: TCP
     name: http
   selector:
@@ -110,7 +126,7 @@ data:
   config.yaml: |
     server:
       host: "0.0.0.0"
-      port: 8080
+      port: 4806
     groups: []
 ---
 apiVersion: v1

@@ -39,10 +39,10 @@ Where:
 
 ```bash
 # Check key health via API
-curl http://localhost:8081/admin/api/keys/health
+curl http://localhost:4806/admin/api/keys/health
 
 # View in admin dashboard
-open http://localhost:8081/admin/
+open http://localhost:4806/admin/
 ```
 
 ## 🚨 Automated Alerts
@@ -100,7 +100,7 @@ monitoring:
 
 2. **Access dashboard**:
    ```
-   http://localhost:8081/admin/
+   http://localhost:4806/admin/
    ```
 
 ### Dashboard Features
@@ -141,7 +141,7 @@ monitoring:
 The proxy exports Prometheus-compatible metrics at `/metrics`:
 
 ```bash
-curl http://localhost:8081/metrics
+curl http://localhost:4806/metrics
 ```
 
 #### Key Metrics
@@ -292,14 +292,14 @@ spec:
     livenessProbe:
       httpGet:
         path: /health
-        port: 8081
+        port: 4806
       initialDelaySeconds: 30
       periodSeconds: 10
       
     readinessProbe:
       httpGet:
         path: /health/detailed
-        port: 8081
+        port: 4806
       initialDelaySeconds: 5
       periodSeconds: 5
 ```
@@ -328,7 +328,7 @@ server:
 ```bash
 # Health check script
 #!/bin/bash
-HEALTH=$(curl -s http://localhost:8081/health/detailed | jq -r '.healthy')
+HEALTH=$(curl -s http://localhost:4806/health/detailed | jq -r '.healthy')
 if [ "$HEALTH" != "true" ]; then
   echo "ALERT: Gemini Proxy unhealthy" | mail -s "Proxy Alert" admin@company.com
 fi
@@ -354,7 +354,7 @@ grep '"key_preview"' /var/log/gemini-proxy/app.log | jq -r '.key_preview' | sort
 docker stats gemini-proxy
 
 # Check connection counts
-ss -tuln | grep :8081
+ss -tuln | grep :4806
 
 # Monitor Redis if used
 redis-cli info stats

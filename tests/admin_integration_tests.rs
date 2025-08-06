@@ -62,21 +62,18 @@ impl TestApp {
             .await
             .expect("Failed to create app state");
         let state: Arc<AppState> = Arc::new(state_instance);
-        
+
         // Start background worker for config updates (like in main app)
         let state_for_worker = state.clone();
         tokio::spawn(async move {
-            loop {
-                match config_update_rx.recv().await {
-                    Ok(new_config) => {
-                        if let Err(e) = gemini_proxy::admin::reload_state_from_config(
-                            state_for_worker.clone(), 
-                            new_config
-                        ).await {
-                            eprintln!("Failed to reload state in test worker: {:?}", e);
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(new_config) = config_update_rx.recv().await {
+                if let Err(e) = gemini_proxy::admin::reload_state_from_config(
+                    state_for_worker.clone(),
+                    new_config,
+                )
+                .await
+                {
+                    eprintln!("Failed to reload state in test worker: {e:?}");
                 }
             }
         });
@@ -177,7 +174,7 @@ impl TestApp {
         if matches!(method, Method::POST | Method::PUT | Method::DELETE) {
             let csrf_cookie = self.csrf_cookie.as_ref().expect("CSRF cookie not set");
             let csrf_token = self.csrf_token.as_ref().expect("CSRF token not set");
-            
+
             request_builder = request_builder
                 .header(header::COOKIE, csrf_cookie)
                 .header("x-csrf-token", csrf_token);
@@ -281,12 +278,12 @@ async fn test_add_key_with_model_specific_rules() {
         .await;
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let config: AppConfig = serde_json::from_slice(&body).unwrap();
-    let group = config
-        .groups
+    let group = config.groups.iter().find(|g| g.name == "default").unwrap();
+    let key = group
+        .api_keys
         .iter()
-        .find(|g| g.name == "default")
+        .find(|k| **k == "new-key-with-rules")
         .unwrap();
-    let key = group.api_keys.iter().find(|k| **k == "new-key-with-rules").unwrap();
     assert_eq!(*key, "new-key-with-rules");
 }
 
@@ -346,7 +343,9 @@ async fn test_update_config() {
     let mut config: AppConfig = serde_json::from_slice(&body).unwrap();
 
     // Add a new key to the config
-    config.groups[0].api_keys.push("new_key_in_updated_config".to_string());
+    config.groups[0]
+        .api_keys
+        .push("new_key_in_updated_config".to_string());
 
     let body = Body::from(serde_json::to_string(&config).unwrap());
     let response = app.authed_request(Method::PUT, "/config", body).await;

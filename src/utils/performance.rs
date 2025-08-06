@@ -19,17 +19,17 @@ impl PerformanceMonitor {
             warn_threshold: None,
         }
     }
-    
+
     /// Set a warning threshold - operations taking longer will be logged as warnings
     pub fn with_warn_threshold(mut self, threshold: Duration) -> Self {
         self.warn_threshold = Some(threshold);
         self
     }
-    
+
     /// Finish monitoring and log the duration
     pub fn finish(self) {
         let duration = self.start_time.elapsed();
-        
+
         match self.warn_threshold {
             Some(threshold) if duration > threshold => {
                 warn!(
@@ -48,7 +48,7 @@ impl PerformanceMonitor {
             }
         }
     }
-    
+
     /// Get the elapsed time without finishing the monitor
     pub fn elapsed(&self) -> Duration {
         self.start_time.elapsed()

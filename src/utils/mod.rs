@@ -1,7 +1,7 @@
 // src/utils/mod.rs
 
-pub mod performance;
 pub mod crypto;
+pub mod performance;
 
-pub use performance::PerformanceMonitor;
 pub use crypto::SecureString;
+pub use performance::PerformanceMonitor;

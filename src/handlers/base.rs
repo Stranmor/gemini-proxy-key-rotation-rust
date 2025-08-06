@@ -11,6 +11,8 @@ pub enum Action {
     BlockKeyAndRetry,
     /// The response is final and should be returned to the client immediately.
     ReturnToClient(Response),
+    /// Terminal (non-retryable) response that should be returned to the client as-is.
+    Terminal(Response),
 }
 
 /// A trait for handling responses from the upstream service.

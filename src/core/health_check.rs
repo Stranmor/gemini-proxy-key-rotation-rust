@@ -13,11 +13,11 @@ impl HealthChecker {
             start_time: Instant::now(),
         }
     }
-    
+
     pub fn uptime(&self) -> Duration {
         self.start_time.elapsed()
     }
-    
+
     pub fn is_healthy(&self) -> bool {
         // Basic health check - can be extended with more sophisticated checks
         true
