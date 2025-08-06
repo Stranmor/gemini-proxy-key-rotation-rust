@@ -1,77 +1,268 @@
-# Quick Start Guide
+# 🚀 Quick Start Guide
 
-Get the Gemini Proxy up and running in 5 minutes.
+Get Gemini Proxy Key Rotation running in under 5 minutes!
 
-## Prerequisites
+## 📋 Prerequisites
 
-- Docker or Podman installed
-- Google Gemini API keys ([Get them here](https://aistudio.google.com/app/apikey))
+- **Google Gemini API Keys**: Get them from [Google AI Studio](https://aistudio.google.com/app/apikey)
+- **System**: Linux, macOS, or Windows with WSL2
+- **Internet Connection**: For downloading dependencies
 
-## 1. Clone and Setup
+## ⚡ 1-Minute Setup
+
+### Option A: Automated Installer (Recommended)
 
 ```bash
+# Download and run the installer
+curl -fsSL https://raw.githubusercontent.com/stranmor/gemini-proxy-key-rotation-rust/main/install.sh | bash
+
+# Follow the prompts - the installer will:
+# ✅ Install Rust and Docker (if needed)
+# ✅ Clone the repository  
+# ✅ Build the application
+# ✅ Set up configuration files
+# ✅ Run tests to verify installation
+```
+
+### Option B: Manual Setup
+
+```bash
+# Clone the repository
 git clone https://github.com/stranmor/gemini-proxy-key-rotation-rust.git
 cd gemini-proxy-key-rotation-rust
+
+# Quick setup
+make quick-start
 ```
 
-## 2. Configure
+## 🔑 Configure Your API Keys
 
+1. **Edit the configuration file**:
+   ```bash
+   nano config.yaml
+   ```
+
+2. **Add your Gemini API keys**:
+   ```yaml
+   groups:
+     - name: "Primary"
+       api_keys:
+         - "your-gemini-api-key-1"
+         - "your-gemini-api-key-2"
+         - "your-gemini-api-key-3"
+       target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+   ```
+
+3. **Set up admin access** (optional):
+   ```yaml
+   server:
+     admin_token: "your-secure-admin-token"  # Generate with: openssl rand -hex 32
+   ```
+
+## 🚀 Start the Proxy
+
+Choose your preferred method:
+
+### Docker (Recommended for Production)
 ```bash
-# Copy example config
-cp config.yaml.example config.yaml
+make docker-run
 
-# Edit config.yaml and add your API keys
-nano config.yaml  # or use your preferred editor
+# Services will start:
+# 🔗 Proxy: http://localhost:8081
+# 🗄️ Redis: localhost:6379
+# 📊 Admin: http://localhost:8081/admin/
 ```
 
-**Minimum required changes in `config.yaml`:**
-- Replace `YOUR_API_KEY_1_HERE` with your actual Gemini API keys
-- Set a strong `admin_token` if you want to use the admin panel
-
-## 3. Run
-
+### Direct Binary (Development)
 ```bash
-# Using the provided script (recommended)
-./run.sh
+make run
 
-# Or using Docker directly
-docker build -t gemini-proxy .
-docker run -d --name gemini-proxy -p 8080:8080 -v $(pwd)/config.yaml:/app/config.yaml:ro gemini-proxy
+# Proxy starts at: http://localhost:8081
 ```
 
-## 4. Test
-
+### Systemd Service (Linux Production)
 ```bash
-# Health check
-curl http://localhost:8080/health
-
-# Test with OpenAI-compatible request
-curl http://localhost:8080/v1/models \
-  -H "Authorization: Bearer dummy-key"
+sudo systemctl start gemini-proxy
+sudo systemctl status gemini-proxy
 ```
 
-## 5. Use with OpenAI Clients
+## ✅ Verify Installation
 
-Configure your OpenAI client:
-- **Base URL**: `http://localhost:8080`
-- **API Key**: Any non-empty string (e.g., "dummy")
+1. **Check health**:
+   ```bash
+   curl http://localhost:8081/health
+   # Expected: HTTP 200 OK
+   ```
 
-## Admin Panel (Optional)
+2. **Test with detailed health check**:
+   ```bash
+   curl http://localhost:8081/health/detailed
+   # Expected: JSON response with key validation
+   ```
 
-If you set `admin_token` in config.yaml:
-1. Visit `http://localhost:8080/admin/`
-2. Login with your admin token
-3. Manage keys, view status, monitor health
+3. **View admin dashboard** (if configured):
+   ```bash
+   open http://localhost:8081/admin/
+   ```
 
-## Next Steps
+## 🔌 Connect Your Application
 
-- Read the full [README.md](README.md) for advanced configuration
-- Check [SECURITY.md](SECURITY.md) for security best practices
-- See [CONTRIBUTING.md](CONTRIBUTING.md) if you want to contribute
+### Python (OpenAI Library)
+```python
+import openai
 
-## Troubleshooting
+client = openai.OpenAI(
+    base_url="http://localhost:8081",
+    api_key="dummy-key"  # Ignored, real keys managed by proxy
+)
 
-- **Port already in use**: Change `port` in `config.yaml`
-- **Connection refused**: Check if Docker container is running with `docker ps`
-- **API errors**: Verify your Gemini API keys are valid
-- **Logs**: View with `docker logs gemini-proxy-container`
+response = client.chat.completions.create(
+    model="gemini-1.5-flash-latest",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+```
+
+### Node.js
+```javascript
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  baseURL: 'http://localhost:8081',
+  apiKey: 'dummy-key', // Ignored, real keys managed by proxy
+});
+
+const response = await openai.chat.completions.create({
+  model: 'gemini-1.5-flash-latest',
+  messages: [{ role: 'user', content: 'Hello!' }],
+});
+
+console.log(response.choices[0].message.content);
+```
+
+### cURL
+```bash
+curl http://localhost:8081/v1/chat/completions \
+  -H "Authorization: Bearer dummy-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-1.5-flash-latest",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+## 📊 Monitor Your Proxy
+
+### Command Line
+```bash
+# View status
+make status
+
+# View logs
+make logs
+
+# Check health
+make health
+```
+
+### Web Dashboard
+Visit `http://localhost:8081/admin/` to see:
+- 📈 Real-time key health scores
+- 📊 Request success rates and response times
+- 🔧 Key management and configuration
+- 🚨 Alert history and system status
+
+## 🔧 Common Operations
+
+### Update Configuration
+```bash
+# Edit config
+nano config.yaml
+
+# Apply changes (Docker)
+make docker-restart
+
+# Apply changes (Direct)
+# Restart the process (Ctrl+C and make run)
+```
+
+### View Logs
+```bash
+# Docker logs
+make docker-logs
+
+# Systemd logs (Linux)
+sudo journalctl -u gemini-proxy -f
+
+# Direct binary logs
+# Logs appear in terminal where you ran 'make run'
+```
+
+### Stop Services
+```bash
+# Docker
+make docker-stop
+
+# Systemd
+sudo systemctl stop gemini-proxy
+
+# Direct binary
+# Press Ctrl+C in the terminal
+```
+
+## 🆘 Troubleshooting
+
+### Proxy Won't Start
+1. **Check configuration**:
+   ```bash
+   # Validate YAML syntax
+   python -c "import yaml; yaml.safe_load(open('config.yaml'))"
+   ```
+
+2. **Check port availability**:
+   ```bash
+   # See if port 8081 is in use
+   lsof -i :8081
+   ```
+
+3. **Check logs**:
+   ```bash
+   make logs
+   ```
+
+### API Keys Not Working
+1. **Verify keys in Google AI Studio**
+2. **Check key format** (should start with `AIza...`)
+3. **Test key directly**:
+   ```bash
+   curl "https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_API_KEY"
+   ```
+
+### High Error Rates
+1. **Check admin dashboard** for key health scores
+2. **Verify quota limits** in Google AI Studio
+3. **Check upstream connectivity**:
+   ```bash
+   curl https://generativelanguage.googleapis.com/v1beta/models
+   ```
+
+## 🎯 Next Steps
+
+- **Production Deployment**: See [README.md](README.md#-security--production-deployment)
+- **Security Hardening**: Read [SECURITY.md](SECURITY.md)
+- **Advanced Configuration**: Check [README.md](README.md#️-configuration)
+- **Monitoring Setup**: See [MONITORING.md](MONITORING.md)
+
+## 💡 Tips
+
+- **Start with 2-3 API keys** for basic redundancy
+- **Monitor key health scores** in the admin dashboard
+- **Set up Redis** for production deployments
+- **Use HTTPS** in production environments
+- **Backup your configuration** regularly
+
+---
+
+**🎉 You're all set! Your Gemini Proxy is now running and ready to handle requests.**
+
+Need help? Check the [main documentation](README.md) or [open an issue](https://github.com/stranmor/gemini-proxy-key-rotation-rust/issues).

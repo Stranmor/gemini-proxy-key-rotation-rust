@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  gemini-proxy:
+    build: .
+    container_name: gemini-proxy
+    ports:
+      - "${PROXY_PORT:-8081}:8081"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./logs:/app/logs
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+    restart: unless-stopped
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - gemini-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: gemini-proxy-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - gemini-network
+
+  # Optional: Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: gemini-proxy-redis-ui
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles:
+      - tools
+    networks:
+      - gemini-network
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  gemini-network:
+    driver: bridge

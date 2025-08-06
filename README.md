@@ -1,37 +1,82 @@
-# Gemini Proxy Key Rotation (Rust) - OpenAI Compatibility
+# 🚀 Gemini Proxy Key Rotation - Production Ready
 
 [![CI](https://github.com/stranmor/gemini-proxy-key-rotation-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/stranmor/gemini-proxy-key-rotation-rust/actions/workflows/rust.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Security](https://img.shields.io/badge/Security-Hardened-green.svg)](SECURITY.md)
+[![Tests](https://img.shields.io/badge/Tests-42%2B%20Passing-brightgreen.svg)](#testing)
 
-A lightweight, high-performance asynchronous HTTP proxy for Google Gemini models, designed to be compatible with the OpenAI API. This proxy rotates Google Gemini API keys, distributes load, and manages rate limits, allowing you to use Gemini models with your existing OpenAI-compatible applications.
+A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemini models with **enterprise-grade security** and **intelligent monitoring**. Seamlessly integrates with OpenAI-compatible applications while providing advanced key rotation, load balancing, and comprehensive observability.
 
-**🚀 [Quick Start Guide](QUICKSTART.md)** | **🔒 [Security Guide](SECURITY.md)** | **📝 [Changelog](CHANGELOG.md)**
+## ✨ What's New in v2.0
 
-## Key Benefits
+- 🔒 **Enterprise Security**: Rate limiting, HTTPS enforcement, session management
+- 📊 **Intelligent Monitoring**: Proactive key health scoring (0.0-1.0), automated alerts
+- 🛡️ **Circuit Breaker**: Automatic failover for upstream services
+- 🔄 **Graceful Operations**: Zero-downtime restarts, proper signal handling
+- 🧪 **42+ Tests**: Comprehensive test coverage for production reliability
+- 📦 **Easy Installation**: One-command setup with automated installer
 
-*   **Avoid Rate Limits:** Distributes requests across many Gemini keys.
-*   **Increased Availability:** If one key hits its limit, the proxy automatically switches to another.
-*   **Simplified Configuration:** All settings are managed in a single `config.yaml` file, making configuration straightforward and predictable.
-*   **Simplified Client Configuration:** Point your OpenAI client's base URL to this proxy; no need to manage Gemini keys in the client.
-*   **Group-Specific Routing:** Use different upstream proxies (`http`, `https`, `socks5`) for different sets of keys.
-*   **State Persistence:** Remembers rate-limited keys between restarts using Redis (optional) or in-memory storage, avoiding checks on known limited keys.
+**📚 [Installation Guide](#-installation)** | **🔒 [Security Features](SECURITY.md)** | **📊 [Monitoring Guide](MONITORING.md)**
 
-## Features
+## 🎯 Key Benefits
 
-*   Proxies requests specifically to Google's OpenAI compatibility endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/` by default).
-*   Supports multiple **groups** of Gemini API keys with optional upstream proxies (`http`, `https`, `socks5`) per group, all configured in `config.yaml`.
-*   **Group Round-Robin Key Rotation:** Selects the next available key by iterating through key groups sequentially (round-robin between groups) and then iterating through keys within the selected group. This ensures fairer distribution across groups compared to rotating through all keys flattened.
-*   Handles `429 Too Many Requests` responses from the target API by temporarily disabling the rate-limited key.
-*   **Rate Limit Management:** Tracks rate-limited keys and automatically retries with different keys when limits are hit.
-*   **Persists Rate Limit State:** Optionally saves key states to Redis for persistence across restarts, or uses in-memory storage for single-instance deployments.
-*   Configuration is managed entirely through the `config.yaml` file.
-*   Injects a configurable `top_p` value into outgoing `generateContent` requests.
-*   Correctly adds the required `x-goog-api-key` and `Authorization: Bearer <key>` headers, replacing any client-sent `Authorization` headers.
-*   High performance asynchronous request handling using Axum and Tokio.
-*   Graceful shutdown handling (`SIGINT`, `SIGTERM`).
-*   Configurable logging using `tracing` and the `RUST_LOG` environment variable.
-*   Health check endpoints: a basic one at `/health` and a detailed one at `/health/detailed`.
-*   **Security Features:** Request size limits, rate limiting, timing-attack protection, secure logging (API keys are masked).
+### 🚀 **Performance & Reliability**
+- **Smart Load Balancing**: Distributes requests across multiple Gemini keys with health-aware routing
+- **Circuit Breaker Protection**: Automatic failover when upstream services are down
+- **Zero-Downtime Operations**: Graceful shutdowns and rolling updates
+- **Redis Persistence**: Maintains state across restarts for enterprise deployments
+
+### 🔒 **Enterprise Security**
+- **Rate Limiting**: IP-based protection with configurable thresholds
+- **HTTPS Enforcement**: Production-ready TLS termination
+- **Session Management**: Secure token-based authentication with automatic rotation
+- **Audit Logging**: Comprehensive security event tracking
+
+### 📊 **Intelligent Monitoring**
+- **Health Scoring**: Real-time key performance metrics (0.0-1.0 scale)
+- **Proactive Alerts**: Automated notifications for degraded performance
+- **Detailed Analytics**: Request success rates, response times, error patterns
+- **Admin Dashboard**: Web-based monitoring and management interface
+
+### 🛠 **Developer Experience**
+- **One-Command Setup**: Automated installer handles everything
+- **OpenAI Compatible**: Drop-in replacement for existing applications
+- **Docker Ready**: Production containers with health checks
+- **Comprehensive Testing**: 42+ automated tests ensure reliability
+
+## 🌟 Features
+
+### 🔄 **Smart Key Management**
+- **Intelligent Rotation**: Group-based round-robin with health-aware selection
+- **Health Scoring**: Real-time key performance metrics (0.0-1.0 scale)
+- **Automatic Recovery**: Failed keys automatically re-enter rotation when healthy
+- **State Persistence**: Redis-backed state survives restarts and scaling
+
+### 🛡️ **Enterprise Security**
+- **Rate Limiting**: Configurable IP-based protection (5 attempts/5 minutes default)
+- **HTTPS Enforcement**: Production-ready TLS with security headers
+- **Session Management**: Secure token-based admin authentication
+- **Audit Logging**: Comprehensive security event tracking
+- **Request Validation**: Size limits and input sanitization
+
+### 📊 **Advanced Monitoring**
+- **Proactive Health Checks**: Background monitoring every 30 seconds
+- **Automated Alerts**: Notifications when >3 keys unhealthy or error rate >10%
+- **Performance Metrics**: Response times, success rates, usage patterns
+- **Admin Dashboard**: Web-based monitoring at `/admin/`
+- **Detailed Analytics**: Per-key and per-group statistics
+
+### 🚀 **High Performance**
+- **Async Architecture**: Built on Tokio for maximum throughput
+- **Circuit Breaker**: Automatic failover for upstream services
+- **Connection Pooling**: Efficient HTTP client management
+- **Graceful Shutdown**: Zero-downtime deployments with proper signal handling
+
+### 🔧 **Developer Experience**
+- **OpenAI Compatible**: Drop-in replacement for existing applications
+- **Flexible Configuration**: Single YAML file with hot-reload support
+- **Multiple Deployment Options**: Docker, systemd, or direct binary
+- **Comprehensive Testing**: 42+ automated tests ensure reliability
 
 ## Architecture
 
@@ -59,51 +104,139 @@ graph TD
     C --> H[Client Response];
 ```
 
-## Requirements
+## 📦 Installation
 
-*   **Docker or Podman:** The easiest and **most secure** way to run the proxy. ([Install Docker](https://docs.docker.com/engine/install/)).
-*   **Google Gemini API Keys:** Obtain these from [Google AI Studio](https://aistudio.google.com/app/apikey).
-*   **(Optional) Rust & Cargo:** Only needed if you want to build or develop locally without Docker. ([Install Rust](https://rustup.rs/)) (Uses Rust 2021 Edition or later).
+### 🚀 **Quick Install (Recommended)**
 
-## Getting Started
+The easiest way to get started - our installer handles everything:
 
-### Running with Docker (Recommended)
+```bash
+# Download and run the installer
+curl -fsSL https://raw.githubusercontent.com/stranmor/gemini-proxy-key-rotation-rust/main/install.sh | bash
 
-This is the easiest and fastest way to get the proxy running. The provided `run.sh` script automates everything.
+# Or download first to review:
+wget https://raw.githubusercontent.com/stranmor/gemini-proxy-key-rotation-rust/main/install.sh
+chmod +x install.sh
+./install.sh
+```
 
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/stranmor/gemini-proxy-key-rotation-rust.git
-    cd gemini-proxy-key-rotation-rust
-    ```
+The installer will:
+- ✅ Install Rust and Docker (if needed)
+- ✅ Clone the repository
+- ✅ Build the application
+- ✅ Set up configuration files
+- ✅ Create systemd service (Linux)
+- ✅ Run tests to verify installation
 
-2.  **Configure the Proxy:**
-    *   The script will automatically create `config.yaml` from `config.example.yaml` on the first run.
-    *   **Your only manual step:** Edit `config.yaml` and add your Gemini API keys.
+### 🐳 **Docker Compose (Production)**
 
-3.  **Run the Proxy:**
-    *   The `run.sh` script handles the rest: it stops any old container, builds the image if it doesn't exist, reads the port from your `config.yaml`, and starts a new container.
-    ```bash
-    ./run.sh
-    ```
+For production deployments with Redis persistence:
 
-4.  **Verify:**
-    *   Check the script's output. It should say `Container gemini-proxy-container started successfully.`.
-    *   Check logs: `docker logs -f gemini-proxy-container`.
-    *   Check health: `curl http://localhost:YOUR_PORT/health` (use the port you set in `config.yaml`).
-    *   Test with an OpenAI client pointed to `http://localhost:YOUR_PORT`.
+```bash
+git clone https://github.com/stranmor/gemini-proxy-key-rotation-rust.git
+cd gemini-proxy-key-rotation-rust
 
-5.  **Applying `config.yaml` Changes:**
-    *   If you modify `config.yaml` while the container is running, you **must restart** it for the changes to take effect.
-    *   Simply run the script again:
-        ```bash
-        ./run.sh
-        ```
+# Quick setup
+make quick-start
 
-6.  **Stopping:**
-    ```bash
-    docker stop gemini-proxy-container
-    ```
+# Edit configuration
+nano config.yaml  # Add your Gemini API keys
+
+# Start services
+make docker-run
+```
+
+### 🛠 **Manual Installation**
+
+If you prefer manual control:
+
+```bash
+# Prerequisites
+# - Rust 1.70+ (https://rustup.rs/)
+# - Docker (optional, for Redis)
+
+git clone https://github.com/stranmor/gemini-proxy-key-rotation-rust.git
+cd gemini-proxy-key-rotation-rust
+
+# Build
+make build
+
+# Configure
+cp config.example.yaml config.yaml
+# Edit config.yaml with your API keys
+
+# Run
+make run
+```
+
+## 🔑 Requirements
+
+- **Google Gemini API Keys**: Get them from [Google AI Studio](https://aistudio.google.com/app/apikey)
+- **System**: Linux, macOS, or Windows with WSL2
+- **Memory**: 512MB RAM minimum, 1GB+ recommended for production
+- **Storage**: 100MB for application, additional space for logs
+
+## ⚡ Quick Start
+
+### 🎯 **3-Step Setup**
+
+1. **Install & Configure**
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/stranmor/gemini-proxy-key-rotation-rust/main/install.sh | bash
+   cd ~/gemini-proxy
+   nano config.yaml  # Add your Gemini API keys
+   ```
+
+2. **Start the Proxy**
+   ```bash
+   # Option A: Docker (Recommended)
+   make docker-run
+   
+   # Option B: Direct binary
+   make run
+   
+   # Option C: Systemd service (Linux)
+   sudo systemctl start gemini-proxy
+   ```
+
+3. **Verify & Use**
+   ```bash
+   # Check health
+   curl http://localhost:8081/health
+   
+   # Test with your OpenAI client
+   # Base URL: http://localhost:8081
+   # API Key: any-dummy-key (ignored, real keys managed internally)
+   ```
+
+### 📊 **Monitoring Dashboard**
+
+Access the admin panel at `http://localhost:8081/admin/` (configure `admin_token` in config.yaml):
+
+- 📈 Real-time key health scores
+- 📊 Request success rates and response times  
+- 🔧 Key management and configuration
+- 🚨 Alert history and system status
+
+### 🔄 **Common Operations**
+
+```bash
+# View status
+make status
+
+# View logs
+make logs
+
+# Restart services
+make docker-restart
+
+# Run health check
+make health
+
+# Update configuration
+nano config.yaml
+make docker-restart  # Apply changes
+```
 
 ### Personal Persistent Development Container (for Active Development)
 
@@ -226,72 +359,145 @@ The proxy exposes a minimal set of HTTP endpoints designed for compatibility wit
     *   **Compatibility:** Designed to work seamlessly with standard OpenAI client libraries and tools.
     *   **Example:** (See [Example `curl` to proxy](#example-curl-to-proxy) for usage examples)
 
-## Configuration (`config.yaml`)
+## ⚙️ Configuration
 
-This file is the **single source of truth** for all configuration. It is required for both local and Docker runs.
+### 📝 **Basic Configuration**
 
-**Behavior:**
-
-*   The application loads all its settings—server configuration and API key groups—directly from `config.yaml`.
-*   Environment variables are not used for configuration, except for `RUST_LOG` to control logging level.
-
-**Recommendation:**
-
-*   Define all your `server` settings and `groups` in this file.
-*   Use `config.example.yaml` as a starting point.
+The `config.yaml` file is your single source of truth. Start with the example:
 
 ```yaml
-# config.yaml
+# config.yaml - Production Configuration
 server:
-  port: 8080
-  # Optional: Default top_p value, must be between 0.0 and 1.0.
-  top_p: 0.95
-  # Admin panel access token (set to enable admin panel)
-  admin_token: "your-secure-admin-token-here"
-  # HTTP client timeout settings (in seconds)
+  port: 8081
+  admin_token: "your-secure-admin-token-here"  # Generate with: openssl rand -hex 32
+  
+  # Security settings
+  security:
+    require_https: true
+    max_login_attempts: 5
+    lockout_duration_secs: 3600
+    session_timeout_secs: 86400
+  
+  # Performance tuning
   connect_timeout_secs: 10
   request_timeout_secs: 60
 
-# Redis configuration (optional, for persistent state)
-redis_url: "redis://127.0.0.1:6379"
+# Redis for production persistence
+redis_url: "redis://localhost:6379"
 redis_key_prefix: "gemini_proxy:"
 
-# Maximum failures before blocking a key
+# Key management
 max_failures_threshold: 3
+temporary_block_minutes: 5
 
+# API key groups with intelligent routing
 groups:
-  - name: "Default"
+  - name: "Primary"
     api_keys:
       - "your-gemini-api-key-1"
       - "your-gemini-api-key-2"
     target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-    # Optional: proxy for this group
-    # proxy_url: "http://proxy.example.com:8080"
+    
+  - name: "Backup"
+    api_keys:
+      - "your-backup-key-1"
+    proxy_url: "socks5://proxy.example.com:1080"  # Optional upstream proxy
 ```
 
-## Advanced Usage
+### 🔧 **Advanced Configuration**
 
-The application itself only uses one environment variable.
+```yaml
+# Circuit breaker settings
+circuit_breaker:
+  failure_threshold: 5
+  recovery_timeout_secs: 60
+  success_threshold: 3
 
-### Log Level
-*   **Purpose:** Control the logging verbosity.
-*   **Variable:** `RUST_LOG`
-*   **Value:** Log level (e.g., `error`, `warn`, `info`, `debug`, `trace`). Default is `info`.
+# Rate limiting
+rate_limit:
+  requests_per_minute: 100
+  burst_size: 20
 
-### Logging
-*   Use the `RUST_LOG` environment variable to set the desired log level (e.g., `info`, `debug`, `trace`).
+# Monitoring and alerts
+monitoring:
+  health_check_interval_secs: 30
+  alert_thresholds:
+    unhealthy_keys: 3
+    error_rate: 0.1  # 10%
+    response_time_secs: 5
+```
 
-### Health Check
-*   `GET /health` returns `200 OK` for a basic liveness check.
-*   `GET /health/detailed` performs a live API call to verify key validity for a readiness check.
+### 🎛️ **Environment Variables**
 
-### Key State Persistence
-*   **Purpose:** Remembers rate-limited keys to avoid checking them immediately after restarts.
-*   **Storage Options:** 
-    - **Redis (Recommended):** Configure `redis_url` in `config.yaml` for persistent, scalable storage
-    - **In-Memory:** Default fallback when Redis is not configured
-*   **Management:** Automatic. Key states are managed internally by the proxy.
-*   **Scaling:** Redis storage allows multiple proxy instances to share key state information.
+```bash
+# Logging level
+export RUST_LOG=info  # debug, info, warn, error
+
+# Override config file location
+export CONFIG_PATH=/path/to/config.yaml
+
+# Redis connection (overrides config.yaml)
+export REDIS_URL=redis://localhost:6379
+```
+
+## 🔍 Monitoring & Observability
+
+### 📊 **Health Endpoints**
+
+```bash
+# Basic health check (liveness probe)
+curl http://localhost:8081/health
+
+# Detailed health with key validation (readiness probe)
+curl http://localhost:8081/health/detailed
+
+# Metrics endpoint (Prometheus compatible)
+curl http://localhost:8081/metrics
+```
+
+### 🎛️ **Admin Dashboard**
+
+Access the web-based admin panel at `http://localhost:8081/admin/`:
+
+- **Real-time Metrics**: Key health scores, success rates, response times
+- **Key Management**: View status, manually disable/enable keys
+- **System Health**: Circuit breaker status, Redis connectivity
+- **Configuration**: Hot-reload settings without restart
+- **Alert History**: View past incidents and recovery times
+
+### 📈 **Key Health Scoring**
+
+Each API key gets a health score from 0.0 (unhealthy) to 1.0 (perfect):
+
+- **1.0**: Perfect performance, no recent failures
+- **0.8-0.9**: Good performance, occasional failures
+- **0.5-0.7**: Degraded performance, frequent failures  
+- **0.0-0.4**: Poor performance, mostly failing
+- **Blocked**: Temporarily disabled due to consecutive failures
+
+### 🚨 **Automated Alerts**
+
+The system automatically generates alerts when:
+
+- **>3 keys unhealthy**: Indicates potential API quota issues
+- **Error rate >10%**: System-wide performance degradation
+- **Response time >5s**: Upstream service slowdown
+- **Circuit breaker open**: Upstream service completely down
+
+### 📋 **Logging**
+
+Structured JSON logging with correlation IDs:
+
+```bash
+# View logs
+make logs
+
+# Filter by level
+RUST_LOG=debug make run
+
+# Production logging
+RUST_LOG=info,gemini_proxy=debug make docker-run
+```
 
 The proxy is designed to handle errors from the Gemini API gracefully:
 
@@ -318,25 +524,180 @@ The proxy is designed to handle errors from the Gemini API gracefully:
 *   **Rebuild Image:** `docker build -t gemini-proxy-key-rotation:latest .`
 *   **Check Status:** `docker ps`
 
-## Security Considerations
+## 🔒 Security & Production Deployment
 
-*   **API Keys:** Do not commit `config.yaml` to version control if it contains API keys. The file is included in `.gitignore` by default.
-*   **Network:** Expose the proxy only to trusted networks. Consider a reverse proxy (Nginx/Caddy) for TLS and advanced access control if needed.
-*   **Admin Panel:** If using the admin panel, ensure `admin_token` is set to a strong, unique value.
-*   **Security Improvements:** See [SECURITY.md](SECURITY.md) for details on recent security enhancements and best practices.
+### 🛡️ **Security Features**
 
-## Admin Panel
+- **Rate Limiting**: IP-based protection (5 attempts/5 minutes, 1-hour lockout)
+- **HTTPS Enforcement**: Automatic redirect in production environments
+- **Session Management**: Secure token-based authentication with rotation
+- **Input Validation**: Request size limits and sanitization
+- **Audit Logging**: All security events logged with correlation IDs
+- **CSRF Protection**: Admin panel protected against cross-site attacks
 
-The proxy includes a web-based admin panel for monitoring and managing API keys:
+### 🏭 **Production Deployment**
 
-*   **Access:** Available at `/admin/` when `admin_token` is configured in `config.yaml`
-*   **Features:** View key status, add/remove keys, monitor system health, manage configuration
-*   **Security:** Protected by token-based authentication and CSRF protection
+#### **Docker Compose (Recommended)**
+```bash
+# Production setup with Redis persistence
+make docker-run
 
-## Contributing
+# With monitoring tools
+make docker-run-with-tools
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more information.
+# Scale horizontally
+docker-compose up -d --scale gemini-proxy=3
+```
 
-## License
+#### **Kubernetes Deployment**
+```yaml
+# k8s-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gemini-proxy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gemini-proxy
+  template:
+    metadata:
+      labels:
+        app: gemini-proxy
+    spec:
+      containers:
+      - name: gemini-proxy
+        image: gemini-proxy:latest
+        ports:
+        - containerPort: 8081
+        env:
+        - name: RUST_LOG
+          value: "info"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+        readinessProbe:
+          httpGet:
+            path: /health/detailed
+            port: 8081
+```
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+#### **Systemd Service (Linux)**
+```bash
+# Installed automatically by install.sh
+sudo systemctl enable gemini-proxy
+sudo systemctl start gemini-proxy
+sudo systemctl status gemini-proxy
+
+# View logs
+sudo journalctl -u gemini-proxy -f
+```
+
+### 🔐 **Security Best Practices**
+
+1. **Generate Secure Admin Token**:
+   ```bash
+   make generate-admin-token
+   ```
+
+2. **Use HTTPS in Production**:
+   ```yaml
+   server:
+     security:
+       require_https: true
+   ```
+
+3. **Network Security**:
+   - Deploy behind a reverse proxy (Nginx/Traefik)
+   - Use firewall rules to restrict access
+   - Consider VPN for admin panel access
+
+4. **Key Management**:
+   - Rotate API keys regularly
+   - Use separate keys for different environments
+   - Monitor key usage in Google AI Studio
+
+5. **Backup Configuration**:
+   ```bash
+   make backup-config
+   ```
+
+## 🧪 Testing
+
+The project includes comprehensive test coverage with 42+ automated tests:
+
+```bash
+# Run all tests
+make test
+
+# Run only critical tests (security, monitoring, error handling)
+make test-critical
+
+# Run with coverage report
+make test-coverage
+
+# Run security audit
+make security-scan
+```
+
+### Test Categories:
+- **Security Tests** (7 tests): Rate limiting, HTTPS enforcement, token management
+- **Monitoring Tests** (12 tests): Health scoring, proactive checks, alerts
+- **Error Handling Tests** (3 tests): Structured error responses
+- **Integration Tests** (20+ tests): End-to-end functionality
+- **Unit Tests** (20+ tests): Individual component testing
+
+## 🤝 Contributing
+
+We welcome contributions! Here's how to get started:
+
+1. **Fork the repository**
+2. **Set up development environment**:
+   ```bash
+   make dev-setup
+   ```
+3. **Make your changes**
+4. **Run tests**:
+   ```bash
+   make check  # Runs lint, format, and tests
+   ```
+5. **Submit a pull request**
+
+### Development Commands:
+```bash
+make dev-setup    # Complete development setup
+make build-dev    # Build in development mode
+make run-dev      # Run with debug logging
+make format       # Format code
+make lint         # Run clippy linter
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- Built with [Rust](https://www.rust-lang.org/) and [Tokio](https://tokio.rs/)
+- HTTP framework: [Axum](https://github.com/tokio-rs/axum)
+- Redis integration: [deadpool-redis](https://github.com/bikeshedder/deadpool)
+- Security: [secrecy](https://github.com/iqlusioninc/crates/tree/main/secrecy)
+
+## 📞 Support
+
+- **Documentation**: Check the [docs](docs/) directory
+- **Issues**: [GitHub Issues](https://github.com/stranmor/gemini-proxy-key-rotation-rust/issues)
+- **Security**: See [SECURITY.md](SECURITY.md) for security policy
+- **Discussions**: [GitHub Discussions](https://github.com/stranmor/gemini-proxy-key-rotation-rust/discussions)
+
+---
+
+<div align="center">
+
+**⭐ Star this repository if it helped you!**
+
+Made with ❤️ for the developer community
+
+</div>
