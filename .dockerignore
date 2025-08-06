@@ -1,34 +1,70 @@
-# Ignore build artifacts
+# Build artifacts
 target/
+coverage_report/
 
-# Ignore Git directory
+# Git
 .git/
 .gitignore
 
-# Ignore IDE specific files/folders
+# IDE и редакторы
 .idea/
 .vscode/
-
-# Ignore local environment configuration if any
-.env
-
-# Ignore test files if not needed in the final image
-# tests/
-
-# Ignore example files not needed in the final image (unless copied explicitly)
-# examples/ # Keep examples out unless needed inside the container
-
-# Ignore specific files
-*.log
+.kilocode/
+.kiro/
 *.swp
 *~
 .DS_Store
 
-# Ignore the dockerfile itself and related docker config
-Dockerfile
-.dockerignore
-
-# Ignore any local configuration and state files not intended for the image
+# Локальные конфигурации
+.env
 config.yaml
 key_states.json
+
+# Логи и временные файлы
+*.log
+logs/
+
+# Docker файлы
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+docker-compose*.yaml
+
+# Документация и примеры (если не нужны в контейнере)
+README.md
+CHANGELOG.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+MONITORING.md
+QUICKSTART.md
+LICENSE
+docs/
+examples/
+memory-bank/
+
+# Скрипты развертывания
+install.sh
+run.sh
+start-dev-container.sh
+Makefile
+
+# Kubernetes и мониторинг
+k8s/
+monitoring/
+
+# Python окружение
+venv/
+__pycache__/
+*.pyc
+
+# Изображения
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Архивы
+*.tar
+*.tar.gz
+*.zip
 

@@ -1,118 +1,158 @@
 # =================================================================================================
-# Dockerfile для Rust-проекта с надежным кэшированием зависимостей
+# Multi-stage Dockerfile for Gemini Proxy - Production Optimized
 # =================================================================================================
-# Используем конкретную версию Alpine для стабильности, воспроизводимости и меньшего размера.
-ARG RUST_VERSION=latest
-ARG APP_NAME=gemini-proxy-key-rotation-rust
+
+ARG RUST_VERSION=1.75-slim
+ARG APP_NAME=gemini-proxy
 
 # -------------------------------------------------------------------------------------------------
-# Этап 0: Сборщик зависимостей (Dependencies Builder)
-# Цель: Скомпилировать зависимости отдельно, чтобы кэшировать их.
-# Этот слой будет пересобираться только при изменении Cargo.toml или Cargo.lock.
+# Stage 1: Dependencies Cache
+# Builds only dependencies for maximum caching
 # -------------------------------------------------------------------------------------------------
-FROM rust:${RUST_VERSION} AS dependencies_builder
+FROM rust:${RUST_VERSION} AS dependencies
 WORKDIR /app
 
-# Создаем фиктивный проект. Это более надежно, чем `cargo init`.
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    perl \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create dummy project for dependency caching
 RUN mkdir src
 RUN echo "fn main() {}" > src/main.rs
 
-# Копируем только файлы зависимостей.
+# Copy only dependency files
 COPY Cargo.toml Cargo.lock ./
 
-# Собираем только зависимости.
-# Флаг --locked обеспечивает воспроизводимость сборки.
-RUN cargo build --release --locked
+# Build only dependencies
+RUN cargo build --release
 
 # -------------------------------------------------------------------------------------------------
-# Этап 1: Сборщик приложения (Builder)
-# Цель: Собрать финальный бинарник, используя кэшированные зависимости.
+# Stage 2: Application Builder
+# Builds final binary using cached dependencies
 # -------------------------------------------------------------------------------------------------
 FROM rust:${RUST_VERSION} AS builder
 WORKDIR /app
 
-# Устанавливаем clippy и rustfmt, так как они могут понадобиться на последующих этапах.
-RUN rustup component add clippy rustfmt
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    perl \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
-# Копируем кэш реестра крейтов и уже скомпилированные зависимости из предыдущего этапа.
-COPY --from=dependencies_builder /usr/local/cargo/registry /usr/local/cargo/registry
-COPY --from=dependencies_builder /app/target /app/target
+# Copy cached dependencies
+COPY --from=dependencies /app/target target
+COPY --from=dependencies /usr/local/cargo /usr/local/cargo
 
-# Копируем исходный код. Этот слой будет инвалидироваться при каждом изменении кода.
+# Copy source code
 COPY . .
 
-# Собираем приложение. Это будет очень быстро, так как все зависимости уже готовы.
-RUN cargo build --release --locked
+# Build application with optimizations
+RUN cargo build --release
+
+# Strip debug information to reduce size
+RUN strip target/release/${APP_NAME}
+
+# Verify binary works
+RUN ./target/release/${APP_NAME} --version
 
 # -------------------------------------------------------------------------------------------------
-# Этап 2: Финальный образ (Final)
-# Цель: Создать минимальный и безопасный образ для запуска.
+# Stage 3: Runtime Image
+# Minimal image for production
 # -------------------------------------------------------------------------------------------------
-FROM alpine:latest AS final
+FROM gcr.io/distroless/cc-debian12 AS runtime
 WORKDIR /app
 
-# Устанавливаем curl для HEALTHCHECK.
-RUN apk --no-cache add curl
+ARG APP_NAME=gemini-proxy-key-rotation-rust
 
-# Копируем только скомпилированный бинарник из этапа 'builder'.
-COPY --from=builder /app/target/release/${APP_NAME} .
+# Copy only necessary files
+COPY --from=builder /app/target/release/${APP_NAME} ./app
+COPY --from=builder /app/static ./static
+COPY --from=builder /app/config.example.yaml ./config.example.yaml
 
-# Копируем необходимые статические файлы и конфигурацию.
-COPY static ./static
-COPY config.example.yaml .
+# Create unprivileged user
+USER 1000:1000
 
-# Открываем порт, на котором будет работать приложение.
 EXPOSE 8080
 
-# Добавляем проверку состояния, чтобы Docker мог отслеживать работоспособность.
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/health || exit 1
-
-# Команда для запуска приложения.
-CMD ["./gemini-proxy-key-rotation-rust"]
+# Use exec form for better signal handling
+CMD ["./app"]
 
 # -------------------------------------------------------------------------------------------------
-# Этап 3: Линтер (Linter)
-# Используется для запуска clippy в CI/CD или локально.
-# Наследуется от 'builder', так как там уже есть все зависимости и исходный код.
+# Stage 4: Development Image
+# Includes additional development tools
 # -------------------------------------------------------------------------------------------------
-FROM builder AS linter
-WORKDIR /app
-RUN rustup component add clippy
-CMD ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
-
-# -------------------------------------------------------------------------------------------------
-# Этап 4: Тестер (Tester)
-# Используется для запуска тестов в CI/CD.
-# -------------------------------------------------------------------------------------------------
-FROM builder AS tester
-WORKDIR /app
-CMD ["cargo", "test", "--all-features", "--locked"]
-
-# -------------------------------------------------------------------------------------------------
-# Этап 5: Генератор отчета о покрытии (Coverage Runner)
-# Используется для генерации отчета о покрытии кода тестами.
-# -------------------------------------------------------------------------------------------------
-FROM rust:${RUST_VERSION} AS coverage_runner
+FROM rust:${RUST_VERSION} AS development
 WORKDIR /app
 
-# Копируем кэш и зависимости, чтобы не пересобирать все с нуля
-COPY --from=dependencies_builder /usr/local/cargo/registry /usr/local/cargo/registry
-COPY --from=builder /app/target /app/target
-# Копируем исходный код
+# Install development tools
+RUN rustup component add clippy rustfmt llvm-tools-preview
+RUN cargo install cargo-watch cargo-audit cargo-tarpaulin --locked
+
+# Copy source code
 COPY . .
 
-# Устанавливаем необходимые системные зависимости для tarpaulin с движком LLVM.
-RUN apt-get update && apt-get install -y llvm-dev libffi-dev clang
+# Install system dependencies for development
+RUN apt-get update && apt-get install -y \
+    curl \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
 
-# llvm-tools-preview - это компонент rustup, который предоставляет инструменты LLVM.
+EXPOSE 8080
+
+CMD ["cargo", "run"]
+
+# -------------------------------------------------------------------------------------------------
+# Stage 5: Testing
+# Optimized image for running tests
+# -------------------------------------------------------------------------------------------------
+FROM builder AS testing
+WORKDIR /app
+
+# Install testing tools
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["cargo", "test", "--release", "--all-features"]
+
+# -------------------------------------------------------------------------------------------------
+# Stage 6: Coverage Analysis
+# Specialized image for code coverage analysis
+# -------------------------------------------------------------------------------------------------
+FROM rust:${RUST_VERSION} AS coverage
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    llvm-dev \
+    libffi-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust components
 RUN rustup component add llvm-tools-preview
+RUN cargo install cargo-tarpaulin --locked
 
-# Устанавливаем tarpaulin. Фиксируем найденную рабочую версию для воспроизводимости.
-RUN cargo install cargo-tarpaulin --version 0.32.8 --locked
+# Copy cached dependencies and source code
+COPY --from=dependencies /app/target target
+COPY --from=dependencies /usr/local/cargo /usr/local/cargo
+COPY . .
 
-# Создаем директорию для отчета.
-RUN mkdir -p /app/coverage_report
+RUN mkdir -p coverage_report
 
-# Команда для запуска tarpaulin. Будет выполнена через `docker-compose run`.
-CMD ["cargo", "tarpaulin", "--verbose", "--all-features", "--engine", "Llvm", "--out", "Lcov", "--out", "Html", "--output-dir", "/app/coverage_report", "--no-dead-code"]
+CMD ["cargo", "tarpaulin", \
+     "--verbose", \
+     "--all-features", \
+     "--engine", "Llvm", \
+     "--out", "Lcov", \
+     "--out", "Html", \
+     "--output-dir", "coverage_report", \
+     "--skip-clean"]

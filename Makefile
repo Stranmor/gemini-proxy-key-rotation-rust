@@ -85,25 +85,46 @@ run-dev: build-dev setup-config ## Run in development mode with debug logging
 	RUST_LOG=debug ./target/debug/gemini-proxy-key-rotation-rust
 
 # Docker commands
-docker-build: ## Build Docker image
-	@echo "🐳 Building Docker image..."
-	docker build -t gemini-proxy:latest .
+docker-build: ## Build optimized Docker image
+	@echo "🐳 Building optimized Docker image..."
+	docker build --target runtime -t gemini-proxy:latest .
+	@echo "✅ Build complete!"
 
-docker-run: setup-config setup-env ## Start with Docker Compose
-	@echo "🐳 Starting with Docker Compose..."
+docker-build-dev: ## Build development Docker image
+	@echo "🐳 Building development Docker image..."
+	docker build --target development -t gemini-proxy:dev .
+
+docker-run: setup-config setup-env ## Start with Docker Compose (production)
+	@echo "🐳 Starting with Docker Compose (production)..."
 	@echo "📝 Make sure you've configured your API keys in config.yaml"
 	docker-compose up -d
 	@echo "✅ Services started!"
-	@echo "🔗 Proxy: http://localhost:8081"
-	@echo "📊 Health: http://localhost:8081/health"
+	@echo "🔗 Proxy: http://localhost:4806"
+	@echo "📊 Health: http://localhost:4806/health"
 	@echo "📋 Logs: make docker-logs"
 
-docker-run-with-tools: setup-config setup-env ## Start with Docker Compose including Redis UI
-	@echo "🐳 Starting with Docker Compose (with tools)..."
+docker-run-dev: setup-config setup-env ## Start development environment
+	@echo "🐳 Starting development environment..."
+	docker-compose --profile dev up -d
+	@echo "✅ Development environment started!"
+	@echo "🔗 Proxy: http://localhost:4807"
+	@echo "📊 Health: http://localhost:4807/health"
+
+docker-run-with-tools: setup-config setup-env ## Start with Redis UI and monitoring tools
+	@echo "🐳 Starting with monitoring tools..."
 	docker-compose --profile tools up -d
-	@echo "✅ Services started!"
-	@echo "🔗 Proxy: http://localhost:8081"
+	@echo "✅ Services with tools started!"
+	@echo "🔗 Proxy: http://localhost:4806"
 	@echo "🔧 Redis UI: http://localhost:8082"
+
+docker-test: ## Run tests in Docker
+	@echo "🧪 Running tests in Docker..."
+	docker-compose --profile test run --rm test-runner
+
+docker-coverage: ## Generate coverage report in Docker
+	@echo "📊 Generating coverage report..."
+	docker-compose --profile coverage run --rm coverage-runner
+	@echo "📊 Coverage report generated in coverage_report/"
 
 docker-stop: ## Stop Docker services
 	@echo "🛑 Stopping Docker services..."
@@ -112,21 +133,30 @@ docker-stop: ## Stop Docker services
 docker-restart: docker-stop docker-run ## Restart Docker services
 
 docker-logs: ## Show Docker logs
+	docker-compose logs -f gemini-proxy
+
+docker-logs-all: ## Show all Docker logs
 	docker-compose logs -f
 
 docker-clean: ## Clean up Docker resources
 	@echo "🧹 Cleaning up Docker resources..."
-	docker-compose down -v
+	docker-compose down -v --remove-orphans
 	docker system prune -f
+
+docker-clean-all: ## Clean up all Docker resources including images
+	@echo "🧹 Cleaning up all Docker resources..."
+	docker-compose down -v --remove-orphans
+	docker system prune -af
+	docker volume prune -f
 
 # Monitoring and Health
 health: ## Check proxy health
 	@echo "🏥 Checking proxy health..."
-	@curl -s http://localhost:8081/health && echo "✅ Proxy is healthy" || echo "❌ Proxy is not responding"
+	@curl -s http://localhost:4806/health && echo "✅ Proxy is healthy" || echo "❌ Proxy is not responding"
 
 health-detailed: ## Check detailed proxy health
 	@echo "🏥 Checking detailed proxy health..."
-	@curl -s http://localhost:8081/health/detailed | jq . || curl -s http://localhost:8081/health/detailed
+	@curl -s http://localhost:4806/health/detailed | jq . || curl -s http://localhost:4806/health/detailed
 
 status: ## Show service status
 	@echo "📊 Service Status:"

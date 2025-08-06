@@ -1,0 +1,35 @@
+schemaVersion: 2.0.0
+
+# Test that the container has the expected structure
+fileExistenceTests:
+  - name: 'Binary exists'
+    path: '/app/app'
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+  
+  - name: 'Static files exist'
+    path: '/app/static'
+    shouldExist: true
+    isDirectory: true
+  
+  - name: 'Config example exists'
+    path: '/app/config.example.yaml'
+    shouldExist: true
+
+# Test that the container runs as expected
+commandTests:
+  - name: 'Binary version check'
+    command: '/app/app'
+    args: ['--version']
+    expectedOutput: ['gemini-proxy']
+  
+  - name: 'Binary help check'
+    command: '/app/app'
+    args: ['--help']
+    expectedOutput: ['Production-ready HTTP proxy']
+
+# Test metadata
+metadataTest:
+  exposedPorts: ['8080']
+  user: '1000'
+  workdir: '/app'

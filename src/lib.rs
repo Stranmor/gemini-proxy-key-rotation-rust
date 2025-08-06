@@ -1,6 +1,7 @@
 // src/lib.rs
 
 // --- Core Modules ---
+pub mod cli;
 pub mod core;
 pub mod storage;
 
@@ -18,6 +19,7 @@ pub mod monitoring;
 pub mod proxy;
 pub mod security;
 pub mod state;
+#[cfg(feature = "tokenizer")]
 pub mod tokenizer;
 pub mod utils;
 
@@ -39,9 +41,9 @@ use tower_cookies::CookieManagerLayer;
 use tracing::{error, info, info_span, Instrument};
 use uuid::Uuid;
 
-// Пере-экспорт ключевых типов для удобства использования
+// Re-export key types for convenience
 pub use config::AppConfig;
-pub use error::{AppError, Result};
+pub use error::{AppError, Result, ErrorContext, set_error_context, with_error_context};
 pub use state::AppState;
 
 /// Создает основной роутер Axum для приложения.

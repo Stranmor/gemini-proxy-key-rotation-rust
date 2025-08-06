@@ -1,10 +1,20 @@
 [package]
-name = "gemini-proxy-key-rotation-rust"
-version = "0.1.0"
+name = "gemini-proxy"
+version = "0.2.0"
 edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Production-ready HTTP proxy for Google Gemini API with intelligent key rotation"
+license = "MIT"
+repository = "https://github.com/stranmor/gemini-proxy-key-rotation-rust"
+homepage = "https://github.com/stranmor/gemini-proxy-key-rotation-rust"
+documentation = "https://docs.rs/gemini-proxy"
+keywords = ["proxy", "gemini", "api", "rotation", "load-balancing"]
+categories = ["web-programming", "network-programming", "api-bindings"]
+readme = "README.md"
+rust-version = "1.70"
 
 [[bin]]
-name = "gemini-proxy-key-rotation-rust"
+name = "gemini-proxy"
 path = "src/main.rs"
 
 [[example]]
@@ -12,56 +22,133 @@ name = "circuit_breaker_demo"
 path = "examples/circuit_breaker_demo.rs"
 
 [dependencies]
-axum = { version = "0.7.5", features = ["macros"] }
-cookie = { version = "0.18.0", features = ["private", "signed"] }
-tower-cookies = { version = "0.10.0", features = ["private"] }
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12.4", features = ["json", "stream"] }
+# Web framework and HTTP
+axum = { version = "0.7.5", features = ["macros", "tracing"] }
+tower = { version = "0.4", features = ["util", "timeout", "load-shed", "limit"] }
+tower-http = { version = "0.5", features = ["timeout", "trace", "cors", "compression-gzip"] }
+hyper = { version = "1.3.1", features = ["full"] }
+hyper-util = { version = "0.1.3", features = ["full"] }
+http = "1.1.0"
+http-body-util = "0.1.1"
+
+# Async runtime and utilities
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = { version = "0.7", features = ["full"] }
+futures-util = "0.3"
+async-trait = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12.4", features = ["json", "stream", "gzip", "rustls-tls"], default-features = false }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-config = "0.14.0"
-log = "0.4.21"
-env_logger = "0.11.3"
-chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.9.0"
-url = "2.5.0"
-rand = "0.8.5"
-lazy_static = "1.4.0"
-regex = "1.10.4"
+
+# Configuration
+config = { version = "0.14.0", features = ["yaml"] }
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# Logging and tracing
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-http-body-util = "0.1.1"
-hyper = "1.3.1"
-hyper-util = { version = "0.1.3", features = ["full"] }
-http = "1.1.0"
-axum-extra = { version = "0.9.6", features = ["tracing", "typed-header", "cookie", "cookie-private"] }
-uuid = { version = "1.8.0", features = ["v4"] }
-sysinfo = { version = "0.36.1", features = ["serde"] }
-md5 = "0.7.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json", "registry", "fmt"] }
+tracing-opentelemetry = "0.22"
+opentelemetry = { version = "0.21", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+
+# Error handling
 thiserror = "1.0"
-futures-util = "0.3"
-openssl = { version = "0.10", features = ["vendored"] }
-redis = { version = "0.25.4", features = ["tokio-comp"] }
-deadpool-redis = "0.15.0"
-once_cell = "1.19.0"
-tokenizers = "0.19.1"
-hf-hub = "0.3.2"
-hex = "0.4.3"
+anyhow = "1.0"
+
+# Security and crypto
 secrecy = { version = "0.8", features = ["serde"] }
-tower-http = { version = "0.5", features = ["timeout"] }
-tokio-util = "0.7"
-async-trait = "0.1"
+argon2 = "0.5"
+rand = "0.8.5"
+hex = "0.4.3"
+sha2 = "0.10"
+
+# Time and UUID
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+
+# Redis and storage
+redis = { version = "0.25.4", features = ["tokio-comp", "connection-manager"] }
+deadpool-redis = "0.15.0"
+
+# Metrics and monitoring
+metrics = "0.22"
+metrics-exporter-prometheus = "0.13"
+
+# Rate limiting and circuit breaker
+governor = "0.6"
+circuit-breaker = "0.1"
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+url = "2.5.0"
+regex = "1.10.4"
+
+# Utilities
+once_cell = "1.19.0"
+parking_lot = "0.12"
+dashmap = "5.5"
+
+# Session and cookies
+cookie = { version = "0.18.0", features = ["private", "signed"] }
+tower-cookies = { version = "0.10.0", features = ["private"] }
+axum-extra = { version = "0.9.6", features = ["tracing", "typed-header", "cookie", "cookie-private"] }
+
+# System info
+sysinfo = { version = "0.36.1", features = ["serde"] }
+
+# Optional features
+tokenizers = { version = "0.19.1", optional = true }
+hf-hub = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
+# Testing framework
+tokio-test = "0.4"
+axum-test = "15.0.0"
+rstest = "0.21.0"
+serial_test = "3.0.0"
+proptest = "1.4"
+
+# Test utilities
 assert_cmd = "2.0"
 predicates = "3.1"
 wiremock = "0.6.0"
 tempfile = "3.10.1"
-serial_test = "3.0.0"
 futures = "0.3"
-tower = { version = "0.4", features = ["util"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-axum-test = "15.0.0"
-rstest = "0.21.0"
-tracing-subscriber = "0.3"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Test coverage
+tarpaulin = "0.27"
+
+[features]
+default = ["metrics", "redis"]
+metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
+redis = ["dep:redis", "dep:deadpool-redis"]
+tokenizer = ["dep:tokenizers", "dep:hf-hub"]
+full = ["metrics", "redis", "tokenizer"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+overflow-checks = true
+
+[profile.test]
+opt-level = 1
+debug = true
+
+[[bench]]
+name = "proxy_performance"
+harness = false

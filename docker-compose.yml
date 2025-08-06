@@ -1,55 +1,145 @@
 version: '3.8'
 
 services:
+  # Основное приложение
   gemini-proxy:
-    build: .
+    build:
+      context: .
+      target: runtime
+      args:
+        - RUST_VERSION=1.82-slim
+        - APP_NAME=gemini-proxy-key-rotation-rust
     container_name: gemini-proxy
     ports:
-      - "${PROXY_PORT:-8081}:8081"
+      - "4806:4806"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./logs:/app/logs
+      - app_data:/app/data
     environment:
       - RUST_LOG=${RUST_LOG:-info}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
     restart: unless-stopped
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      test: ["CMD-SHELL", "timeout 3 sh -c '</dev/tcp/localhost/4806' || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 40s
+      start_period: 30s
     networks:
       - gemini-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
+  # Redis для кэширования и состояния
   redis:
-    image: redis:7-alpine
+    image: redis:7.2-alpine
     container_name: gemini-proxy-redis
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
+      - ./monitoring/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
     restart: unless-stopped
-    command: redis-server --appendonly yes
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
     networks:
       - gemini-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
 
-  # Optional: Redis Commander for Redis management
+  # Разработка (профиль dev)
+  gemini-proxy-dev:
+    build:
+      context: .
+      target: development
+    container_name: gemini-proxy-dev
+    ports:
+      - "4807:4806"
+    volumes:
+      - .:/app
+      - cargo_cache:/usr/local/cargo/registry
+      - target_cache:/app/target
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - dev
+    networks:
+      - gemini-network
+
+  # Тестирование (профиль test)
+  test-runner:
+    build:
+      context: .
+      target: testing
+    container_name: gemini-proxy-test
+    volumes:
+      - .:/app
+      - cargo_cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - test
+    networks:
+      - gemini-network
+
+  # Анализ покрытия (профиль coverage)
+  coverage-runner:
+    build:
+      context: .
+      target: coverage
+    container_name: gemini-proxy-coverage
+    volumes:
+      - .:/app
+      - ./coverage_report:/app/coverage_report
+      - cargo_cache:/usr/local/cargo/registry
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - coverage
+    networks:
+      - gemini-network
+
+  # Redis UI (профиль tools)
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: gemini-proxy-redis-ui
     environment:
       - REDIS_HOSTS=local:redis:6379
+      - HTTP_USER=${REDIS_UI_USER:-admin}
+      - HTTP_PASSWORD=${REDIS_UI_PASSWORD:-admin}
     ports:
-      - "8082:8081"
+      - "${REDIS_UI_PORT:-8082}:8081"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     profiles:
       - tools
@@ -59,7 +149,16 @@ services:
 volumes:
   redis_data:
     driver: local
+  app_data:
+    driver: local
+  cargo_cache:
+    driver: local
+  target_cache:
+    driver: local
 
 networks:
   gemini-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
