@@ -151,6 +151,6 @@ overflow-checks = true
 opt-level = 1
 debug = true
 
-[[bench]]
-name = "proxy_performance"
-harness = false
+# [[bench]]
+# name = "proxy_performance"
+# harness = false
