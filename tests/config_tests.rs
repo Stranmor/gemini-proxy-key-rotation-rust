@@ -1,6 +1,6 @@
 // tests/config_tests.rs
 
-use gemini_proxy_key_rotation_rust::config::{
+use crate::config::{
     AppConfig, KeyGroup, ServerConfig, 
     validation::ConfigValidator,
 };

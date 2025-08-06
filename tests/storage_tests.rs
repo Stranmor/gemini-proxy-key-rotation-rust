@@ -1,6 +1,6 @@
 // tests/storage_tests.rs
 
-use gemini_proxy_key_rotation_rust::{
+use crate::{
     storage::{
         memory::InMemoryStore,
         traits::KeyStore,

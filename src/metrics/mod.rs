@@ -5,6 +5,7 @@
 
 pub mod collectors;
 pub mod exporters;
+pub use exporters::metrics_handler;
 pub mod middleware;
 
 use metrics::{counter, gauge, histogram, Counter, Gauge, Histogram};
@@ -83,12 +84,12 @@ impl MetricsRegistry {
     }
 
     /// Record a request with labels
-    pub fn record_request(&self, method: &str, path: &str, status: u16, duration: Duration) {
+    pub fn record_request(&self, method: String, path: String, status: u16, duration: Duration) {
         self.requests_total.increment(1);
         self.requests_duration.record(duration.as_secs_f64());
         
         // Record with labels using the metrics macros
-        counter!("gemini_proxy_requests_total", "method" => method, "path" => path, "status" => status.to_string()).increment(1);
+        counter!("gemini_proxy_requests_total", "method" => method.clone(), "path" => path.clone(), "status" => status.to_string()).increment(1);
         histogram!("gemini_proxy_request_duration_seconds", "method" => method, "path" => path).record(duration.as_secs_f64());
     }
 
@@ -100,7 +101,7 @@ impl MetricsRegistry {
     }
 
     /// Record key rotation
-    pub fn record_key_rotation(&self, group: &str, success: bool) {
+    pub fn record_key_rotation(&self, group: String, success: bool) {
         self.key_rotations_total.increment(1);
         
         if success {
@@ -112,7 +113,7 @@ impl MetricsRegistry {
     }
 
     /// Record circuit breaker state
-    pub fn record_circuit_breaker_state(&self, service: &str, state: CircuitBreakerState) {
+    pub fn record_circuit_breaker_state(&self, service: String, state: CircuitBreakerState) {
         let state_value = match state {
             CircuitBreakerState::Closed => 0.0,
             CircuitBreakerState::Open => 1.0,
@@ -123,15 +124,15 @@ impl MetricsRegistry {
     }
 
     /// Record circuit breaker trip
-    pub fn record_circuit_breaker_trip(&self, service: &str) {
+    pub fn record_circuit_breaker_trip(&self, service: String) {
         self.circuit_breaker_trips_total.increment(1);
         counter!("gemini_proxy_circuit_breaker_trips_total", "service" => service).increment(1);
     }
 
     /// Record rate limit hit
-    pub fn record_rate_limit(&self, resource: &str, blocked: bool) {
+    pub fn record_rate_limit(&self, resource: String, blocked: bool) {
         self.rate_limit_hits_total.increment(1);
-        counter!("gemini_proxy_rate_limit_hits_total", "resource" => resource).increment(1);
+        counter!("gemini_proxy_rate_limit_hits_total", "resource" => resource.clone()).increment(1);
         
         if blocked {
             self.rate_limit_blocks_total.increment(1);
@@ -140,7 +141,7 @@ impl MetricsRegistry {
     }
 
     /// Record Redis operation
-    pub fn record_redis_operation(&self, operation: &str, success: bool) {
+    pub fn record_redis_operation(&self, operation: String, success: bool) {
         self.redis_operations_total.increment(1);
         
         let result = if success { "success" } else { "error" };
@@ -245,12 +246,12 @@ mod tests {
         let registry = MetricsRegistry::new();
         
         // Test that we can record metrics without panicking
-        registry.record_request("GET", "/health", 200, Duration::from_millis(100));
+        registry.record_request("GET".to_string(), "/health".to_string(), 200, Duration::from_millis(100));
         registry.record_key_health(5, 4, 1);
-        registry.record_key_rotation("primary", true);
-        registry.record_circuit_breaker_state("upstream", CircuitBreakerState::Closed);
-        registry.record_rate_limit("api", false);
-        registry.record_redis_operation("get", true);
+        registry.record_key_rotation("primary".to_string(), true);
+        registry.record_circuit_breaker_state("upstream".to_string(), CircuitBreakerState::Closed);
+        registry.record_rate_limit("api".to_string(), false);
+        registry.record_redis_operation("get".to_string(), true);
     }
 
     #[test]

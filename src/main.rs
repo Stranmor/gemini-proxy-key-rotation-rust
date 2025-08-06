@@ -3,9 +3,8 @@ use clap::Parser;
 use gemini_proxy::{
     cli::{Cli, Commands, KeyCommands, GenerateCommands},
     config::AppConfig,
-    error::{AppError, ErrorContext, set_error_context},
-    run, 
-    with_error_context,
+    error::{context::ErrorContext, AppError},
+    run,
 };
 use std::{net::SocketAddr, path::PathBuf, process};
 use tokio::{net::TcpListener, signal};
@@ -87,8 +86,9 @@ async fn serve_command(
     let context = ErrorContext::new("server_startup")
         .with_metadata("dev_mode", dev.to_string())
         .with_metadata("host", host.clone());
-    
-    with_error_context!(context, {
+
+    gemini_proxy::error::context::set_error_context(context);
+    let result = {
         info!(
             dev_mode = dev,
             workers = workers,
@@ -149,7 +149,9 @@ async fn serve_command(
 
         info!("Server shut down gracefully");
         Ok(())
-    })
+    };
+    gemini_proxy::error::context::clear_error_context();
+    result
 }
 
 /// Validate configuration file
@@ -291,7 +293,7 @@ async fn main() -> Result<()> {
     let context = ErrorContext::new("main")
         .with_metadata("version", env!("CARGO_PKG_VERSION"))
         .with_metadata("args", format!("{:?}", std::env::args().collect::<Vec<_>>()));
-    set_error_context(context);
+    gemini_proxy::error::context::set_error_context(context);
 
     info!(
         version = env!("CARGO_PKG_VERSION"),

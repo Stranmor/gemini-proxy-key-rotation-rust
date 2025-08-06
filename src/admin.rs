@@ -7,6 +7,7 @@ use crate::{
     state::{AppState, KeyState},
 };
 use secrecy::ExposeSecret;
+use md5;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -346,8 +347,8 @@ async fn csrf_middleware(cookies: Cookies, req: Request<Body>, next: Next) -> Re
         .map(String::from);
 
     match (cookie_token, header_token) {
-        (Some(c_token), Some(h_token)) 
-            if !c_token.is_empty() 
+        (Some(c_token), Some(h_token))
+            if !c_token.is_empty()
             && c_token.len() <= 128  // Reasonable limit for CSRF tokens
             && h_token.len() <= 128
             && secure_compare(&c_token, &h_token) => {
@@ -356,7 +357,9 @@ async fn csrf_middleware(cookies: Cookies, req: Request<Body>, next: Next) -> Re
         }
         _ => {
             warn!("CSRF token mismatch or missing. Access forbidden.");
-            Err(AppError::Csrf)
+            Err(AppError::Authentication {
+                message: "CSRF token mismatch or missing".to_string(),
+            })
         }
     }
 }
@@ -509,7 +512,10 @@ pub async fn add_keys(
                     "Failed to add keys: Group '{}' not found.",
                     request.group_name
                 );
-                AppError::NotFound(format!("Group '{}' not found", request.group_name))
+                AppError::Validation {
+                    field: "group_name".to_string(),
+                    message: format!("Group '{}' not found.", request.group_name),
+                }
             })?;
 
         let mut added_count = 0;
@@ -550,7 +556,10 @@ pub async fn delete_keys(
                     "Failed to delete keys: Group '{}' not found.",
                     request.group_name
                 );
-                AppError::NotFound(format!("Group '{}' not found", request.group_name))
+                AppError::Validation {
+                    field: "group_name".to_string(),
+                    message: format!("Group '{}' not found.", request.group_name),
+                }
             })?;
 
         let keys_to_delete: HashSet<_> = request.api_keys.iter().map(String::as_str).collect();
@@ -627,7 +636,9 @@ pub async fn login(
         }
         _ => {
             warn!("Failed admin login attempt: Invalid token or no token configured.");
-            Err(AppError::Unauthorized)
+            Err(AppError::Authentication {
+                message: "Invalid admin token".to_string(),
+            })
         }
     }
 }
@@ -698,7 +709,7 @@ where
     if state.config_update_tx.send(new_config).is_err() {
         let msg = "Configuration update channel is closed. The background worker may have crashed.";
         error!("{}", msg);
-        return Err(AppError::Internal(msg.to_string()));
+        return Err(AppError::Internal { message: msg.to_string() });
     }
 
     info!(
@@ -726,7 +737,7 @@ pub async fn reload_state_from_config(
         let msg =
             format!("Validation failed for new configuration from '{source}'; changes not saved.");
         error!("{}", msg);
-        return Err(AppError::Config(msg));
+        return Err(AppError::config_validation(msg, Some(source)));
     }
 
     config::save_config(&new_config, &state.config_path).await?;

@@ -92,10 +92,10 @@ pub async fn forward_request(
             Err(cb_error) => match cb_error {
                 CircuitBreakerError::CircuitOpen => {
                     warn!(target.url = %target_url, "Circuit breaker is open, failing fast");
-                    Err(AppError::CircuitBreakerOpen(target_url.to_string()))
+                    Err(AppError::CircuitBreakerOpen { service: target_url.to_string() })
                 }
                 CircuitBreakerError::OperationFailed(req_error) => {
-                    Err(AppError::RequestError(req_error.to_string()))
+                    Err(AppError::internal(req_error.to_string()))
                 }
             }
         }
@@ -106,7 +106,7 @@ pub async fn forward_request(
             .body(outgoing_reqwest_body)
             .send()
             .await
-            .map_err(|e| AppError::RequestError(e.to_string()))
+            .map_err(|e| AppError::internal(e.to_string()))
     };
     
     let elapsed_time = start_time.elapsed();
@@ -124,7 +124,7 @@ pub async fn forward_request(
     let axum_response_body =
         if response_status.is_client_error() || response_status.is_server_error() {
             // For 4xx/5xx responses, buffer the body to log it, then forward.
-            let body_bytes = read_and_log_error_body(target_response, key_info).await?;
+            let body_bytes: Vec<u8> = read_and_log_error_body(target_response, key_info).await?.to_vec();
             Body::from(body_bytes)
         } else {
             // For success responses, stream the body directly to the client.
@@ -135,7 +135,7 @@ pub async fn forward_request(
                     error = %e,
                     "Error reading upstream response body stream"
                 );
-                AppError::ResponseBodyError(format!(
+                AppError::internal(format!(
                     "Upstream body stream error (status {captured_response_status}): {e}"
                 ))
             });
@@ -148,7 +148,7 @@ pub async fn forward_request(
         .body(axum_response_body)
         .map_err(|e| {
             error!(error = %e, "Failed to build final client response");
-            AppError::Internal(format!("Failed to construct client response: {e}"))
+            AppError::internal(format!("Failed to construct client response: {e}"))
         })?;
 
     *client_response.headers_mut() = response_headers;
@@ -206,7 +206,7 @@ fn handle_target_response(
                 proxy.url = ?key_info.proxy_url.as_deref(),
                 "Error sending request to target"
             );
-            Err(AppError::Reqwest(e))
+            Err(e.into())
         }
     }
 }
@@ -225,7 +225,7 @@ async fn read_and_log_error_body(
 
     let full_body = response.bytes().await.map_err(|e| {
         error!(status = status.as_u16(), error = %e, "Failed to read error response body");
-        AppError::ResponseBodyError(format!(
+        AppError::internal(format!(
             "Failed to read error response body (status {status}): {e}"
         ))
     })?;
@@ -292,7 +292,7 @@ fn add_auth_headers(headers: &mut HeaderMap, api_key: &str) -> Result<()> {
         }
         Err(e) => {
             error!(error = %e, "Failed to create Authorization header value from API key");
-            Err(AppError::Internal(
+            Err(AppError::internal(
                 "Failed to construct Authorization header".to_string(),
             ))
         }
@@ -340,8 +340,8 @@ mod tests {
         let result = add_auth_headers(&mut headers, invalid_key);
         assert!(result.is_err());
         match result.unwrap_err() {
-            AppError::Internal(msg) => {
-                assert_eq!(msg, "Failed to construct Authorization header");
+            AppError::Internal { message } => {
+                assert_eq!(message, "Failed to construct Authorization header");
             }
             _ => panic!("Expected AppError::Internal"),
         }

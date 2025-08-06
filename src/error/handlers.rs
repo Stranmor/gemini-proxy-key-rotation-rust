@@ -1,6 +1,7 @@
 //! Error handling utilities and middleware
 
-use super::{AppError, ErrorResponse, Result};
+use super::{AppError, ErrorResponse};
+use crate::Result;
 use axum::{
     extract::Request,
     http::StatusCode,
@@ -40,11 +41,14 @@ pub async fn panic_handler(req: Request, next: Next) -> Response {
     let span = info_span!("request", request_id = %request_id);
 
     async move {
+        let request_id_for_closure = request_id.clone(); // Clone for the closure
+        let request_id_for_response = request_id.clone(); // Clone for the error response
+
         // Set panic hook to capture panic info
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
             error!(
-                request_id = %request_id,
+                request_id = %request_id_for_closure,
                 panic_info = %panic_info,
                 "Panic occurred during request processing"
             );
@@ -65,8 +69,8 @@ pub async fn panic_handler(req: Request, next: Next) -> Response {
                     title: "Internal Server Error".to_string(),
                     status: 500,
                     detail: "A critical error occurred while processing the request".to_string(),
-                    instance: format!("/errors/{}", request_id),
-                    request_id: Some(request_id),
+                    instance: format!("/errors/{}", request_id_for_response.clone()),
+                    request_id: Some(request_id_for_response.clone()),
                     extensions: serde_json::Map::new(),
                 };
 
@@ -96,77 +100,5 @@ pub fn create_error_response(
         instance: format!("/errors/{}", request_id),
         request_id: Some(request_id),
         extensions: serde_json::Map::new(),
-    }
-}
-
-/// Trait for adding error context to results
-pub trait ErrorContext<T> {
-    fn with_error_context(self, context: &str) -> Result<T>;
-    fn with_field_context(self, field: &str, context: &str) -> Result<T>;
-}
-
-impl<T, E> ErrorContext<T> for std::result::Result<T, E>
-where
-    E: Into<AppError>,
-{
-    fn with_error_context(self, context: &str) -> Result<T> {
-        self.map_err(|e| {
-            let app_error = e.into();
-            match app_error {
-                AppError::Internal { message } => AppError::Internal {
-                    message: format!("{}: {}", context, message),
-                },
-                other => other,
-            }
-        })
-    }
-
-    fn with_field_context(self, field: &str, context: &str) -> Result<T> {
-        self.map_err(|e| {
-            let app_error = e.into();
-            match app_error {
-                AppError::Validation { field: _, message } => AppError::Validation {
-                    field: field.to_string(),
-                    message: format!("{}: {}", context, message),
-                },
-                other => other,
-            }
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::to_bytes;
-    use serde_json::Value;
-
-    #[tokio::test]
-    async fn test_create_error_response() {
-        let response = create_error_response(
-            "test_error",
-            "Test Error",
-            StatusCode::BAD_REQUEST,
-            "This is a test error",
-            None,
-        );
-
-        assert_eq!(response.error_type, "test_error");
-        assert_eq!(response.title, "Test Error");
-        assert_eq!(response.status, 400);
-        assert_eq!(response.detail, "This is a test error");
-        assert!(response.request_id.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_error_context() {
-        let result: std::result::Result<(), std::io::Error> = 
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"));
-        
-        let app_result = result.with_error_context("Failed to read config");
-        assert!(app_result.is_err());
-        
-        let error = app_result.unwrap_err();
-        assert!(error.to_string().contains("Failed to read config"));
     }
 }

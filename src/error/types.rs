@@ -40,7 +40,7 @@ impl From<reqwest::Error> for AppError {
 
 impl From<redis::RedisError> for AppError {
     fn from(err: redis::RedisError) -> Self {
-        if err.is_connection_failure() {
+        if err.is_connection_dropped() {
             Self::RedisConnection {
                 message: err.to_string(),
             }
@@ -92,14 +92,21 @@ impl From<config::ConfigError> for AppError {
             config::ConfigError::NotFound(_) => Self::ConfigNotFound {
                 path: "config file".to_string(),
             },
-            config::ConfigError::Type { .. } => Self::ConfigValidation {
-                message: err.to_string(),
-                field: None,
-            },
+            config::ConfigError::Type { .. } => Self::config_validation(err.to_string(), None::<String>),
             _ => Self::ConfigParse {
                 message: err.to_string(),
                 line: None,
             },
+        }
+    }
+}
+
+
+
+impl From<deadpool::managed::CreatePoolError<deadpool_redis::ConfigError>> for AppError {
+    fn from(err: deadpool::managed::CreatePoolError<deadpool_redis::ConfigError>) -> Self {
+        Self::RedisConnection {
+            message: format!("Failed to create Redis pool: {}", err),
         }
     }
 }

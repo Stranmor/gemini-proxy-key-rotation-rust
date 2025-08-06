@@ -3,14 +3,14 @@
 use crate::admin::SystemInfoCollector;
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::config::AppConfig;
-use crate::error::{AppError, ProxyConfigErrorData, ProxyConfigErrorKind, Result};
+use crate::error::{AppError, Result};
 use crate::handlers::base::ResponseHandler;
 use crate::handlers::{
     invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, success::SuccessHandler,
     terminal_error::TerminalErrorHandler,
 };
 use crate::key_manager::KeyManager;
-use crate::metrics::MetricsCollector;
+use crate::metrics::MetricsRegistry;
 use crate::middleware::rate_limit::RateLimitStore;
 use deadpool_redis::{Config, Pool, Runtime};
 use reqwest::{Client, ClientBuilder, Proxy};
@@ -44,7 +44,7 @@ pub struct AppState {
     pub config: Arc<RwLock<AppConfig>>,
     pub system_info: SystemInfoCollector,
     pub config_path: PathBuf,
-    pub metrics: Arc<MetricsCollector>,
+    pub metrics: Arc<MetricsRegistry>,
     pub rate_limit_store: RateLimitStore,
     pub config_update_tx: broadcast::Sender<AppConfig>,
     pub circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
@@ -112,9 +112,9 @@ impl HttpClientBuilder {
             .build()
             .map_err(|e| {
                 error!(error = ?e, "Failed to build base HTTP client (no proxy). This is required.");
-                AppError::HttpClientBuildError {
-                    source: e,
-                    proxy_url: None,
+                AppError::HttpClient {
+                    message: format!("Failed to build base HTTP client: {}", e),
+                    status_code: None,
                 }
             })
     }
@@ -126,10 +126,10 @@ impl HttpClientBuilder {
         async {
             let parsed_proxy_url = Url::parse(proxy_url).map_err(|e| {
                 error!(error = %e, "Failed to parse proxy URL string.");
-                AppError::ProxyConfigError(ProxyConfigErrorData {
-                    url: proxy_url.to_string(),
-                    kind: ProxyConfigErrorKind::UrlParse(e),
-                })
+                AppError::ConfigValidation {
+                    message: format!("Failed to parse proxy URL: {}", e),
+                    field: Some(proxy_url.to_string()),
+                }
             })?;
 
             let scheme = parsed_proxy_url.scheme().to_lowercase();
@@ -143,9 +143,9 @@ impl HttpClientBuilder {
                 .build()
                 .map_err(|e| {
                     error!(proxy.scheme = %scheme, error = ?e, "Failed to build reqwest client for proxy.");
-                    AppError::HttpClientBuildError {
-                        source: e,
-                        proxy_url: Some(proxy_url.to_string()),
+                    AppError::HttpClient {
+                        message: format!("Failed to build reqwest client for proxy: {}", e),
+                        status_code: None,
                     }
                 })
         }
@@ -161,18 +161,18 @@ impl HttpClientBuilder {
             "socks5" => Proxy::all(proxy_url),
             _ => {
                 error!(proxy.scheme = %scheme, "Unsupported proxy scheme");
-                return Err(AppError::ProxyConfigError(ProxyConfigErrorData {
-                    url: proxy_url.to_string(),
-                    kind: ProxyConfigErrorKind::UnsupportedScheme(scheme.to_string()),
-                }));
+                return Err(AppError::ConfigValidation {
+                    message: format!("Unsupported proxy scheme: {}", scheme),
+                    field: Some(proxy_url.to_string()),
+                });
             }
         }
         .map_err(|e| {
             error!(error = %e, proxy.scheme = %scheme, "Invalid proxy definition");
-            AppError::ProxyConfigError(ProxyConfigErrorData {
-                url: proxy_url.to_string(),
-                kind: ProxyConfigErrorKind::InvalidDefinition(e.to_string()),
-            })
+            AppError::ConfigValidation {
+                message: format!("Invalid proxy definition: {}", e),
+                field: Some(proxy_url.to_string()),
+            }
         })
     }
 }
@@ -204,9 +204,9 @@ pub async fn build_http_clients(
         let dummy_client = Client::builder()
             .timeout(Duration::from_millis(10))
             .build()
-            .map_err(|e| AppError::HttpClientBuildError {
-                source: e,
-                proxy_url: None,
+            .map_err(|e| AppError::HttpClient {
+                message: format!("Failed to build dummy client: {}", e),
+                status_code: None,
             })?;
         http_clients.insert(None, Arc::new(dummy_client));
         return Ok(http_clients);
@@ -276,15 +276,11 @@ pub async fn build_http_clients(
 /// Determines if an error should cause the entire client building process to fail.
 fn should_fail_fast(error: &AppError) -> bool {
     match error {
-        AppError::ProxyConfigError(data) => {
-            matches!(
-                data.kind,
-                ProxyConfigErrorKind::UrlParse(_) | ProxyConfigErrorKind::UnsupportedScheme(_)
-            )
+        AppError::ConfigValidation { .. } => {
+            // For now, treat all config validation errors as fail-fast
+            true
         }
-        AppError::HttpClientBuildError {
-            proxy_url: None, ..
-        } => true, // Base client failure
+        AppError::HttpClient { message, status_code: None } => true, // Base client failure
         _ => false,
     }
 }
@@ -331,7 +327,7 @@ impl AppState {
                 config: Arc::new(RwLock::new(config.clone())),
                 system_info: SystemInfoCollector::new(),
                 config_path: config_path.to_path_buf(),
-                metrics: Arc::new(MetricsCollector::new()),
+                metrics: Arc::new(crate::metrics::MetricsRegistry::new()),
                 rate_limit_store: crate::middleware::rate_limit::create_rate_limit_store(),
                 config_update_tx: tx,
                 circuit_breakers: Arc::new(RwLock::new(circuit_breakers)),
@@ -423,7 +419,7 @@ impl AppState {
                 },
             );
             error!(proxy.url = ?proxy_url, error.message = %msg, "HTTP client lookup failed");
-            AppError::Internal(msg)
+            AppError::Internal { message: msg }
         })
     }
 
@@ -604,7 +600,7 @@ mod tests {
             "AppState::new should return Err for invalid proxy URL syntax"
         );
         assert!(
-            matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(data) if matches!(data.kind, ProxyConfigErrorKind::UrlParse(_))),
+            matches!(state_result.as_ref().err().unwrap(), AppError::ConfigValidation { message, field: Some(f) } if message.contains("Failed to parse proxy URL") && f == "::not a proxy url::"),
             "Expected ProxyConfigError with UrlParse kind"
         );
     }
@@ -630,7 +626,7 @@ mod tests {
             "AppState::new should return Err for unsupported proxy scheme"
         );
         assert!(
-            matches!(state_result.as_ref().err().unwrap(), AppError::ProxyConfigError(data) if matches!(data.kind, ProxyConfigErrorKind::UnsupportedScheme(_))),
+            matches!(state_result.as_ref().err().unwrap(), AppError::ConfigValidation { message, field: Some(f) } if message.contains("Unsupported proxy scheme") && f == "ftp://unsupported.proxy"),
             "Expected ProxyConfigError with UnsupportedScheme kind"
         );
     }

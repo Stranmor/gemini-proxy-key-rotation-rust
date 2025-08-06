@@ -231,10 +231,10 @@ impl KeyStore for RedisStore {
 
     async fn get_all_key_states(&self) -> Result<HashMap<String, KeyState>> {
         let keys = self.get_candidate_keys().await?;
-        let mut states = HashMap::new();
-        for key in keys {
-            if let Ok(Some(state)) = self.get_key_state(&key).await {
-                states.insert(key, state);
+        let mut states: HashMap<String, KeyState> = HashMap::new();
+        for key in &keys {
+            if let Ok(Some(state)) = self.get_key_state(key).await {
+                states.insert(key.to_string(), state);
             }
         }
         Ok(states)

@@ -4,7 +4,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
     Router,
 };
-use gemini_proxy_key_rotation_rust::{
+use crate::{
     admin::admin_routes,
     config::{AppConfig, KeyGroup, ServerConfig},
     state::AppState,
@@ -69,7 +69,7 @@ impl TestApp {
             loop {
                 match config_update_rx.recv().await {
                     Ok(new_config) => {
-                        if let Err(e) = gemini_proxy_key_rotation_rust::admin::reload_state_from_config(
+                        if let Err(e) = crate::admin::reload_state_from_config(
                             state_for_worker.clone(), 
                             new_config
                         ).await {

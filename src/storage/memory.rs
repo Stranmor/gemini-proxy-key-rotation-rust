@@ -67,9 +67,10 @@ impl KeyStore for InMemoryStore {
             return Ok(state.clone());
         }
         
-        Err(AppError::NotFound(format!(
-            "API Key '{}' not found in memory store.", api_key
-        )))
+        Err(AppError::Validation {
+                field: "api_key".to_string(),
+                message: format!("API Key '{}' not found.", api_key),
+            })
     }
 
     async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>> {
@@ -109,7 +110,10 @@ impl KeyStateStore for InMemoryStore {
             state.reset();
             Ok(())
         } else {
-            Err(AppError::NotFound(format!("Key '{}' not found", key)))
+            Err(AppError::Validation {
+                field: "key".to_string(),
+                message: format!("Key '{}' not found.", key),
+            })
         }
     }
 

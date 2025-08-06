@@ -38,8 +38,9 @@ impl ConfigValidator {
         debug!("Validating {} groups", config.groups.len());
         
         if config.groups.is_empty() {
-            return Err(AppError::ConfigValidationError(
-                "At least one key group must be configured".to_string()
+            return Err(AppError::config_validation(
+                "At least one key group must be configured",
+                Some("groups"),
             ));
         }
         
@@ -49,8 +50,9 @@ impl ConfigValidator {
         for group in &config.groups {
             // Check for duplicate group names
             if !group_names.insert(&group.name) {
-                return Err(AppError::ConfigValidationError(
-                    format!("Duplicate group name: {}", group.name)
+                return Err(AppError::config_validation(
+                    format!("Duplicate group name: {}", group.name),
+                    Some("group.name"),
                 ));
             }
             
@@ -62,9 +64,10 @@ impl ConfigValidator {
             // Check for duplicate keys across groups
             for key in &group.api_keys {
                 if !all_keys.insert(key) {
-                    return Err(AppError::ConfigValidationError(
-                        format!("Duplicate API key found across groups: {}", 
-                               Self::preview_key(key))
+                    return Err(AppError::config_validation(
+                        format!("Duplicate API key found across groups: {}",
+                                Self::preview_key(key)),
+                        Some("group.api_keys"),
                     ));
                 }
             }
@@ -94,20 +97,23 @@ impl ConfigValidator {
     fn validate_server_config(config: &AppConfig) -> Result<()> {
         // Allow port 0 in test mode (system will assign a free port)
         if config.server.port == 0 && !config.server.test_mode {
-            return Err(AppError::ConfigValidationError(
-                "Server port cannot be 0 (except in test mode)".to_string()
+            return Err(AppError::config_validation(
+                "Server port cannot be 0 (except in test mode)",
+                Some("server.port"),
             ));
         }
         
         if config.server.connect_timeout_secs == 0 {
-            return Err(AppError::ConfigValidationError(
-                "Connect timeout cannot be 0".to_string()
+            return Err(AppError::config_validation(
+                "Connect timeout cannot be 0",
+                Some("server.connect_timeout_secs"),
             ));
         }
         
         if config.server.request_timeout_secs == 0 {
-            return Err(AppError::ConfigValidationError(
-                "Request timeout cannot be 0".to_string()
+            return Err(AppError::config_validation(
+                "Request timeout cannot be 0",
+                Some("server.request_timeout_secs"),
             ));
         }
         
@@ -116,8 +122,9 @@ impl ConfigValidator {
     
     fn validate_url(url_str: &str, field_name: &str) -> Result<()> {
         Url::parse(url_str).map_err(|e| {
-            AppError::ConfigValidationError(
-                format!("Invalid URL in {}: {} - {}", field_name, url_str, e)
+            AppError::config_validation(
+                format!("Invalid URL in {}: {} - {}", field_name, url_str, e),
+                Some(field_name),
             )
         })?;
         Ok(())
@@ -125,18 +132,20 @@ impl ConfigValidator {
     
     fn validate_proxy_url(group_name: &str, proxy_url: &str) -> Result<()> {
         let url = Url::parse(proxy_url).map_err(|e| {
-            AppError::ConfigValidationError(
-                format!("Invalid proxy URL in group '{}': {} - {}", 
-                       group_name, proxy_url, e)
+            AppError::config_validation(
+                format!("Invalid proxy URL in group '{}': {} - {}",
+                        group_name, proxy_url, e),
+                Some("proxy"),
             )
         })?;
-        
+
         match url.scheme() {
             "http" | "https" | "socks5" => Ok(()),
-            scheme => Err(AppError::ConfigValidationError(
-                format!("Unsupported proxy scheme '{}' in group '{}'. Supported: http, https, socks5", 
-                       scheme, group_name)
-            ))
+            scheme => Err(AppError::config_validation(
+                format!("Unsupported proxy scheme '{}' in group '{}'. Supported: http, https, socks5",
+                        scheme, group_name),
+                Some("proxy"),
+            )),
         }
     }
     

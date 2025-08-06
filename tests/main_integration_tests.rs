@@ -1,4 +1,4 @@
-use gemini_proxy_key_rotation_rust::{error::AppError, run};
+use gemini_proxy::{error::AppError, run};
 use std::fs::File;
 use std::io::Write;
 use tempfile::tempdir;
@@ -53,7 +53,7 @@ groups: []
     let result = run(Some(config_path)).await;
 
     println!("Result: {:?}", result);
-    assert!(matches!(result, Err(AppError::Config(_)) | Err(AppError::ConfigError(_)) | Err(AppError::ConfigValidationError(_))));
+    assert!(matches!(result, Err(AppError::ConfigParse { .. }) | Err(AppError::ConfigValidation { .. })));
 }
 
 #[tokio::test]
@@ -68,5 +68,5 @@ async fn test_run_fails_without_config_file() {
     // Expect a config error because the file is required if the path is set,
     // and default values are not sufficient to run.
     println!("Result: {:?}", result);
-    assert!(matches!(result, Err(AppError::Config(_)) | Err(AppError::ConfigError(_)) | Err(AppError::ConfigValidationError(_))));
+    assert!(matches!(result, Err(AppError::ConfigParse { .. }) | Err(AppError::ConfigValidation { .. })));
 }

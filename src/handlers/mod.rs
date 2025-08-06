@@ -113,6 +113,7 @@ fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
     }
 
     // Only count tokens if tokenizer is initialized
+    #[cfg(feature = "tokenizer")]
     if let Some(tokenizer) = crate::tokenizer::TOKENIZER.get() {
         let token_count = tokenizer
             .encode(total_text.as_str(), false)
@@ -127,14 +128,9 @@ fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
                 limit = TOKEN_LIMIT,
                 "Request exceeds token limit. Rejecting request."
             );
-            let error_response = json!({
-                "error": format!("Request exceeds the {} token limit and was not sent.", TOKEN_LIMIT)
-            })
-            .to_string();
-
-            return Err(AppError::UpstreamServiceError {
-                status: StatusCode::PAYLOAD_TOO_LARGE,
-                body: error_response,
+            return Err(AppError::RequestTooLarge {
+                size: token_count,
+                max_size: TOKEN_LIMIT,
             });
         }
     } else {
@@ -179,7 +175,9 @@ fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes,
                     headers.insert(
                         "content-length",
                         http::HeaderValue::from_str(&new_len.to_string())
-                            .map_err(|_| AppError::InvalidHttpHeader)?,
+                            .map_err(|e| AppError::InvalidRequest {
+                                message: format!("Invalid header value created internally: {}", e),
+                            })?,
                     );
                     return Ok((body_bytes, headers));
                 }
@@ -214,13 +212,13 @@ async fn try_request_with_key(
     .await
     .map_err(|e| {
         error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Forwarding request failed");
-        AppError::Internal(e.to_string())
+        AppError::internal(e.to_string())
     })?;
 
     let (parts, body) = response.into_parts();
     let response_bytes = to_bytes(body, usize::MAX)
         .await
-        .map_err(|e| AppError::BodyReadError(e.to_string()))?;
+        .map_err(|e| AppError::internal(e.to_string()))?;
 
     Ok(Response::from_parts(parts, Body::from(response_bytes)))
 }
@@ -232,7 +230,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let (mut parts, body) = req.into_parts();
     let body_bytes = to_bytes(body, usize::MAX)
         .await
-        .map_err(|e| AppError::RequestBodyError(e.to_string()))?;
+        .map_err(|e| AppError::internal(e.to_string()))?;
 
     // Process request body (token validation and top_p injection)
     let top_p = state.config.read().await.top_p;
@@ -297,7 +295,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                 // Для всех остальных ошибок сохраняем текущее поведение — 502 Bad Gateway.
                 error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Request failed");
                 match e {
-                    AppError::UpstreamServiceError { .. } => {
+                    AppError::UpstreamUnavailable { ref service } if *service == "unknown".to_string() => {
                         // Возвращаем как есть, без преобразования в 502.
                         return Err(e);
                     }
@@ -314,7 +312,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         let (parts, body) = response.into_parts();
         let response_bytes = to_bytes(body, usize::MAX)
             .await
-            .map_err(|e| AppError::BodyReadError(e.to_string()))?;
+            .map_err(|e| AppError::internal(e.to_string()))?;
 
         let response_for_analysis =
             Response::from_parts(parts.clone(), Body::from(response_bytes.clone()));
@@ -358,7 +356,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     // If the loop completes, return the last response or error
     last_response.map(Ok).unwrap_or_else(|| {
         warn!("No available API keys for the given group.");
-        Err(AppError::NoAvailableKeys)
+        Err(AppError::NoHealthyKeys)
     })
 }
 

@@ -1,6 +1,6 @@
 // tests/security_tests.rs
 
-use gemini_proxy_key_rotation_rust::security::{SecurityMiddleware, token_manager::TokenManager};
+use crate::security::{SecurityMiddleware, token_manager::TokenManager};
 use axum::{
     extract::ConnectInfo,
     http::{HeaderMap, HeaderValue, Method, Request, StatusCode},

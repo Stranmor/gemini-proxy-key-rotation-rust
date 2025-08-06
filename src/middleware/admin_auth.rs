@@ -50,13 +50,17 @@ pub async fn admin_auth_middleware(
                 }
                 _ => {
                     warn!("Admin authentication failed: invalid or missing token");
-                    Err(AppError::Unauthorized)
+                    Err(AppError::Authentication {
+                        message: "Admin authentication failed: invalid or missing token".to_string(),
+                    })
                 }
             }
         }
         _ => {
             warn!("Admin authentication failed: no admin token configured");
-            Err(AppError::Unauthorized)
+            Err(AppError::Authentication {
+                message: "Admin authentication failed: no admin token configured".to_string(),
+            })
         }
     }
 }

@@ -10,9 +10,10 @@ pub mod types;
 pub mod handlers;
 pub mod context;
 
-pub use types::*;
-pub use handlers::*;
-pub use context::*;
+// pub use types::*;
+// pub use handlers::*;
+pub use context::{ErrorContext, set_error_context};
+pub use crate::with_error_context;
 
 use axum::{
     http::StatusCode,
@@ -211,11 +212,11 @@ impl AppError {
             Self::RedisConnection { .. } => StatusCode::SERVICE_UNAVAILABLE,
 
             // 504 Gateway Timeout
-            Self::RedisOperation { .. } | 
-            Self::StoragePersistence { .. } | 
-            Self::KeyRotation { .. } | 
+            Self::RedisOperation { .. } |
+            Self::StoragePersistence { .. } |
+            Self::KeyRotation { .. } |
             Self::KeyHealthCheck { .. } => StatusCode::GATEWAY_TIMEOUT,
-        }
+                }
     }
 
     /// Get the error type URI for RFC 7807 compliance
@@ -315,20 +316,4 @@ impl IntoResponse for AppError {
 }
 
 /// Result type alias for the application
-pub type Result<T> = std::result::Result<T, AppError>;
-
-/// Extension trait for Results to add context
-pub trait ResultExt<T> {
-    fn with_context(self, context: impl Into<String>) -> Result<T>;
-}
-
-impl<T, E> ResultExt<T> for std::result::Result<T, E>
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
-    fn with_context(self, context: impl Into<String>) -> Result<T> {
-        self.map_err(|e| AppError::Internal {
-            message: format!("{}: {}", context.into(), e),
-        })
-    }
-}
+pub type Result<T, E = AppError> = std::result::Result<T, E>;

@@ -1,9 +1,7 @@
 // src/monitoring/key_health.rs
 
 use crate::error::{AppError, Result};
-use crate::key_manager::{FlattenedKeyInfo, KeyManagerTrait};
-use crate::state::KeyState;
-use secrecy::ExposeSecret;
+use crate::key_manager::{KeyManagerTrait};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -1,6 +1,6 @@
 // tests/circuit_breaker_tests.rs
 
-use gemini_proxy_key_rotation_rust::circuit_breaker::{
+use crate::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitState
 };
 use std::time::Duration;

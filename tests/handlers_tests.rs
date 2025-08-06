@@ -1,6 +1,6 @@
 // tests/handlers_tests.rs
 
-use gemini_proxy_key_rotation_rust::{
+use crate::{
     handlers::{
         base::ResponseHandler,
         success::SuccessHandler,

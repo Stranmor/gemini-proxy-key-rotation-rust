@@ -1,6 +1,6 @@
 // tests/error_handling_tests.rs
 
-use gemini_proxy_key_rotation_rust::error::{AppError, Result};
+use crate::error::{AppError, Result};
 use axum::{
     http::StatusCode,
     response::IntoResponse,
@@ -10,7 +10,9 @@ use serde_json::Value;
 
 #[tokio::test]
 async fn test_security_violation_error() {
-    let error = AppError::SecurityViolation("Unauthorized access attempt".to_string());
+    let error = AppError::Authentication {
+        message: "Unauthorized access attempt".to_string(),
+    };
     let response = error.into_response();
     
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -24,9 +26,9 @@ async fn test_security_violation_error() {
 
 #[tokio::test]
 async fn test_rate_limit_exceeded_error() {
-    let error = AppError::RateLimitExceeded {
-        resource: "admin_panel".to_string(),
-        details: "5 attempts in 5 minutes".to_string(),
+    let error = AppError::RateLimit {
+        limit: 5,
+        window: "5 minutes".to_string(),
     };
     let response = error.into_response();
     
@@ -35,14 +37,16 @@ async fn test_rate_limit_exceeded_error() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     
-    assert_eq!(json["error"]["type"], "RATE_LIMIT_EXCEEDED");
-    assert!(json["error"]["message"].as_str().unwrap().contains("admin_panel"));
-    assert_eq!(json["error"]["details"], "Please try again later");
+    assert_eq!(json["error_type"], "https://gemini-proxy.dev/errors/rate-limit");
+    assert_eq!(json["title"], "Rate Limit Exceeded");
 }
 
 #[tokio::test]
 async fn test_key_health_check_failed_error() {
-    let error = AppError::KeyHealthCheckFailed("All keys unhealthy".to_string());
+    let error = AppError::KeyHealthCheck {
+        key_id: "all".to_string(),
+        message: "All keys unhealthy".to_string(),
+    };
     let response = error.into_response();
     
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -50,6 +54,6 @@ async fn test_key_health_check_failed_error() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     
-    assert_eq!(json["error"]["type"], "KEY_HEALTH_CHECK_FAILED");
-    assert!(json["error"]["message"].as_str().unwrap().contains("key health issues"));
+    assert_eq!(json["error_type"], "https://gemini-proxy.dev/errors/key-management");
+    assert_eq!(json["title"], "Key Management Error");
 }

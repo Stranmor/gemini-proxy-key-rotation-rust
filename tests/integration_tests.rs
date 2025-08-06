@@ -7,8 +7,8 @@ use axum::{
     http::{/* header, */ Method, StatusCode, Uri}, // Removed unused header
     response::Response,
 };
-use gemini_proxy_key_rotation_rust::key_manager::KeyManagerTrait;
-use gemini_proxy_key_rotation_rust::{
+use crate::key_manager::KeyManagerTrait;
+use crate::{
     config::{AppConfig, KeyGroup, ServerConfig},
     handlers, // Import the handler module
     // key_manager::FlattenedKeyInfo, // Removed unused import
@@ -127,7 +127,7 @@ async fn test_forward_request_openai_compat_success_no_proxy() {
     let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
         .await
         .expect("AppState failed");
-    let app_state = Arc::new(app_state_instance); // Wrap in Arc
+    let app_state: Arc<AppState> = Arc::new(app_state_instance);
 
     // 3. Call handler directly
     let response =

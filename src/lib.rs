@@ -43,7 +43,7 @@ use uuid::Uuid;
 
 // Re-export key types for convenience
 pub use config::AppConfig;
-pub use error::{AppError, Result, ErrorContext, set_error_context, with_error_context};
+pub use error::{context::ErrorContext, AppError, Result};
 pub use state::AppState;
 
 /// Создает основной роутер Axum для приложения.

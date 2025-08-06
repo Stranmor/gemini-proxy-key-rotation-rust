@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{warn, error, info};
+use tracing::{warn, error};
 
 pub mod token_manager;
 
@@ -55,7 +55,7 @@ impl SecurityMiddleware {
                 client_ip = %client_ip,
                 "Admin panel access blocked due to rate limiting"
             );
-            return Err(AppError::Unauthorized);
+            return Err(AppError::Authentication { message: "Unauthorized".to_string() });
         }
 
         // Проверяем HTTPS в продакшене
@@ -64,7 +64,7 @@ impl SecurityMiddleware {
                 client_ip = %client_ip,
                 "Admin panel access attempted over insecure connection"
             );
-            return Err(AppError::Unauthorized);
+            return Err(AppError::Authentication { message: "Unauthorized".to_string() });
         }
 
         let response = next.run(request).await;

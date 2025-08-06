@@ -27,10 +27,10 @@ pub fn load_config(config_path: &Path) -> Result<AppConfig> {
 
 fn load_from_file(config_path: &Path) -> Result<AppConfig> {
     let content = std::fs::read_to_string(config_path)
-        .map_err(|e| AppError::ConfigError(format!("Failed to read config file: {}", e)))?;
+        .map_err(|e| AppError::ConfigNotFound { path: config_path.display().to_string() })?;
     
     serde_yaml::from_str(&content)
-        .map_err(|e| AppError::ConfigError(format!("Failed to parse config file: {}", e)))
+        .map_err(|e| AppError::ConfigParse { message: format!("Failed to parse config file: {}", e), line: e.location().map(|loc| loc.line()) })
 }
 
 fn override_with_env(config: &mut AppConfig) {
@@ -64,11 +64,11 @@ fn override_with_env(config: &mut AppConfig) {
 /// Save configuration to file (for admin interface)
 pub async fn save_config(config: &AppConfig, config_path: &Path) -> Result<()> {
     let yaml_content = serde_yaml::to_string(config)
-        .map_err(|e| AppError::ConfigError(format!("Failed to serialize config: {}", e)))?;
+        .map_err(|e| AppError::Serialization { message: format!("Failed to serialize config: {}", e) })?;
     
     tokio::fs::write(config_path, yaml_content)
         .await
-        .map_err(|e| AppError::ConfigError(format!("Failed to write config file: {}", e)))?;
+        .map_err(|e| AppError::Io { operation: "write_config".to_string(), message: format!("Failed to write config file: {}", e) })?;
     
     info!("Configuration saved to: {}", config_path.display());
     Ok(())
