@@ -30,6 +30,31 @@ impl ConfigValidator {
         }
         debug!("Server config validation passed");
 
+        // Validate token limit and warn on very high values
+        if let Some(limit) = config.server.max_tokens_per_request {
+            if !(1..=2_000_000).contains(&limit) {
+                return Err(AppError::config_validation(
+                    format!("server.max_tokens_per_request must be within 1..=2_000_000, got {limit}"),
+                    Some("server.max_tokens_per_request"),
+                ));
+            }
+            if limit > 500_000 {
+                warn!("Configured server.max_tokens_per_request is high: {}. Consider lowering to protect upstream.", limit);
+            }
+        }
+        // Доп. проверка лимита токенов и предупреждение при слишком высоких значениях
+        if let Some(limit) = config.server.max_tokens_per_request {
+            if !(1..=2_000_000).contains(&limit) {
+                return Err(AppError::config_validation(
+                    format!("server.max_tokens_per_request must be within 1..=2_000_000, got {limit}"),
+                    Some("server.max_tokens_per_request"),
+                ));
+            }
+            if limit > 500_000 {
+                warn!("Configured server.max_tokens_per_request is high: {}. Consider lowering to protect upstream.", limit);
+            }
+        }
+
         debug!("Configuration validation completed successfully");
         Ok(())
     }

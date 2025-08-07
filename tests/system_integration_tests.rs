@@ -43,6 +43,7 @@ async fn create_test_system(
 
     let config = AppConfig {
         server: ServerConfig {
+            max_tokens_per_request: Some(250_000),
             port: 8080,
             top_p: None,
             admin_token: Some("test_token".to_string()),

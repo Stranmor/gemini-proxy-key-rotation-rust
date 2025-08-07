@@ -39,6 +39,7 @@ static TEST_DB_COUNTER: AtomicUsize = AtomicUsize::new(2);
 fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, _db_num: usize) -> AppConfig {
     AppConfig {
         server: ServerConfig {
+            max_tokens_per_request: Some(250_000),
             port: server_port,
             top_p: None,
             admin_token: Some("test_token".to_string()),

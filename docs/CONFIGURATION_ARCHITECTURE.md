@@ -13,6 +13,7 @@ server:
   connect_timeout_secs: 10
   request_timeout_secs: 60
   top_p: 0.7
+  max_tokens_per_request: 250000  # Optional: per-request token limit (reject if exceeded)
 
 redis_url: "redis://redis:6379" # Redis connection
 redis_key_prefix: "gemini_proxy"
@@ -42,6 +43,21 @@ REDIS_UI_PASSWORD=secure_password_here
 ```
 
 ## 🔄 How It Works
+
+### Tokenizer Lifecycle (Fail-Fast vs Fallback)
+
+- On production startup, tokenizer initialization is mandatory. Any failure results in an immediate startup error (fail-fast).
+- In test/dev environments, if the tokenizer cannot be fetched/initialized, the application installs a minimal fallback (whitespace, WordLevel) to enable local testing.
+
+### Token Limit Guardrails
+
+- If `server.max_tokens_per_request` is set:
+  - The proxy computes the request token count with the shared tokenizer before forwarding.
+  - Requests exceeding the limit are rejected with a `RequestTooLarge` application error.
+  - Metrics emitted:
+    - `request_token_count` (histogram) — records calculated token counts per request
+    - `token_limit_blocks_total` (counter) — increments on each limit-based rejection
+- If unset, a safe default (e.g., 250,000) is used internally; adjust per deployment needs.
 
 1. **Application reads config.yaml** and uses `server.port: 4806`
 2. **Docker maps ports**: `localhost:4806 -> container:4806`

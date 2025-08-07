@@ -44,6 +44,9 @@ pub struct ServerConfig {
     pub admin_token: Option<String>,
     #[serde(default)]
     pub top_p: Option<f32>,
+    /// Максимально допустимое число токенов на запрос. Если None — используется дефолт 250_000.
+    #[serde(default)]
+    pub max_tokens_per_request: Option<u64>,
 }
 
 impl Default for ServerConfig {
@@ -55,6 +58,7 @@ impl Default for ServerConfig {
             test_mode: false,
             admin_token: None,
             top_p: None,
+            max_tokens_per_request: None,
         }
     }
 }

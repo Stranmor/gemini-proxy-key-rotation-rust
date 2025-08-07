@@ -11,6 +11,7 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 
 - 🔒 **Enterprise Security**: Rate limiting, HTTPS enforcement, session management
 - 📊 **Intelligent Monitoring**: Proactive key health scoring (0.0-1.0), automated alerts
+- 🧱 **Token Limit Guardrails**: Configurable per-request token limit with metrics and fail-fast init
 - 🛡️ **Circuit Breaker**: Automatic failover for upstream services
 - 🔄 **Graceful Operations**: Zero-downtime restarts, proper signal handling
 - 🧪 **42+ Tests**: Comprehensive test coverage for production reliability
@@ -58,11 +59,13 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 - **Session Management**: Secure token-based admin authentication
 - **Audit Logging**: Comprehensive security event tracking
 - **Request Validation**: Size limits and input sanitization
+- **Token Budget Enforcement**: Configurable token limit per request (`server.max_tokens_per_request`)
 
 ### 📊 **Advanced Monitoring**
 - **Proactive Health Checks**: Background monitoring every 30 seconds
 - **Automated Alerts**: Notifications when >3 keys unhealthy or error rate >10%
 - **Performance Metrics**: Response times, success rates, usage patterns
+- **Tokenization Metrics**: `request_token_count` (histogram), `token_limit_blocks_total` (counter)
 - **Admin Dashboard**: Web-based monitoring at `/admin/`
 - **Detailed Analytics**: Per-key and per-group statistics
 
@@ -79,6 +82,17 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 - **Comprehensive Testing**: 42+ automated tests ensure reliability
 
 ## Architecture
+
+### Tokenizer Initialization and Token Limit Enforcement
+
+- The proxy uses a shared tokenizer to compute request token counts before forwarding.
+- Initialization is fail-fast in production: if tokenizer cannot be initialized at startup, the app aborts.
+- In test/dev mode, a minimal whitespace-based fallback tokenizer is installed automatically to keep local workflows unblocked.
+- A configurable limit (`server.max_tokens_per_request`) guards requests:
+  - If the computed token count exceeds the limit, the request is rejected with `RequestTooLarge`.
+  - Prometheus-style metrics are emitted:
+    - `request_token_count` (histogram): per-request token count
+    - `token_limit_blocks_total` (counter): increments on limit-based rejections
 
 The Gemini Proxy Key Rotation service is built with a modular architecture, leveraging Rust's ownership and concurrency features to ensure high performance and reliability. Below are the core components and their interactions:
 
@@ -172,7 +186,9 @@ make build
 
 # Configure
 cp config.example.yaml config.yaml
-# Edit config.yaml with your API keys
+# Edit config.yaml with your API keys and optional token guardrail, e.g.:
+# server:
+#   max_tokens_per_request: 250000
 
 # Run
 make run

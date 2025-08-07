@@ -6,6 +6,7 @@ use gemini_proxy::config::{validation::ConfigValidator, AppConfig, KeyGroup, Ser
 fn test_config_validation_valid_config() {
     let config = AppConfig {
         server: ServerConfig {
+            max_tokens_per_request: Some(250_000),
             port: 8080,
             top_p: Some(0.9),
             admin_token: Some("test-token".to_string()),
@@ -39,6 +40,7 @@ fn test_config_validation_valid_config() {
 fn test_config_validation_empty_groups() {
     let config = AppConfig {
         server: ServerConfig {
+            max_tokens_per_request: Some(250_000),
             port: 8080,
             top_p: None,
             admin_token: None,

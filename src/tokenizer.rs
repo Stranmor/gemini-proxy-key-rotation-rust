@@ -5,9 +5,12 @@ use std::error::Error;
 use std::sync::OnceLock;
 use tokenizers::Tokenizer;
 use tokio::task;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 pub static TOKENIZER: OnceLock<Tokenizer> = OnceLock::new();
+
+
+
 
 /// Initializes the global tokenizer by downloading it from the Hugging Face Hub
 /// in a blocking-safe manner.
@@ -30,6 +33,50 @@ pub async fn initialize_tokenizer(model_name: &str) -> Result<(), Box<dyn Error 
     }
     Ok(())
 }
+
+/// Гарантирует наличие инициализированного токенизатора.
+/// - test_mode = true: при отсутствии — устанавливает минимальный Whitespace WordLevel.
+/// - test_mode = false: при отсутствии — возвращает Err (должно приводить к fail-fast при старте).
+pub fn ensure_initialized(test_mode: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if TOKENIZER.get().is_some() {
+        return Ok(());
+    }
+    if test_mode {
+        match minimal_whitespace_tokenizer() {
+            Ok(tk) => {
+                let _ = TOKENIZER.set(tk);
+                info!("Installed minimal fallback tokenizer for test_mode=true");
+                Ok(())
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to install minimal fallback tokenizer");
+                Err(e)
+            }
+        }
+    } else {
+        Err("Tokenizer not initialized and test_mode=false".into())
+    }
+}
+
+
+fn minimal_whitespace_tokenizer() -> Result<Tokenizer, Box<dyn Error + Send + Sync>> {
+    // Минимальный валидный JSON-конфиг для tokenizers:
+    // WordLevel модель + Whitespace pre_tokenizer, без декодера/нормализатора
+    let simple_tokenizer_json = r#"{
+      "version":"1.0",
+      "truncation":null,
+      "padding":null,
+      "added_tokens":[],
+      "normalizer": null,
+      "pre_tokenizer": { "type": "Whitespace" },
+      "post_processor": null,
+      "decoder": null,
+      "model": { "type": "WordLevel", "vocab": {"a":0, "b":1, "c":2, "[UNK]":3}, "unk_token":"[UNK]" }
+    }"#;
+    let tk = Tokenizer::from_bytes(simple_tokenizer_json.as_bytes())?;
+    Ok(tk)
+}
+
 
 /// Counts the number of tokens in a given text using the global tokenizer.
 pub fn count_tokens(text: &str) -> Result<usize, Box<dyn Error + Send + Sync>> {

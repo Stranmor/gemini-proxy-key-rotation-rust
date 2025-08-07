@@ -25,10 +25,10 @@ use axum::{
 use secrecy::ExposeSecret;
 use std::sync::Arc;
 
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{error, info, instrument, trace, warn};
+use crate::metrics::METRICS;
 use url::Url;
 
-const TOKEN_LIMIT: usize = 250_000;
 
 /// Lightweight health check handler used by /health route
 pub async fn health_check() -> Response {
@@ -95,7 +95,7 @@ struct RequestContext<'a> {
     body: &'a Bytes,
 }
 
-fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
+fn validate_token_count_with_limit(json_body: &serde_json::Value, limit: u64, test_mode: bool, model_hint: Option<String>) -> Result<()> {
     let total_text: String = json_body
         .get("messages")
         .and_then(|m| m.as_array())
@@ -112,40 +112,46 @@ fn validate_token_count(json_body: &serde_json::Value) -> Result<()> {
         return Ok(());
     }
 
-    // Only count tokens if tokenizer is initialized
     #[cfg(feature = "tokenizer")]
-    if let Some(tokenizer) = crate::tokenizer::TOKENIZER.get() {
-        let token_count = tokenizer
-            .encode(total_text.as_str(), false)
-            .map(|encoding| encoding.len())
-            .unwrap_or(0);
+    {
+        use crate::tokenizer::TOKENIZER;
+        if let Some(tokenizer) = TOKENIZER.get() {
+            let token_count = tokenizer
+                .encode(total_text.as_str(), false)
+                .map(|encoding| encoding.len())
+                .unwrap_or(0);
 
-        info!(token_count, "Calculated request token count");
+            METRICS.record_request_tokens(token_count as u64);
+            info!(token_count, limit, "Calculated request token count");
 
-        if token_count > TOKEN_LIMIT {
-            warn!(
-                token_count,
-                limit = TOKEN_LIMIT,
-                "Request exceeds token limit. Rejecting request."
-            );
-            return Err(AppError::RequestTooLarge {
-                size: token_count,
-                max_size: TOKEN_LIMIT,
-            });
+            if (token_count as u64) > limit {
+                warn!(token_count, limit, "Request exceeds token limit. Rejecting request.");
+                METRICS.record_token_limit_block(model_hint.clone());
+                return Err(AppError::RequestTooLarge {
+                    size: token_count,
+                    max_size: limit as usize,
+                });
+            }
+        } else {
+            error!("Tokenizer not initialized at request time");
+            if !test_mode {
+                return Err(AppError::UpstreamUnavailable {
+                    service: "tokenizer".to_string(),
+                });
+            } else {
+                warn!("Tokenizer not initialized, test_mode=true — skipping token count check with warning");
+            }
         }
-    } else {
-        debug!("Tokenizer not initialized, skipping token count check");
     }
 
     Ok(())
 }
-
-fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes, HeaderMap)> {
+fn process_request_body(body_bytes: Bytes, top_p: Option<f64>, limit: u64, test_mode: bool, model_hint: Option<String>) -> Result<(Bytes, HeaderMap)> {
     let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let mut headers = HeaderMap::new();
 
     if let Some(json_body) = &json_body_opt {
-        validate_token_count(json_body)?;
+        validate_token_count_with_limit(json_body, limit, test_mode, model_hint)?;
     }
 
     // Conditionally inject top_p
@@ -234,8 +240,26 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
     // Process request body (token validation and top_p injection)
     let top_p = state.config.read().await.top_p;
+    // Вычислим подсказку модели заранее для метрик/логов
+    let path_for_model = parts.uri.path().to_string();
+    let model_hint_from_path = {
+        if let Some(caps) = regex::Regex::new(r"/v1beta/models/([^/:]+)").ok().and_then(|re| re.captures(&path_for_model)) {
+            Some(caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default())
+        } else {
+            None
+        }
+    };
+
+    let cfg_guard = state.config.read().await;
+    let limit = cfg_guard
+        .server
+        .max_tokens_per_request
+        .unwrap_or(250_000);
+    let test_mode = cfg_guard.server.test_mode;
+    drop(cfg_guard);
+
     let (processed_body, additional_headers) =
-        process_request_body(body_bytes, top_p.map(|v| v as f64))?;
+        process_request_body(body_bytes, top_p.map(|v| v as f64), limit, test_mode, model_hint_from_path.clone())?;
 
     // Merge additional headers
     for (key, value) in additional_headers {
@@ -410,7 +434,7 @@ mod token_limit_tests {
         let body = json!({
             "messages": [{"role": "user", "content": ""}]
         });
-        let res = validate_token_count(&body);
+        let res = validate_token_count_with_limit(&body, 250_000, true, None);
         assert!(
             res.is_ok(),
             "Should not error without tokenizer on empty content"
@@ -421,27 +445,19 @@ mod token_limit_tests {
     fn validate_blocks_when_over_limit_with_tokenizer() {
         install_minimal_tokenizer();
 
-        // Build a huge text exceeding TOKEN_LIMIT by creating many words.
+        // Build a huge text exceeding configured limit by creating many words.
         // Each word should count roughly as a token with Whitespace pre-tokenizer.
-        let big_text = "a ".repeat(TOKEN_LIMIT + 10);
+        let limit: u64 = 100;
+        let big_text = "a ".repeat((limit + 10) as usize);
         let body = json!({
             "messages": [
                 {"role":"user", "content": big_text}
             ]
         });
-
-        let err =
-            validate_token_count(&body).expect_err("Expected UpstreamServiceError for over-limit");
-        if let AppError::UpstreamUnavailable { ref service } = err {
-            if service == "unknown" {
-                // Возвращаем как есть, без преобразования в 502.
-                // This part of the code is unreachable in the test, as the error is returned.
-            }
-        }
-        // The test expects a panic if the error is not UpstreamUnavailable.
-        // The previous code was trying to match on `err` again, which is incorrect.
-        // The `expect_err` already gives us the error, so we just need to assert its type.
-        // Since we replaced UpstreamServiceError with UpstreamUnavailable, we assert that.
-        assert!(matches!(err, AppError::RequestTooLarge { .. }));
+        // Используем минимальный токенизатор, чтобы предсказуемо считать по пробелам
+        install_minimal_tokenizer();
+        let err = validate_token_count_with_limit(&body, limit, true, None)
+            .expect_err("Expected RequestTooLarge for over-limit");
+        assert!(matches!(err, AppError::RequestTooLarge { .. }), "Must be RequestTooLarge, got: {:?}", err);
     }
 }

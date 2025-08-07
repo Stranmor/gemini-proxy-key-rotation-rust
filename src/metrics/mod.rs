@@ -37,6 +37,10 @@ pub struct MetricsRegistry {
     pub rate_limit_hits_total: Counter,
     pub rate_limit_blocks_total: Counter,
 
+    // Token limit metrics
+    pub token_limit_blocks_total: Counter,
+    pub request_token_count: Histogram,
+
     // Redis metrics
     pub redis_operations_total: Counter,
     pub redis_errors_total: Counter,
@@ -71,6 +75,11 @@ impl MetricsRegistry {
             rate_limit_hits_total: counter!("gemini_proxy_rate_limit_hits_total"),
             rate_limit_blocks_total: counter!("gemini_proxy_rate_limit_blocks_total"),
 
+            // Token limit metrics
+            token_limit_blocks_total: counter!("gemini_proxy_token_limit_blocks_total"),
+            // Histogram для распределения количества токенов в запросах
+            request_token_count: histogram!("gemini_proxy_request_token_count"),
+
             // Redis metrics
             redis_operations_total: counter!("gemini_proxy_redis_operations_total"),
             redis_errors_total: counter!("gemini_proxy_redis_errors_total"),
@@ -91,6 +100,20 @@ impl Default for MetricsRegistry {
 }
 
 impl MetricsRegistry {
+    /// Запись фактического количества токенов по запросу (для гистограммы)
+    pub fn record_request_tokens(&self, count: u64) {
+        self.request_token_count.record(count as f64);
+        histogram!("gemini_proxy_request_token_count").record(count as f64);
+    }
+
+    /// Инкремент блокировок по лимиту токенов
+    pub fn record_token_limit_block(&self, model: Option<String>) {
+        self.token_limit_blocks_total.increment(1);
+        match model {
+            Some(m) => counter!("gemini_proxy_token_limit_blocks_total", "model" => m).increment(1),
+            None => counter!("gemini_proxy_token_limit_blocks_total").increment(1),
+        };
+    }
     /// Record a request with labels
     pub fn record_request(&self, method: String, path: String, status: u16, duration: Duration) {
         self.requests_total.increment(1);

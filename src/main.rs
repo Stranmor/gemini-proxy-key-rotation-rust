@@ -102,13 +102,35 @@ async fn serve_command(
         // Initialize tokenizer if feature is enabled
         #[cfg(feature = "tokenizer")]
         {
-            use gemini_proxy::tokenizer::initialize_tokenizer;
-            if let Err(e) = initialize_tokenizer("gpt2").await {
-                error!(error = %e, "Failed to initialize tokenizer");
-                return Err(AppError::TokenizerInit {
-                    message: e.to_string(),
+            use gemini_proxy::tokenizer::{ensure_initialized, initialize_tokenizer};
+            // Сначала пробуем загрузить реальный токенизатор (например, gpt2)
+            match initialize_tokenizer("gpt2").await {
+                Ok(_) => { /* success */ }
+                Err(e) => {
+                    if dev {
+                        // В dev/test режиме — мягкий fallback на минимальный
+                        error!(error = %e, "Failed to initialize tokenizer from HF; falling back to minimal tokenizer (dev/test)");
+                        ensure_initialized(true).map_err(|err| {
+                            AppError::TokenizerInit {
+                                message: format!("Failed to install fallback tokenizer: {err}"),
+                            }
+                        })?;
+                    } else {
+                        error!(error = %e, "Failed to initialize tokenizer (prod mode). Failing fast.");
+                        return Err(AppError::TokenizerInit {
+                            message: e.to_string(),
+                        }
+                        .into());
+                    }
                 }
-                .into());
+            }
+            // Доп. защита: в prod запрещаем запуск без токенизатора
+            if !dev {
+                ensure_initialized(false).map_err(|e| {
+                    AppError::TokenizerInit {
+                        message: e.to_string(),
+                    }
+                })?;
             }
         }
 
