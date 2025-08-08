@@ -34,10 +34,10 @@ services:
       - /app/busybox
       - wget
       - -qO-
-      - http://localhost:4806/health
-      interval: 10s
-      timeout: 5s
-      start_period: 25s
+      - http://127.0.0.1:4806/health
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
       retries: 5
     networks:
     - gemini-network

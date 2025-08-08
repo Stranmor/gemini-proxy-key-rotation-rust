@@ -155,13 +155,14 @@ CMD ["cargo", "test", "--release", "--all-features"]
 FROM rust:${RUST_VERSION} AS coverage
 WORKDIR /app
 
-# Install system dependencies and nightly
+# Install system dependencies and nightly (robust rustup syntax)
 RUN apt-get update && apt-get install -y \
     llvm-dev \
     libffi-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
- && rustup toolchain install nightly -y && rustup default nightly
+    && yes | rustup toolchain install nightly --profile minimal \
+    && rustup default nightly
 
 # Install Rust components
 RUN rustup component add llvm-tools-preview
