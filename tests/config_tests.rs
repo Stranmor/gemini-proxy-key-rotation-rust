@@ -13,6 +13,7 @@ fn test_config_validation_valid_config() {
             test_mode: false,
             connect_timeout_secs: 10,
             request_timeout_secs: 60,
+            tokenizer_type: None,
         },
         groups: vec![KeyGroup {
             name: "test-group".to_string(),
@@ -47,6 +48,7 @@ fn test_config_validation_empty_groups() {
             test_mode: false,
             connect_timeout_secs: 10,
             request_timeout_secs: 60,
+            tokenizer_type: None,
         },
         groups: vec![], // Empty groups should fail
         redis_url: None,

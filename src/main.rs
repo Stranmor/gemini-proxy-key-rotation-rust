@@ -99,38 +99,56 @@ async fn serve_command(
             );
         }
 
-        // Initialize tokenizer if feature is enabled
+        // Initialize tokenizers for maximum accuracy
         #[cfg(feature = "tokenizer")]
         {
-            use gemini_proxy::tokenizer::{ensure_initialized, initialize_tokenizer};
-            // Сначала пробуем загрузить реальный токенизатор (например, gpt2)
-            match initialize_tokenizer("gpt2").await {
-                Ok(_) => { /* success */ }
+            use gemini_proxy::tokenizer::{
+                GeminiTokenizer, get_gemini_tokenizer_info,
+                MultimodalTokenizer, MultimodalConfig
+            };
+            
+            // 1. Инициализируем базовый Gemini токенизатор
+            info!("Initializing Gemini tokenizer for text processing");
+            match GeminiTokenizer::initialize().await {
+                Ok(_) => {
+                    if let Some(info) = get_gemini_tokenizer_info() {
+                        info!(tokenizer_info = %info, "Gemini tokenizer initialized successfully");
+                    }
+                }
                 Err(e) => {
                     if dev {
-                        // В dev/test режиме — мягкий fallback на минимальный
-                        error!(error = %e, "Failed to initialize tokenizer from HF; falling back to minimal tokenizer (dev/test)");
-                        ensure_initialized(true).map_err(|err| {
-                            AppError::TokenizerInit {
-                                message: format!("Failed to install fallback tokenizer: {err}"),
-                            }
-                        })?;
+                        error!(error = %e, "Failed to initialize Gemini tokenizer in dev mode, but continuing");
                     } else {
-                        error!(error = %e, "Failed to initialize tokenizer (prod mode). Failing fast.");
+                        error!(error = %e, "Failed to initialize Gemini tokenizer in production mode");
                         return Err(AppError::TokenizerInit {
-                            message: e.to_string(),
-                        }
-                        .into());
+                            message: format!("Failed to initialize Gemini tokenizer: {}", e),
+                        }.into());
                     }
                 }
             }
-            // Доп. защита: в prod запрещаем запуск без токенизатора
-            if !dev {
-                ensure_initialized(false).map_err(|e| {
-                    AppError::TokenizerInit {
-                        message: e.to_string(),
+            
+            // 2. Инициализируем multimodal токенизатор
+            info!("Initializing multimodal tokenizer for text + image processing");
+            let multimodal_config = MultimodalConfig {
+                safety_multiplier: 1.2, // 20% запас для безопасности
+                debug_logging: dev,      // Детальное логирование в dev режиме
+                ..Default::default()
+            };
+            
+            match MultimodalTokenizer::initialize(Some(multimodal_config)) {
+                Ok(_) => {
+                    info!("Multimodal tokenizer initialized successfully");
+                }
+                Err(e) => {
+                    if dev {
+                        error!(error = %e, "Failed to initialize multimodal tokenizer in dev mode, but continuing");
+                    } else {
+                        error!(error = %e, "Failed to initialize multimodal tokenizer in production mode");
+                        return Err(AppError::TokenizerInit {
+                            message: format!("Failed to initialize multimodal tokenizer: {}", e),
+                        }.into());
                     }
-                })?;
+                }
             }
         }
 

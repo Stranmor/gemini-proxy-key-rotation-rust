@@ -131,7 +131,7 @@ pub enum AppError {
     #[error("Validation failed: {field} - {message}")]
     Validation { field: String, message: String },
 
-    #[error("Request body too large: {size} bytes (max: {max_size})")]
+    #[error("Request body too large: {size} tokens (max: {max_size})")]
     RequestTooLarge { size: usize, max_size: usize },
 
     // System errors

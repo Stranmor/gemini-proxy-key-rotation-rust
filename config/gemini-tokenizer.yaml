@@ -1,0 +1,56 @@
+# Configuration for maximum accuracy Gemini tokenizer
+
+server:
+  port: 8080
+  connect_timeout_secs: 30
+  request_timeout_secs: 60
+  test_mode: false
+  
+  # Tokenizer settings for maximum accuracy with Gemini
+  tokenizer_type: "gemini"  # Use specialized Gemini tokenizer
+  max_tokens_per_request: 250000  # Token limit (configurable for your needs)
+  
+  # Optional fine-tuning settings
+  top_p: 0.9
+
+# Redis for caching (optional)
+redis_url: "redis://localhost:6379"
+
+# API key groups
+groups:
+  default:
+    keys:
+      - key: "your-gemini-api-key-1"
+        weight: 1
+      - key: "your-gemini-api-key-2" 
+        weight: 1
+    
+    # Group settings
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_timeout_secs: 60
+    
+    rate_limit:
+      requests_per_minute: 1000
+      
+    health_check:
+      enabled: true
+      interval_secs: 30
+
+# Monitoring and metrics
+monitoring:
+  enabled: true
+  prometheus_port: 9090
+  
+  # Detailed token statistics
+  token_metrics:
+    enabled: true
+    histogram_buckets: [10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000, 250000]
+
+# Logging
+logging:
+  level: "info"
+  format: "json"  # or "text"
+  
+  # Special tokenizer settings
+  tokenizer_debug: false  # Enable for tokenization debugging

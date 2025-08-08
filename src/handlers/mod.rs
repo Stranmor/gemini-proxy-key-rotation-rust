@@ -114,32 +114,43 @@ fn validate_token_count_with_limit(json_body: &serde_json::Value, limit: u64, te
 
     #[cfg(feature = "tokenizer")]
     {
-        use crate::tokenizer::TOKENIZER;
-        if let Some(tokenizer) = TOKENIZER.get() {
-            let token_count = tokenizer
-                .encode(total_text.as_str(), false)
-                .map(|encoding| encoding.len())
-                .unwrap_or(0);
+        use crate::tokenizer::count_multimodal_tokens;
+        
+        // Используем multimodal токенизатор для точного подсчета текста и изображений
+        match count_multimodal_tokens(json_body) {
+            Ok(token_result) => {
+                METRICS.record_request_tokens(token_result.total_tokens as u64);
+                info!(
+                    text_tokens = token_result.text_tokens,
+                    image_tokens = token_result.image_tokens,
+                    total_tokens = token_result.total_tokens,
+                    image_count = token_result.image_count,
+                    limit,
+                    "Calculated multimodal token count"
+                );
 
-            METRICS.record_request_tokens(token_count as u64);
-            info!(token_count, limit, "Calculated request token count");
-
-            if (token_count as u64) > limit {
-                warn!(token_count, limit, "Request exceeds token limit. Rejecting request.");
-                METRICS.record_token_limit_block(model_hint.clone());
-                return Err(AppError::RequestTooLarge {
-                    size: token_count,
-                    max_size: limit as usize,
-                });
+                if (token_result.total_tokens as u64) > limit {
+                    warn!(
+                        total_tokens = token_result.total_tokens,
+                        limit,
+                        "Request exceeds token limit. Rejecting request."
+                    );
+                    METRICS.record_token_limit_block(model_hint.clone());
+                    return Err(AppError::RequestTooLarge {
+                        size: token_result.total_tokens,
+                        max_size: limit as usize,
+                    });
+                }
             }
-        } else {
-            error!("Tokenizer not initialized at request time");
-            if !test_mode {
-                return Err(AppError::UpstreamUnavailable {
-                    service: "tokenizer".to_string(),
-                });
-            } else {
-                warn!("Tokenizer not initialized, test_mode=true — skipping token count check with warning");
+            Err(e) => {
+                error!(error = %e, "Failed to count tokens with multimodal tokenizer");
+                if !test_mode {
+                    return Err(AppError::UpstreamUnavailable {
+                        service: "multimodal-tokenizer".to_string(),
+                    });
+                } else {
+                    warn!("Multimodal tokenizer failed in test mode, skipping token count check");
+                }
             }
         }
     }
@@ -402,28 +413,28 @@ mod token_limit_tests {
     use serde_json::json;
     use tokenizers::Tokenizer;
 
-    // Helper to set a minimal tokenizer into the global OnceLock for tests.
-    fn install_minimal_tokenizer() {
-        if crate::tokenizer::TOKENIZER.get().is_none() {
-            // Валидный минимальный токенизатор: WordLevel + Whitespace, decoder отключен (null)
-            // Такой конфиг стабильно парсится библиотекой tokenizers и даёт разбиение по пробелам.
-            let simple_tokenizer_json = r#"
-           {
-             "version":"1.0",
-             "truncation":null,
-             "padding":null,
-             "added_tokens":[],
-             "normalizer": null,
-             "pre_tokenizer": { "type": "Whitespace" },
-             "post_processor": null,
-             "decoder": null,
-             "model": { "type": "WordLevel", "vocab": {"a":0, "b":1, "c":2, "[UNK]":3}, "unk_token":"[UNK]" }
-           }"#;
-
-            let tk = Tokenizer::from_bytes(simple_tokenizer_json.as_bytes())
-                .expect("Failed to construct minimal tokenizer (WordLevel + Whitespace)");
-            let _ = crate::tokenizer::TOKENIZER.set(tk);
-        }
+    // Helper to initialize tokenizers for tests
+    fn install_tokenizers() {
+        use crate::tokenizer::{GeminiTokenizer, MultimodalTokenizer, MultimodalConfig};
+        use tokio::runtime::Runtime;
+        
+        // Инициализируем токенизаторы в тестах
+        let rt = Runtime::new().expect("Failed to create tokio runtime for test");
+        rt.block_on(async {
+            // Gemini токенизатор
+            if let Err(e) = GeminiTokenizer::initialize().await {
+                eprintln!("Warning: Failed to initialize Gemini tokenizer in test: {}", e);
+            }
+            
+            // Multimodal токенизатор
+            let config = MultimodalConfig {
+                debug_logging: true,
+                ..Default::default()
+            };
+            if let Err(e) = MultimodalTokenizer::initialize(Some(config)) {
+                eprintln!("Warning: Failed to initialize multimodal tokenizer in test: {}", e);
+            }
+        });
     }
 
     #[test]
@@ -443,7 +454,7 @@ mod token_limit_tests {
 
     #[test]
     fn validate_blocks_when_over_limit_with_tokenizer() {
-        install_minimal_tokenizer();
+        install_tokenizers();
 
         // Build a huge text exceeding configured limit by creating many words.
         // Each word should count roughly as a token with Whitespace pre-tokenizer.
@@ -454,10 +465,15 @@ mod token_limit_tests {
                 {"role":"user", "content": big_text}
             ]
         });
-        // Используем минимальный токенизатор, чтобы предсказуемо считать по пробелам
-        install_minimal_tokenizer();
+        // Используем токенизаторы для точного подсчета
+        install_tokenizers();
         let err = validate_token_count_with_limit(&body, limit, true, None)
             .expect_err("Expected RequestTooLarge for over-limit");
         assert!(matches!(err, AppError::RequestTooLarge { .. }), "Must be RequestTooLarge, got: {:?}", err);
+        
+        // Проверяем, что сообщение об ошибке содержит "tokens", а не "bytes"
+        let error_message = format!("{}", err);
+        assert!(error_message.contains("tokens"), "Error message should contain 'tokens', got: {}", error_message);
+        assert!(!error_message.contains("bytes"), "Error message should not contain 'bytes', got: {}", error_message);
     }
 }

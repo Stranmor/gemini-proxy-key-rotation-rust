@@ -1,11 +1,19 @@
 // src/tokenizer.rs
 
+pub mod modern;
+pub mod gemini_simple;
+pub mod multimodal;
+
 use hf_hub::api::sync::Api;
 use std::error::Error;
 use std::sync::OnceLock;
 use tokenizers::Tokenizer;
 use tokio::task;
 use tracing::{error, info, warn};
+
+pub use modern::{ModernTokenizer, TokenizerType, count_tokens_modern, get_tokenizer_type};
+pub use gemini_simple::{GeminiTokenizer, count_gemini_tokens, get_gemini_tokenizer_info};
+pub use multimodal::{MultimodalTokenizer, MultimodalConfig, TokenCount, count_multimodal_tokens, get_multimodal_config};
 
 pub static TOKENIZER: OnceLock<Tokenizer> = OnceLock::new();
 

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+
+
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
 pub struct KeyGroup {
     pub name: String,
@@ -47,6 +49,9 @@ pub struct ServerConfig {
     /// Максимально допустимое число токенов на запрос. Если None — используется дефолт 250_000.
     #[serde(default)]
     pub max_tokens_per_request: Option<u64>,
+    /// Тип токенизатора для подсчета токенов
+    #[serde(default)]
+    pub tokenizer_type: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -59,6 +64,7 @@ impl Default for ServerConfig {
             admin_token: None,
             top_p: None,
             max_tokens_per_request: None,
+            tokenizer_type: None,
         }
     }
 }

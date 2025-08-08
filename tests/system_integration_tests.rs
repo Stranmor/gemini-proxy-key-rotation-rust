@@ -50,6 +50,7 @@ async fn create_test_system(
             test_mode: true,
             connect_timeout_secs: 10,
             request_timeout_secs: 60,
+            tokenizer_type: None,
         },
         groups: vec![test_group],
         redis_url: None, // Disable Redis for tests

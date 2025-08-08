@@ -46,6 +46,7 @@ fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, _db_num: usize) -
             test_mode: true,
             connect_timeout_secs: 10,
             request_timeout_secs: 60,
+            tokenizer_type: None,
         },
         groups,
         redis_url: None, // Disable Redis for tests

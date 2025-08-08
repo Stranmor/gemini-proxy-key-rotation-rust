@@ -1,0 +1,90 @@
+# Example configuration for multimodal tokenization
+
+server:
+  port: 8080
+  connect_timeout_secs: 30
+  request_timeout_secs: 60
+  test_mode: false
+  
+  # Tokenization settings
+  tokenizer_type: "multimodal"  # Use multimodal tokenizer
+  max_tokens_per_request: 250000  # Token limit
+  
+  # Optional settings
+  top_p: 0.9
+
+# Multimodal tokenization settings (optional, has reasonable defaults)
+multimodal:
+  # Safety multiplier for reliability (1.0 = no buffer, 1.5 = 50% buffer)
+  safety_multiplier: 1.2
+  
+  # Maximum image size in bytes (20MB)
+  max_image_size: 20971520
+  
+  # Enable detailed logging (useful for debugging)
+  debug_logging: false
+  
+  # Coefficients for different image formats
+  image_coefficients:
+    # JPEG and PNG (well-compressed formats)
+    jpeg_png_factor: 0.85
+    
+    # WebP (most efficient format)
+    webp_factor: 0.75
+    
+    # GIF (less efficient)
+    gif_factor: 1.1
+    
+    # Unknown formats (conservative estimate)
+    unknown_factor: 1.0
+
+# Redis for caching (optional)
+redis_url: "redis://localhost:6379"
+
+# API key groups
+groups:
+  default:
+    keys:
+      - key: "your-gemini-api-key-1"
+        weight: 1
+      - key: "your-gemini-api-key-2" 
+        weight: 1
+    
+    # Group settings
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_timeout_secs: 60
+    
+    rate_limit:
+      requests_per_minute: 1000
+      
+    health_check:
+      enabled: true
+      interval_secs: 30
+
+# Monitoring and metrics
+monitoring:
+  enabled: true
+  prometheus_port: 9090
+  
+  # Detailed token statistics
+  token_metrics:
+    enabled: true
+    # Histogram buckets for tokens (including multimodal)
+    histogram_buckets: [10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000, 250000]
+    
+    # Separate metrics for images
+    image_metrics:
+      enabled: true
+      size_buckets: [1024, 10240, 102400, 1048576, 10485760] # 1KB, 10KB, 100KB, 1MB, 10MB
+
+# Logging
+logging:
+  level: "info"
+  format: "json"  # or "text"
+  
+  # Special settings for multimodal tokenizer
+  multimodal_debug: false  # Enable for detailed debugging
+  
+  # Log details of each image
+  log_image_details: false
