@@ -6,9 +6,17 @@ server:
   request_timeout_secs: 60
   test_mode: false
   
-  # Tokenizer settings for maximum accuracy with Gemini
-  tokenizer_type: "gemini"  # Use specialized Gemini tokenizer
-  max_tokens_per_request: 250000  # Token limit (configurable for your needs)
+  # Tokenizer settings optimized for reliability + performance
+  tokenizer_type: "smart_parallel"  # Умная параллельная обработка
+  max_tokens_per_request: 250000   # Token limit (configurable for your needs)
+  
+  # Smart Parallel tokenizer settings
+  tokenizer_config:
+    token_limit: 250000            # Жесткий лимит токенов
+    safe_threshold: 150000         # Безопасный порог (60% от лимита)
+    chars_per_token_conservative: 2.0  # Очень консервативная оценка (реально ~4)
+    precise_tokenization_timeout_ms: 100  # Таймаут точной токенизации
+    enable_parallel_sending: true  # Параллельная отправка + токенизация
   
   # Optional fine-tuning settings
   top_p: 0.9

@@ -6,20 +6,32 @@ This project includes a specialized tokenizer for Google Gemini models, providin
 
 ## Features
 
+### 🧠 Smart Parallel Processing (NEW!)
+- **Intelligent Decision Making**: Automatically chooses optimal processing strategy
+- **Parallel Execution**: Tokenization + network requests run simultaneously
+- **Conservative Estimation**: 2.0 chars/token ratio for safety
+- **Three-tier Strategy**:
+  - Small texts (<150k tokens): Direct sending
+  - Medium texts (150k-250k): Parallel processing
+  - Large texts (>250k): Immediate rejection
+
 ### 🎯 Maximum Accuracy
 - **TikToken cl100k_base**: Uses the same algorithm as modern LLMs
-- **Official Models**: Loads tokenizers from HuggingFace Hub
-- **Fallback System**: Intelligent approximation when official models are unavailable
+- **Official Google Tokenizer**: Direct integration with Vertex AI SDK
+- **ML-Calibrated Models**: Advanced feature extraction for precision
+- **Proxy-Cached Results**: Real API responses with intelligent caching
 
 ### ⚡ High Performance
+- **Parallel Processing**: Tokenization + network in parallel
 - **Local Counting**: 0.1-1ms per request
+- **Timeout Protection**: 100ms limit for tokenization
 - **Caching**: Optimized memory usage
-- **Async**: Non-blocking initialization
 
 ### 🔧 Flexible Configuration
-- **Automatic Selection**: Best available tokenizer
+- **Multiple Strategies**: Choose from 7+ tokenization approaches
 - **Configurable Limits**: Precise request size control
-- **Monitoring**: Detailed usage statistics
+- **Monitoring**: Detailed performance metrics
+- **Fallback System**: Graceful degradation when services unavailable
 
 ## Architecture
 

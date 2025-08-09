@@ -2,7 +2,7 @@
 
 use std::error::Error;
 use std::sync::OnceLock;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub enum TokenizerType {

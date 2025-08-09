@@ -4,7 +4,7 @@ use std::error::Error;
 use std::sync::OnceLock;
 use serde_json::Value;
 use tracing::{info, warn, debug};
-use base64::{Engine as _, engine::general_purpose};
+
 
 /// Конфигурация для multimodal токенизации
 #[derive(Debug, Clone)]

@@ -2,6 +2,12 @@
 
 pub mod modern;
 pub mod gemini_simple;
+pub mod gemini_calibrated;
+pub mod gemini_ml_calibrated;
+pub mod official_google;
+pub mod proxy_cached;
+pub mod gemini_first;
+pub mod smart_parallel;
 pub mod multimodal;
 
 use hf_hub::api::sync::Api;
@@ -13,6 +19,12 @@ use tracing::{error, info, warn};
 
 pub use modern::{ModernTokenizer, TokenizerType, count_tokens_modern, get_tokenizer_type};
 pub use gemini_simple::{GeminiTokenizer, count_gemini_tokens, get_gemini_tokenizer_info};
+pub use gemini_calibrated::{GeminiCalibratedTokenizer, count_calibrated_gemini_tokens, get_calibrated_gemini_tokenizer_info};
+pub use gemini_ml_calibrated::{GeminiMLCalibratedTokenizer, count_ml_calibrated_gemini_tokens, get_ml_calibrated_gemini_tokenizer_info};
+pub use official_google::{OfficialGoogleTokenizer, count_official_google_tokens, count_official_google_tokens_for_model, get_official_google_tokenizer_info};
+pub use proxy_cached::ProxyCachedTokenizer;
+pub use gemini_first::{GeminiFirstTokenizer, GeminiFirstConfig, TokenizationDecision, PostResponseTokens, should_tokenize_before_request, count_tokens_post_response, get_gemini_first_tokenizer};
+pub use smart_parallel::{SmartParallelTokenizer, SmartParallelConfig, ProcessingDecision, ProcessingResult, process_text_smart, get_smart_parallel_tokenizer};
 pub use multimodal::{MultimodalTokenizer, MultimodalConfig, TokenCount, count_multimodal_tokens, get_multimodal_config};
 
 pub static TOKENIZER: OnceLock<Tokenizer> = OnceLock::new();
