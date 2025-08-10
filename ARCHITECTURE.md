@@ -232,7 +232,7 @@ services:
   gemini-proxy:
     image: gemini-proxy:latest
     ports:
-      - "8080:8080"
+      - "4806:4806"
     environment:
       - RUST_LOG=info
       - REDIS_URL=redis://redis:6379
@@ -266,18 +266,18 @@ spec:
       - name: gemini-proxy
         image: gemini-proxy:latest
         ports:
-        - containerPort: 8080
+        - containerPort: 4806
         env:
         - name: REDIS_URL
           value: "redis://redis-cluster:6379"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 4806
         readinessProbe:
           httpGet:
             path: /health/detailed
-            port: 8080
+            port: 4806
 ```
 
 ## Performance Characteristics
@@ -390,10 +390,10 @@ make format
 ### Debug Commands
 ```bash
 # Check service health
-curl http://localhost:8080/health/detailed
+curl http://localhost:4806/health/detailed
 
 # View metrics
-curl http://localhost:8080/metrics
+curl http://localhost:4806/metrics
 
 # Check logs
 docker logs gemini-proxy
