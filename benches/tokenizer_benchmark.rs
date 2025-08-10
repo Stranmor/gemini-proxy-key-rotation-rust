@@ -34,7 +34,7 @@ fn bench_local_tokenization(c: &mut Criterion) {
     // Инициализируем токенизатор один раз
     rt.block_on(async {
         // Используем современный токенизатор
-        if let Err(_) = initialize_tokenizer("gpt2").await {
+        if (initialize_tokenizer("gpt2").await).is_err() {
             // Fallback для тестов без HF_TOKEN
             println!("Warning: Using minimal tokenizer for benchmark");
         }
@@ -67,18 +67,21 @@ fn bench_local_tokenization(c: &mut Criterion) {
 }
 
 fn bench_api_simulation(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
+    let _rt = Runtime::new().unwrap();
     
     let mut group = c.benchmark_group("api_simulation");
     // Симулируем типичную латентность API
     group.measurement_time(Duration::from_secs(10));
     
     group.bench_function("api_call_simulation", |b| {
-        b.to_async(&rt).iter(|| async {
-            // Симулируем API вызов с типичной латентностью
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            black_box(42) // Возвращаем фиктивное количество токенов
-        })
+        b.iter_batched(
+            || (),
+            |_| async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                black_box(42)
+            },
+            criterion::BatchSize::SmallInput,
+        )
     });
     
     group.finish();

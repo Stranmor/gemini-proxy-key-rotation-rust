@@ -57,7 +57,7 @@ mod tests {
 
         let action = handler.handle(&response, &body_bytes, api_key);
 
-        assert!(matches!(action, None));
+        assert!(action.is_none());
     }
 
     #[tokio::test]
@@ -72,7 +72,7 @@ mod tests {
 
         let action = handler.handle(&response, &body_bytes, api_key);
 
-        assert!(matches!(action, None));
+        assert!(action.is_none());
     }
 
     #[tokio::test]
@@ -87,6 +87,6 @@ mod tests {
 
         let action = handler.handle(&response, &body_bytes, api_key);
 
-        assert!(matches!(action, None));
+        assert!(action.is_none());
     }
 }

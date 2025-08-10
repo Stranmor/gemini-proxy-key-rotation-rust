@@ -55,3 +55,7 @@ internal_retries: 2
 # Number of minutes to temporarily block a key after it has exhausted all
 # internal_retries on a 5xx error. Defaults to 5.
 temporary_block_minutes: 5
+
+# Safety multiplier for token calculation to avoid exceeding limits.
+# Defaults to 1.2.
+# safety_multiplier: 1.2

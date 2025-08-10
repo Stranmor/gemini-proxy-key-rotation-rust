@@ -1,6 +1,7 @@
 // src/tokenizer/modern.rs
 
 use std::error::Error;
+use std::str::FromStr;
 use std::sync::OnceLock;
 use tracing::{info, warn};
 
@@ -18,16 +19,24 @@ pub enum TokenizerType {
     Minimal,
 }
 
-impl TokenizerType {
-    pub fn from_str(s: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+impl FromStr for TokenizerType {
+    type Err = Box<dyn Error + Send + Sync>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "openai" | "gpt4" | "gpt-4" | "gpt3.5" | "gpt-3.5" => Ok(Self::OpenAI),
             "claude" | "anthropic" => Ok(Self::Claude),
             "llama" | "llama2" | "llama3" | "meta" => Ok(Self::Llama),
             "gemini" | "google" => Ok(Self::Gemini),
             "minimal" | "test" => Ok(Self::Minimal),
-            _ => Err(format!("Unknown tokenizer type: {}", s).into()),
+            _ => Err(format!("Unknown tokenizer type: {s}").into()),
         }
+    }
+}
+
+impl TokenizerType {
+    pub fn parse_type(s: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        s.parse()
     }
 }
 
@@ -270,7 +279,7 @@ mod tests {
         }
         
         let duration = start.elapsed();
-        println!("1000 tokenizations took: {:?}", duration);
+        println!("1000 tokenizations took: {duration:?}");
         
         // Должно быть очень быстро (< 10ms для 1000 операций)
         assert!(duration.as_millis() < 100);

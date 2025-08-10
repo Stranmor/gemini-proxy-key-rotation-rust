@@ -1,10 +1,10 @@
 // src/admin.rs
-
 use crate::{
     config::{self, AppConfig},
     error::{AppError, Result},
-    key_manager::{FlattenedKeyInfo, KeyManager, KeyManagerTrait},
-    state::{AppState, KeyState},
+    key_manager::{FlattenedKeyInfo, KeyManagerTrait},
+    state::AppState,
+    storage::key_state::KeyState,
 };
 use axum::{
     body::Body,
@@ -24,7 +24,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use sysinfo::{Disks, System};
+use sysinfo::{CpuRefreshKind, Disks, System};
 use tokio::sync::Mutex;
 use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
 use tracing::{error, info, warn};
@@ -71,7 +71,7 @@ impl SystemInfoCollector {
                 timer.tick().await;
                 if let Ok(mut sys) = self.system.try_lock() {
                     // Refresh only what we need to be more efficient.
-                    sys.refresh_cpu_specifics(sysinfo::CpuRefreshKind::everything());
+                    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
                     sys.refresh_memory();
                 } else {
                     warn!("Failed to acquire system lock for refresh, skipping this cycle");
@@ -482,7 +482,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Result<Json<AppCo
     Ok(Json(config.clone()))
 }
 
-/// Принимает новую конфигурацию, отправляет ее в канал для фоновой обработки.
+/// Accepts a new configuration and sends it to a channel for background processing.
 #[axum::debug_handler]
 pub async fn update_config(
     State(state): State<Arc<AppState>>,
@@ -494,7 +494,7 @@ pub async fn update_config(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// Добавляет новые ключи API в указанную группу и отправляет обновленную конфигурацию на перезагрузку.
+/// Adds new API keys to the specified group and sends the updated configuration for reload.
 #[axum::debug_handler]
 pub async fn add_keys(
     State(state): State<Arc<AppState>>,
@@ -538,7 +538,7 @@ pub async fn add_keys(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// Удаляет указанные ключи API из группы и отправляет обновленную конфигурацию на перезагрузку.
+/// Deletes the specified API keys from a group and sends the updated configuration for reload.
 #[axum::debug_handler]
 pub async fn delete_keys(
     State(state): State<Arc<AppState>>,
@@ -749,16 +749,19 @@ pub async fn reload_state_from_config(
 
     // Perform the state reload logic directly here to avoid RwLock deadlocks.
     let new_http_clients = crate::state::build_http_clients(&new_config).await?;
-    let new_key_manager = KeyManager::new(&new_config, state.redis_pool.clone()).await?;
 
     // Atomically swap all parts of the state that depend on the configuration.
     let mut config_guard = state.config.write().await;
     let mut http_clients_guard = state.http_clients.write().await;
     let mut key_manager_guard = state.key_manager.write().await;
 
+    // Instead of replacing the KeyManager, we reload its internal state.
+    key_manager_guard
+        .reload(&new_config, state.redis_pool.clone())
+        .await?;
+
     *config_guard = new_config;
     *http_clients_guard = new_http_clients;
-    *key_manager_guard = new_key_manager;
 
     info!(
         "Application state reloaded successfully after config update from '{}'.",
@@ -768,9 +771,8 @@ pub async fn reload_state_from_config(
     Ok(())
 }
 
-/// Calculates a summary of key statuses and group information.
 async fn calculate_key_status_summary(
-    key_manager_guard: &tokio::sync::RwLockReadGuard<'_, crate::key_manager::KeyManager>,
+    key_manager_guard: &tokio::sync::RwLockReadGuard<'_, dyn KeyManagerTrait>,
     _now: DateTime<Utc>,
 ) -> Result<KeyStatus> {
     let all_key_info = key_manager_guard.get_all_key_info().await;
@@ -824,7 +826,8 @@ fn get_key_status_str(key_state: Option<&KeyState>) -> (&'static str, Option<Dat
     match key_state {
         Some(state) => {
             if state.is_blocked {
-                ("blocked", state.last_failure)
+                // This status aligns with the `temporarily_unavailable_keys` field in `KeyStatus`.
+                ("unavailable", state.last_failure)
             } else {
                 ("available", None)
             }
@@ -862,7 +865,7 @@ mod tests {
             ("available", None)
         );
 
-        let state_blocked = KeyState {
+        let state_unavailable = KeyState {
             key: "test".to_string(),
             group_name: "test".to_string(),
             is_blocked: true,
@@ -870,8 +873,8 @@ mod tests {
             last_failure: Some(now),
         };
         assert_eq!(
-            get_key_status_str(Some(&state_blocked)),
-            ("blocked", Some(now))
+            get_key_status_str(Some(&state_unavailable)),
+            ("unavailable", Some(now))
         );
     }
 

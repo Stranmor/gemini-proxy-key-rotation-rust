@@ -177,7 +177,7 @@ fn test_app_error_display() {
         message: "Invalid token".to_string(),
     };
     
-    let display_string = format!("{}", error);
+    let display_string = format!("{error}");
     assert!(display_string.contains("Authentication failed"));
     assert!(display_string.contains("Invalid token"));
 }
@@ -188,7 +188,7 @@ fn test_app_error_debug() {
         message: "Database error".to_string(),
     };
     
-    let debug_string = format!("{:?}", error);
+    let debug_string = format!("{error:?}");
     assert!(debug_string.contains("Internal"));
     assert!(debug_string.contains("Database error"));
 }
@@ -199,7 +199,7 @@ fn test_app_error_from_std_error() {
     let app_error: AppError = std_error.into();
     
     // Проверяем, что ошибка преобразована
-    let error_string = format!("{}", app_error);
+    let error_string = format!("{app_error}");
     assert!(error_string.contains("IO error"));
 }
 

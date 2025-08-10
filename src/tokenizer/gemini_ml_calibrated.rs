@@ -315,10 +315,10 @@ mod tests {
     #[tokio::test]
     async fn test_ml_calibrated_tokenizer_initialization() {
         let result = GeminiMLCalibratedTokenizer::initialize().await;
-        assert!(result.is_ok(), "ML-calibrated tokenizer initialization failed: {:?}", result);
+        assert!(result.is_ok(), "ML-calibrated tokenizer initialization failed: {result:?}");
         
         let info = get_ml_calibrated_gemini_tokenizer_info().unwrap();
-        println!("ML-calibrated tokenizer info: {}", info);
+        println!("ML-calibrated tokenizer info: {info}");
     }
     
     #[tokio::test]
@@ -339,16 +339,15 @@ mod tests {
         
         for (text, expected) in test_cases {
             let count = count_ml_calibrated_gemini_tokens(text).unwrap();
-            println!("Text: '{}' -> {} tokens (expected: {})", text, count, expected);
+            println!("Text: '{text}' -> {count} tokens (expected: {expected})");
             
             // Допускаем большее отклонение для ML-модели, особенно для Unicode
-            let diff = (count as i32 - expected as i32).abs();
+            let diff = (count as i32 - expected).abs();
             let max_diff = if text.contains("世界") || text.contains("🌍") || text.contains("Привет") { 15 } 
                           else if text.contains("∑") || text.contains("∫") { 10 } 
                           else { 2 };
             assert!(diff <= max_diff, 
-                "ML token count for '{}' should be close to {}, got {} (diff: {})", 
-                text, expected, count, diff);
+                "ML token count for '{text}' should be close to {expected}, got {count} (diff: {diff})");
         }
     }
     
@@ -359,7 +358,7 @@ mod tests {
         let text = "Hello 世界! 🌍 function test() { return 42; }";
         let features = tokenizer.extract_features(text);
         
-        println!("Features for '{}': {:?}", text, features);
+        println!("Features for '{text}': {features:?}");
         
         assert!(features.unicode_chars > 0);
         assert!(features.emoji_count > 0);

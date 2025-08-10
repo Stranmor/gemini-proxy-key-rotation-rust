@@ -12,7 +12,6 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod key_manager;
-pub mod key_manager_v2; // New refactored version
 pub mod metrics;
 pub mod middleware;
 pub mod monitoring;

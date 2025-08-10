@@ -1,14 +1,15 @@
 // src/storage/memory.rs
 
 use crate::error::{AppError, Result};
-use crate::key_manager_v2::FlattenedKeyInfo;
+use crate::key_manager::FlattenedKeyInfo;
 use crate::storage::{KeyState, KeyStateStore, KeyStore};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::trace;
+use tracing::{trace, warn};
 
 /// In-memory implementation of key storage
 pub struct InMemoryStore {
@@ -85,6 +86,20 @@ impl KeyStore for InMemoryStore {
         let states_guard = self.key_states.read().await;
         trace!("InMemoryStore::get_all_key_states: got read lock");
         Ok(states_guard.clone())
+    }
+
+    async fn set_key_rate_limited(&self, api_key: &str, _duration: Duration) -> Result<()> {
+        let mut states_guard = self.key_states.write().await;
+        if let Some(state) = states_guard.get_mut(api_key) {
+            state.is_blocked = true;
+            // NOTE: In-memory store does not currently support TTLs for rate limiting.
+            // The key will be blocked until the next restart.
+            warn!(
+                api_key.preview = %crate::key_manager::KeyManager::preview_key_str(api_key),
+                "API key has been temporarily rate-limited (in-memory, blocked until restart)."
+            );
+        }
+        Ok(())
     }
 }
 

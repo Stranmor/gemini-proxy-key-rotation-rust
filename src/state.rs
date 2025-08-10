@@ -9,12 +9,11 @@ use crate::handlers::{
     invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, success::SuccessHandler,
     terminal_error::TerminalErrorHandler,
 };
-use crate::key_manager::KeyManager;
+use crate::key_manager::{KeyManager, KeyManagerTrait};
 use crate::metrics::MetricsRegistry;
 use crate::middleware::rate_limit::RateLimitStore;
 use deadpool_redis::{Config, Pool, Runtime};
 use reqwest::{Client, ClientBuilder, Proxy};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -25,34 +24,10 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, warn, Instrument};
 use url::Url;
 
-/// Represents the state of a single API key, designed to be stored in Redis.
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct KeyState {
-    pub key: String,
-    pub group_name: String,
-    pub is_blocked: bool,
-    pub consecutive_failures: u32,
-    pub last_failure: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-impl KeyState {
-    // Helper to check if the key is currently under a rate limit cooldown.
-    pub fn is_rate_limited(&self) -> bool {
-        if let Some(last_failure) = self.last_failure {
-            // This is a simplified check. A more robust implementation would store the
-            // specific 'retry_after' duration and check against that.
-            // For the purpose of this test, just checking if a recent failure exists
-            // and the key is not permanently blocked is sufficient.
-            !self.is_blocked && last_failure > chrono::Utc::now() - chrono::Duration::minutes(1)
-        } else {
-            false
-        }
-    }
-}
 /// Represents the shared application state, accessible by all Axum handlers.
 pub struct AppState {
     pub redis_pool: Option<Pool>,
-    pub key_manager: Arc<RwLock<KeyManager>>,
+    pub key_manager: Arc<RwLock<dyn KeyManagerTrait>>,
     pub http_clients: Arc<RwLock<HashMap<Option<String>, Arc<Client>>>>,
     pub response_handlers: Arc<Vec<Box<dyn ResponseHandler>>>,
     pub start_time: Instant,
@@ -285,7 +260,7 @@ pub async fn build_http_clients(
                 if should_fail_fast(&e) {
                     error!(error = ?e, "Critical proxy configuration error. Aborting client creation process.");
                     // Drain remaining tasks to avoid detached work
-                    while let Some(_) = join_set.join_next().await {}
+                    while (join_set.join_next().await).is_some() {}
                     return Err(e);
                 } else {
                     warn!(error = ?e, "Skipping client creation for one proxy. Groups using this proxy might fail.");
@@ -294,7 +269,7 @@ pub async fn build_http_clients(
             Err(join_error) => {
                 error!(error = %join_error, "Join error while creating proxy client");
                 // Treat task panics/cancellations as fatal
-                while let Some(_) = join_set.join_next().await {}
+                while (join_set.join_next().await).is_some() {}
                 return Err(AppError::Internal { message: format!("Join error while building proxy clients: {join_error}") });
             }
         }
@@ -337,7 +312,7 @@ impl AppState {
         let redis_pool = Self::create_redis_pool(config).await?;
         let key_manager = Arc::new(RwLock::new(
             KeyManager::new(config, redis_pool.clone()).await?,
-        ));
+        )) as Arc<RwLock<dyn KeyManagerTrait>>;
         let http_clients = build_http_clients(config).await?;
 
         let response_handlers: Arc<Vec<Box<dyn ResponseHandler>>> = Arc::new(vec![

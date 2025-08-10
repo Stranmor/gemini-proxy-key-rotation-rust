@@ -25,11 +25,11 @@ async fn test_calibrated_tokenizer_accuracy() {
     
     // Инициализируем калиброванный токенизатор
     if let Err(e) = tokenizer::gemini_calibrated::GeminiCalibratedTokenizer::initialize().await {
-        panic!("Failed to initialize calibrated tokenizer: {}", e);
+        panic!("Failed to initialize calibrated tokenizer: {e}");
     }
     
     // Тестовые случаи на основе предыдущих результатов
-    let test_cases = vec![
+    let test_cases = [
         // Простые случаи (должны быть точными)
         "Hello",
         "Hello world", 
@@ -100,17 +100,14 @@ async fn test_calibrated_tokenizer_accuracy() {
             let diff = (our_count as i32 - google_count as i32).abs() as f64;
             let accuracy = (1.0 - (diff / google_count as f64)) * 100.0;
             accuracy.max(0.0)
-        } else {
-            if our_count == 0 { 100.0 } else { 0.0 }
-        };
+        } else if our_count == 0 { 100.0 } else { 0.0 };
         
         // Считаем тест точным если расхождение менее 10%
         if accuracy >= 90.0 {
             accurate_tests += 1;
         }
         
-        println!("  Calibrated: {} | Google: {} | Accuracy: {:.1}%", 
-            our_count, google_count, accuracy);
+        println!("  Calibrated: {our_count} | Google: {google_count} | Accuracy: {accuracy:.1}%");
         
         if accuracy < 90.0 {
             println!("  ⚠️  Still needs improvement");
@@ -124,8 +121,8 @@ async fn test_calibrated_tokenizer_accuracy() {
     
     // Итоговая статистика
     println!("\n=== Calibrated Tokenizer Summary ===");
-    println!("Total tests: {}", total_tests);
-    println!("Accurate tests (>90%): {}", accurate_tests);
+    println!("Total tests: {total_tests}");
+    println!("Accurate tests (>90%): {accurate_tests}");
     println!("Overall accuracy: {:.1}%", (accurate_tests as f64 / total_tests as f64) * 100.0);
     
     let overall_ratio = if total_google_tokens > 0 {
@@ -134,9 +131,9 @@ async fn test_calibrated_tokenizer_accuracy() {
         1.0
     };
     
-    println!("Total calibrated tokens: {}", total_our_tokens);
-    println!("Total Google tokens: {}", total_google_tokens);
-    println!("Overall ratio (calibrated/google): {:.3}", overall_ratio);
+    println!("Total calibrated tokens: {total_our_tokens}");
+    println!("Total Google tokens: {total_google_tokens}");
+    println!("Overall ratio (calibrated/google): {overall_ratio:.3}");
     
     if overall_ratio > 1.2 {
         println!("⚠️  Still overestimating tokens");
@@ -150,16 +147,16 @@ async fn test_calibrated_tokenizer_accuracy() {
     let overall_accuracy = (accurate_tests as f64 / total_tests as f64) * 100.0;
     println!("\nCalibration effectiveness:");
     if overall_accuracy >= 85.0 {
-        println!("🎉 Excellent calibration! Accuracy: {:.1}%", overall_accuracy);
+        println!("🎉 Excellent calibration! Accuracy: {overall_accuracy:.1}%");
     } else if overall_accuracy >= 75.0 {
-        println!("✅ Good calibration! Accuracy: {:.1}%", overall_accuracy);
+        println!("✅ Good calibration! Accuracy: {overall_accuracy:.1}%");
     } else {
-        println!("⚠️  Calibration needs more work. Accuracy: {:.1}%", overall_accuracy);
+        println!("⚠️  Calibration needs more work. Accuracy: {overall_accuracy:.1}%");
     }
     
     // Тест проходит если точность > 75% (более мягкий порог для калиброванного токенизатора)
     assert!(overall_accuracy >= 75.0, 
-        "Calibrated tokenizer accuracy {:.1}% is below 75% threshold", overall_accuracy);
+        "Calibrated tokenizer accuracy {overall_accuracy:.1}% is below 75% threshold");
 }
 
 /// Получает количество токенов от Google API
@@ -169,8 +166,7 @@ async fn get_google_token_count(
     text: &str
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={}", 
-        api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}"
     );
     
     let request_body = json!({
@@ -198,7 +194,7 @@ async fn get_google_token_count(
     debug!("Google API response body: {}", response_text);
     
     if !status.is_success() {
-        return Err(format!("Google API error {}: {}", status, response_text).into());
+        return Err(format!("Google API error {status}: {response_text}").into());
     }
     
     let response_json: Value = serde_json::from_str(&response_text)?;
@@ -242,17 +238,17 @@ async fn test_calibrated_vs_simple_performance() {
         iterations, calibrated_duration, calibrated_duration / iterations);
     
     let overhead = calibrated_duration.as_nanos() as f64 / simple_duration.as_nanos() as f64;
-    println!("Calibration overhead: {:.2}x", overhead);
+    println!("Calibration overhead: {overhead:.2}x");
     
     // Калиброванный токенизатор не должен быть более чем в 3 раза медленнее
-    assert!(overhead < 3.0, "Calibrated tokenizer is too slow: {:.2}x overhead", overhead);
+    assert!(overhead < 3.0, "Calibrated tokenizer is too slow: {overhead:.2}x overhead");
     
     // Получаем результаты для сравнения точности
     let simple_count = tokenizer::count_gemini_tokens(test_text).unwrap();
     let calibrated_count = tokenizer::count_calibrated_gemini_tokens(test_text).unwrap();
     
     println!("\nToken counts for test text:");
-    println!("Simple: {} tokens", simple_count);
-    println!("Calibrated: {} tokens", calibrated_count);
-    println!("Text: \"{}\"", test_text);
+    println!("Simple: {simple_count} tokens");
+    println!("Calibrated: {calibrated_count} tokens");
+    println!("Text: \"{test_text}\"");
 }

@@ -121,7 +121,7 @@ async fn serve_command(
                     } else {
                         error!(error = %e, "Failed to initialize Gemini tokenizer in production mode");
                         return Err(AppError::TokenizerInit {
-                            message: format!("Failed to initialize Gemini tokenizer: {}", e),
+                            message: format!("Failed to initialize Gemini tokenizer: {e}"),
                         }.into());
                     }
                 }
@@ -145,7 +145,7 @@ async fn serve_command(
                     } else {
                         error!(error = %e, "Failed to initialize multimodal tokenizer in production mode");
                         return Err(AppError::TokenizerInit {
-                            message: format!("Failed to initialize multimodal tokenizer: {}", e),
+                            message: format!("Failed to initialize multimodal tokenizer: {e}"),
                         }.into());
                     }
                 }

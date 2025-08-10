@@ -281,7 +281,7 @@ impl SmartParallelTokenizer {
         
         match timeout(timeout_duration, tokenization_future).await {
             Ok(Ok(count)) => Ok(count),
-            Ok(Err(e)) => Err(format!("Tokenization error: {}", e).into()),
+            Ok(Err(e)) => Err(format!("Tokenization error: {e}").into()),
             Err(_) => {
                 warn!("Tokenization timeout after {}ms", self.config.precise_tokenization_timeout_ms);
                 // Возвращаем консервативную оценку при таймауте
@@ -368,7 +368,7 @@ mod tests {
         
         let result = process_text_smart(&test_text, send_function).await;
         if let Err(e) = &result {
-            eprintln!("parallel processing test failed: {}", e);
+            eprintln!("parallel processing test failed: {e}");
         }
         assert!(result.is_ok());
         
@@ -378,7 +378,7 @@ mod tests {
         assert!(!processing_result.was_rejected);
         assert!(processing_result.total_time_ms < 500); // Должно быть быстро благодаря параллелизму
         
-        println!("Parallel processing result: {:?}", processing_result);
+        println!("Parallel processing result: {processing_result:?}");
     }
     
     #[tokio::test]
@@ -405,6 +405,6 @@ mod tests {
         let error = result.unwrap_err();
         assert!(error.to_string().contains("too large"));
         
-        println!("Safety test passed: {}", error);
+        println!("Safety test passed: {error}");
     }
 }

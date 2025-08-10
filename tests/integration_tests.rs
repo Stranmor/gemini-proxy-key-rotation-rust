@@ -7,7 +7,7 @@ use axum::{
     http::{/* header, */ Method, StatusCode, Uri}, // Removed unused header
     response::Response,
 };
-use gemini_proxy::key_manager::KeyManagerTrait;
+
 use gemini_proxy::{
     config::{AppConfig, KeyGroup, ServerConfig},
     handlers, // Import the handler module
@@ -1127,8 +1127,7 @@ async fn test_rate_limit_with_retry_after_header() {
 
     assert!(
         elapsed.as_secs() >= wait_seconds,
-        "The handler must wait for at least the duration specified in Retry-After. Elapsed: {:?}",
-        elapsed
+        "The handler must wait for at least the duration specified in Retry-After. Elapsed: {elapsed:?}"
     );
 
     // Verify that the response is successful after waiting and retrying

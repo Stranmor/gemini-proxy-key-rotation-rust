@@ -141,6 +141,7 @@ async fn test_config_save_and_load() {
         max_failures_threshold: Some(10),
         rate_limit: None,
         circuit_breaker: None,
+
     };
     
     // Сохраняем конфиг

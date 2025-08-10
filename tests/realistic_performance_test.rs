@@ -34,7 +34,7 @@ async fn test_realistic_performance_comparison() {
     println!("   Tokenization time: {:>8.2}ms", tokenization_time.as_millis());
     println!("   Network request:   {:>8.2}ms", network_time.as_millis());
     println!("   TOTAL TIME:        {:>8.2}ms", total_traditional.as_millis());
-    println!("   Token count: {}", token_count);
+    println!("   Token count: {token_count}");
     
     // Сценарий 2: Gemini First (прямая отправка)
     println!("\n2. Gemini First Approach (Send Directly):");
@@ -58,7 +58,7 @@ async fn test_realistic_performance_comparison() {
     println!("   Network request:   {:>8.2}ms", network_time_direct.as_millis());
     println!("   Post-count time:   {:>8.2}ms", post_count_time.as_millis());
     println!("   TOTAL TIME:        {:>8.2}ms", total_gemini_first.as_millis());
-    println!("   Decision: {:?}", decision);
+    println!("   Decision: {decision:?}");
     println!("   Estimated tokens: {}", post_tokens.request_tokens);
     
     // Анализ результатов
@@ -70,8 +70,8 @@ async fn test_realistic_performance_comparison() {
     println!("Performance comparison:");
     println!("  Traditional approach: {:>6}ms", total_traditional.as_millis());
     println!("  Gemini First:         {:>6}ms", total_gemini_first.as_millis());
-    println!("  Time saved:           {:>6}ms", time_saved);
-    println!("  Speedup:              {:>6.2}x", speedup);
+    println!("  Time saved:           {time_saved:>6}ms");
+    println!("  Speedup:              {speedup:>6.2}x");
     
     println!("\nBreakdown of time savings:");
     println!("  ✅ Eliminated tokenization: {}ms", tokenization_time.as_millis());
@@ -84,11 +84,11 @@ async fn test_realistic_performance_comparison() {
     println!("  • We save {}ms by skipping pre-tokenization", tokenization_time.as_millis());
     println!("  • Post-response counting is {}x faster than pre-tokenization", 
         tokenization_time.as_millis() / post_count_time.as_millis().max(1));
-    println!("  • Overall speedup: {:.1}x faster", speedup);
+    println!("  • Overall speedup: {speedup:.1}x faster");
     
     // Проверяем что есть экономия времени (более реалистичные ожидания)
-    assert!(time_saved > 10, "Should save at least 10ms, saved {}ms", time_saved);
-    assert!(speedup > 1.0, "Should be faster, got {:.2}x", speedup);
+    assert!(time_saved > 10, "Should save at least 10ms, saved {time_saved}ms");
+    assert!(speedup > 1.0, "Should be faster, got {speedup:.2}x");
     
     println!("\n✅ Realistic performance test passed!");
 }

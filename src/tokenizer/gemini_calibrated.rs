@@ -153,10 +153,10 @@ impl GeminiCalibratedTokenizer {
         }
         
         let mut token_count = 0;
-        let mut chars = text.chars().peekable();
+        let chars = text.chars().peekable();
         let mut current_word = String::new();
         
-        while let Some(ch) = chars.next() {
+        for ch in chars {
             if ch.is_whitespace() {
                 if !current_word.is_empty() {
                     token_count += self.estimate_calibrated_word_tokens(&current_word);
@@ -189,7 +189,7 @@ impl GeminiCalibratedTokenizer {
         // Проверяем на специальные случаи
         
         // Unicode символы (эмодзи, иероглифы)
-        let has_unicode = word.chars().any(|c| !c.is_ascii());
+        let has_unicode = !word.is_ascii();
         if has_unicode {
             // Unicode символы обычно кодируются более эффективно в Gemini
             return match len {
@@ -266,10 +266,10 @@ mod tests {
     #[tokio::test]
     async fn test_calibrated_tokenizer_initialization() {
         let result = GeminiCalibratedTokenizer::initialize().await;
-        assert!(result.is_ok(), "Calibrated tokenizer initialization failed: {:?}", result);
+        assert!(result.is_ok(), "Calibrated tokenizer initialization failed: {result:?}");
         
         let info = get_calibrated_gemini_tokenizer_info().unwrap();
-        println!("Calibrated tokenizer info: {}", info);
+        println!("Calibrated tokenizer info: {info}");
     }
     
     #[tokio::test]
@@ -290,14 +290,13 @@ mod tests {
         
         for (text, expected) in test_cases {
             let count = count_calibrated_gemini_tokens(text).unwrap();
-            println!("Text: '{}' -> {} tokens (expected: {})", text, count, expected);
+            println!("Text: '{text}' -> {count} tokens (expected: {expected})");
             
             // Допускаем отклонение в 4 токена для математических символов
-            let diff = (count as i32 - expected as i32).abs();
+            let diff = (count as i32 - expected).abs();
             let max_diff = if text.contains("∑") || text.contains("∫") { 4 } else { 1 };
             assert!(diff <= max_diff, 
-                "Token count for '{}' should be close to {}, got {} (diff: {})", 
-                text, expected, count, diff);
+                "Token count for '{text}' should be close to {expected}, got {count} (diff: {diff})");
         }
     }
     
@@ -314,7 +313,7 @@ mod tests {
         }
         let duration = start.elapsed();
         
-        println!("{} calibrated tokenizations took: {:?}", iterations, duration);
+        println!("{iterations} calibrated tokenizations took: {duration:?}");
         println!("Average: {:?} per tokenization", duration / iterations);
         
         // Должно быть быстро (< 1ms на операцию)

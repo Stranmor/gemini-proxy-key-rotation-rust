@@ -69,7 +69,7 @@ async fn test_large_text_tokenization() {
     for (name, text) in large_texts {
         let text_length = text.len();
         
-        println!("🔍 Testing: {} ({} chars)", name, text_length);
+        println!("🔍 Testing: {name} ({text_length} chars)");
         
         // Google API (эталон)
         let google_count = match get_google_token_count(&client, &api_key, &text).await {
@@ -99,8 +99,7 @@ async fn test_large_text_tokenization() {
         let best_accuracy = [simple_accuracy, ml_accuracy, proxy_accuracy]
             .iter().fold(0.0f64, |a, &b| a.max(b));
         
-        println!("{:<20} | {:>8} | {:>8} | {:>8} | {:>8} | {:>8} | {:>7.1}%", 
-            name, text_length, google_count, simple_count, ml_count, proxy_count, best_accuracy);
+        println!("{name:<20} | {text_length:>8} | {google_count:>8} | {simple_count:>8} | {ml_count:>8} | {proxy_count:>8} | {best_accuracy:>7.1}%");
         
         // Детальный анализ для больших расхождений
         if best_accuracy < 90.0 {
@@ -121,9 +120,9 @@ async fn test_large_text_tokenization() {
     let ml_score = (ml_good as f64 / total_tests as f64) * 100.0;
     
     println!("🎯 Performance on Large Texts:");
-    println!("  Proxy-Cached (>99%):  {:.1}%", proxy_score);
-    println!("  Simple (>85%):        {:.1}%", simple_score);
-    println!("  ML-Calibrated (>85%): {:.1}%", ml_score);
+    println!("  Proxy-Cached (>99%):  {proxy_score:.1}%");
+    println!("  Simple (>85%):        {simple_score:.1}%");
+    println!("  ML-Calibrated (>85%): {ml_score:.1}%");
     
     // Тест производительности на больших текстах
     println!("\n⚡ PERFORMANCE ON LARGE TEXTS\n");
@@ -1002,8 +1001,7 @@ async fn get_google_token_count(
     text: &str
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={}", 
-        api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}"
     );
     
     let request_body = json!({

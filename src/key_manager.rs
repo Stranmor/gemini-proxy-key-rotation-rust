@@ -1,32 +1,23 @@
+// src/key_manager.rs
+// Refactored key manager with clear separation of concerns
+
 use crate::config::AppConfig;
-use crate::error::{AppError, Result};
-use crate::state::KeyState;
-use axum::async_trait;
+use crate::core::KeySelector;
+use crate::error::Result;
+use crate::storage::{InMemoryStore, KeyState, KeyStore, RedisStore};
 use deadpool_redis::Pool;
-use redis::aio::MultiplexedConnection;
-use redis::AsyncCommands;
 use secrecy::{ExposeSecret, Secret};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serializer};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{info, instrument, trace, warn};
+use std::time::Duration;
+use tracing::{info, trace, warn};
 
-// --- Constants ---
-const ROTATION_SET_KEY: &str = "rotation_set";
-const ROTATION_COUNTER_KEY: &str = "rotation_counter";
-const DEFAULT_GROUP_ID: &str = "__default_all_keys__";
+const DEFAULT_GROUP_ID: &str = "default";
 
-// --- Helper Functions ---
-fn key_state_key(api_key: &str) -> String {
-    format!("key_state:{api_key}")
-}
-
-// --- Data Structures ---
-#[derive(Clone, Serialize, Deserialize)]
+/// Flattened key information for easier access
+#[derive(Clone)]
 pub struct FlattenedKeyInfo {
-    #[serde(with = "secret_string")]
     pub key: Secret<String>,
     pub group_name: String,
     pub target_url: String,
@@ -44,69 +35,53 @@ impl std::fmt::Debug for FlattenedKeyInfo {
     }
 }
 
-// Helper module for serializing Secret<String>
-mod secret_string {
-    use secrecy::{ExposeSecret, Secret};
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(secret: &Secret<String>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(secret.expose_secret())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Secret<String>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(Secret::new(s))
-    }
+// Serialization helpers for Secret<String>
+pub fn serialize<S>(secret: &Secret<String>, serializer: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(secret.expose_secret())
 }
 
-// --- Main Trait for KeyManager ---
-use std::time::Duration;
-#[async_trait]
+pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<Secret<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(Secret::new(s))
+}
+
+/// Trait for key management operations
+#[async_trait::async_trait]
 pub trait KeyManagerTrait: Send + Sync {
     async fn get_next_available_key_info(
         &self,
         group_name: Option<&str>,
     ) -> Result<Option<FlattenedKeyInfo>>;
+
     async fn handle_api_failure(&self, api_key: &str, is_terminal: bool) -> Result<()>;
+
     async fn handle_rate_limit(&self, api_key: &str, duration: Duration) -> Result<()>;
+
     async fn get_key_states(&self) -> Result<HashMap<String, KeyState>>;
+
     async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo>;
+    
+    async fn reload(&mut self, config: &AppConfig, redis_pool: Option<Pool>) -> Result<()>;
 }
 
-// --- Storage Abstraction (`KeyStore` Trait) ---
-#[async_trait]
-trait KeyStore: Send + Sync {
-    async fn get_candidate_keys(&self) -> Result<Vec<String>>;
-    async fn get_next_rotation_index(&self, group_id: &str) -> Result<usize>;
-    async fn update_failure_state(
-        &self,
-        api_key: &str,
-        is_terminal: bool,
-        max_failures: u32,
-    ) -> Result<KeyState>;
-    async fn set_key_rate_limited(&self, api_key: &str, duration: Duration) -> Result<()>;
-    async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>>;
-    async fn get_all_key_states(&self) -> Result<HashMap<String, KeyState>>;
-}
-
-// --- KeyManager Implementation ---
-#[derive(Clone)]
+/// Simplified key manager with clear separation of concerns
 pub struct KeyManager {
     store: Arc<dyn KeyStore>,
     key_info_map: Arc<HashMap<String, FlattenedKeyInfo>>,
+    selector: KeySelector,
     max_failures_threshold: u32,
 }
 
 impl KeyManager {
-    #[instrument(skip(config, redis_pool), name = "key_manager_init")]
     pub async fn new(config: &AppConfig, redis_pool: Option<Pool>) -> Result<Self> {
         trace!("KeyManager::new started");
+
         let key_info_map = Self::build_key_info_map(config);
 
         let store: Arc<dyn KeyStore> = match redis_pool {
@@ -122,10 +97,13 @@ impl KeyManager {
             }
         };
 
+        let selector = KeySelector::with_round_robin();
+
         trace!("KeyManager::new finished");
         Ok(Self {
             store,
             key_info_map: Arc::new(key_info_map),
+            selector,
             max_failures_threshold: config.max_failures_threshold.unwrap_or(3),
         })
     }
@@ -161,22 +139,96 @@ impl KeyManager {
         }
     }
 
-    fn log_key_selection(
+    fn filter_keys_by_group<'a>(&'a self, group_name: Option<&str>) -> Vec<&'a FlattenedKeyInfo> {
+        self.key_info_map
+            .values()
+            .filter(|info| group_name.map_or(true, |gn| info.group_name == gn))
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl KeyManagerTrait for KeyManager {
+    async fn get_next_available_key_info(
         &self,
-        key_info: &FlattenedKeyInfo,
-        rotation_method: &str,
-        total_candidates: usize,
-    ) {
-        info!(
-            event = "key_selected",
-            api_key.preview = %Self::preview_key(&key_info.key),
-            group = %key_info.group_name,
-            rotation_method,
-            total_candidates,
-            "API key selected for request"
+        group_name: Option<&str>,
+    ) -> Result<Option<FlattenedKeyInfo>> {
+        trace!("get_next_available_key_info: start");
+
+        let all_keys = self.store.get_candidate_keys().await?;
+        trace!(
+            "get_next_available_key_info: got {} candidate keys",
+            all_keys.len()
         );
+
+        let mut candidate_keys = self.filter_keys_by_group(group_name);
+        candidate_keys.retain(|info| all_keys.contains(info.key.expose_secret()));
+        candidate_keys.sort_by(|a, b| a.key.expose_secret().cmp(b.key.expose_secret()));
+
+        if candidate_keys.is_empty() {
+            warn!(group_name, "No keys available for the specified group.");
+            return Ok(None);
+        }
+
+        let group_id = group_name.unwrap_or(DEFAULT_GROUP_ID);
+
+        match self
+            .selector
+            .select_available_key(candidate_keys.as_slice(), group_id, self.store.clone())
+            .await?
+        {
+            Some(key_info) => Ok(Some(key_info)),
+            None => {
+                warn!(
+                    group_name,
+                    "All keys for the specified group are currently blocked."
+                );
+                Ok(None)
+            }
+        }
     }
 
+    async fn handle_api_failure(&self, api_key: &str, is_terminal: bool) -> Result<()> {
+        let updated_state = self
+            .store
+            .update_failure_state(api_key, is_terminal, self.max_failures_threshold)
+            .await?;
+
+        self.log_failure_handling(api_key, is_terminal, &updated_state);
+        Ok(())
+    }
+
+    async fn handle_rate_limit(&self, api_key: &str, duration: Duration) -> Result<()> {
+        self.store.set_key_rate_limited(api_key, duration).await
+    }
+
+    async fn get_key_states(&self) -> Result<HashMap<String, KeyState>> {
+        self.store.get_all_key_states().await
+    }
+
+    async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo> {
+        self.key_info_map.as_ref().clone()
+    }
+
+    async fn reload(&mut self, config: &AppConfig, redis_pool: Option<Pool>) -> Result<()> {
+        info!("Reloading KeyManager state from new configuration...");
+        let new_key_info_map = Self::build_key_info_map(config);
+        
+        let new_store: Arc<dyn KeyStore> = match redis_pool {
+            Some(pool) => Arc::new(RedisStore::new(pool, config, &new_key_info_map).await?),
+            None => Arc::new(InMemoryStore::new(&new_key_info_map)),
+        };
+
+        self.store = new_store;
+        self.key_info_map = Arc::new(new_key_info_map);
+        self.max_failures_threshold = config.max_failures_threshold.unwrap_or(3);
+        
+        info!("KeyManager reloaded successfully.");
+        Ok(())
+    }
+}
+
+impl KeyManager {
     fn log_failure_handling(&self, api_key: &str, is_terminal: bool, state: &KeyState) {
         if state.is_blocked {
             warn!(
@@ -198,464 +250,5 @@ impl KeyManager {
                 "API key failure recorded, key still available"
             );
         }
-    }
-
-    async fn find_available_key(
-        &self,
-        candidate_keys: &[&FlattenedKeyInfo],
-        start_index: usize,
-    ) -> Option<FlattenedKeyInfo> {
-        for i in 0..candidate_keys.len() {
-            let key_info = candidate_keys[(start_index + i) % candidate_keys.len()];
-            match self.store.get_key_state(key_info.key.expose_secret()).await {
-                Ok(Some(state)) if !state.is_blocked => {
-                    self.log_key_selection(key_info, "round_robin", candidate_keys.len());
-                    return Some(key_info.clone());
-                }
-                Ok(None) => {
-                    // If state is missing, assume it's usable
-                    self.log_key_selection(key_info, "round_robin", candidate_keys.len());
-                    return Some(key_info.clone());
-                }
-                _ => continue,
-            }
-        }
-        None
-    }
-
-    fn filter_keys_by_group<'a>(&'a self, group_name: Option<&str>) -> Vec<&'a FlattenedKeyInfo> {
-        self.key_info_map
-            .values()
-            .filter(|info| group_name.map_or(true, |gn| info.group_name == gn))
-            .collect()
-    }
-}
-
-// --- KeyManager Trait Implementation ---
-#[async_trait]
-impl KeyManagerTrait for KeyManager {
-    #[instrument(level = "debug", skip(self), fields(group_name))]
-    async fn get_next_available_key_info(
-        &self,
-        group_name: Option<&str>,
-    ) -> Result<Option<FlattenedKeyInfo>> {
-        trace!("get_next_available_key_info: start");
-
-        let all_keys = self.store.get_candidate_keys().await?;
-        trace!(
-            "get_next_available_key_info: got {} candidate keys from store",
-            all_keys.len()
-        );
-
-        let mut candidate_keys = self.filter_keys_by_group(group_name);
-        candidate_keys.retain(|info| all_keys.contains(info.key.expose_secret()));
-        candidate_keys.sort_by(|a, b| a.key.expose_secret().cmp(b.key.expose_secret()));
-
-        if candidate_keys.is_empty() {
-            warn!(group_name, "No keys available for the specified group.");
-            return Ok(None);
-        }
-
-        let group_id = group_name.unwrap_or(DEFAULT_GROUP_ID);
-        let start_index = self.store.get_next_rotation_index(group_id).await?;
-        trace!(
-            "get_next_available_key_info: got start_index {} for group '{}'",
-            start_index,
-            group_id
-        );
-
-        match self.find_available_key(&candidate_keys, start_index).await {
-            Some(key_info) => Ok(Some(key_info)),
-            None => {
-                warn!(
-                    group_name,
-                    "All keys for the specified group are currently blocked."
-                );
-                trace!("get_next_available_key_info: end (all keys blocked)");
-                Ok(None)
-            }
-        }
-    }
-
-    #[instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %KeyManager::preview_key_str(api_key), is_terminal))]
-    async fn handle_api_failure(&self, api_key: &str, is_terminal: bool) -> Result<()> {
-        let updated_state = self
-            .store
-            .update_failure_state(api_key, is_terminal, self.max_failures_threshold)
-            .await?;
-        self.log_failure_handling(api_key, is_terminal, &updated_state);
-        Ok(())
-    }
-
-    #[instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %KeyManager::preview_key_str(api_key), duration = ?duration))]
-    async fn handle_rate_limit(&self, api_key: &str, duration: Duration) -> Result<()> {
-        self.store.set_key_rate_limited(api_key, duration).await
-    }
-
-    #[instrument(level = "debug", skip(self))]
-    async fn get_key_states(&self) -> Result<HashMap<String, KeyState>> {
-        self.store.get_all_key_states().await
-    }
-
-    async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo> {
-        self.key_info_map.as_ref().clone()
-    }
-}
-
-// --- Redis Store Implementation ---
-struct RedisStore {
-    pool: Pool,
-    key_prefix: String,
-    key_info_map: Arc<HashMap<String, FlattenedKeyInfo>>,
-}
-
-impl RedisStore {
-    async fn new(
-        pool: Pool,
-        config: &AppConfig,
-        key_info_map: &HashMap<String, FlattenedKeyInfo>,
-    ) -> Result<Self> {
-        let key_prefix = config
-            .redis_key_prefix
-            .clone()
-            .unwrap_or_else(|| "gemini_proxy:".to_string());
-        let keys_from_config: Vec<String> = key_info_map.keys().cloned().collect();
-
-        let mut conn = pool.get().await?;
-        let rotation_set_key = format!("{key_prefix}{ROTATION_SET_KEY}");
-
-        if config.server.test_mode {
-            Self::clear_redis_for_test_mode(&mut conn, &key_prefix, &rotation_set_key).await?;
-        }
-
-        let key_count: usize = conn.scard(&rotation_set_key).await?;
-        if key_count == 0 {
-            info!("Redis is empty. Initializing from config.");
-            Self::initialize_redis_from_config(
-                &mut conn,
-                &key_prefix,
-                &keys_from_config,
-                key_info_map,
-            )
-            .await?;
-        } else {
-            info!(
-                "Found {} keys in Redis set '{}'. Skipping initialization.",
-                key_count, rotation_set_key
-            );
-        }
-
-        Ok(Self {
-            pool,
-            key_prefix,
-            key_info_map: Arc::new(key_info_map.clone()),
-        })
-    }
-
-    fn prefix_key(&self, key: &str) -> String {
-        format!("{}{}", self.key_prefix, key)
-    }
-
-    #[instrument(skip_all)]
-    async fn initialize_redis_from_config(
-        conn: &mut MultiplexedConnection,
-        key_prefix: &str,
-        keys_from_config: &[String],
-        key_info_map: &HashMap<String, FlattenedKeyInfo>,
-    ) -> Result<()> {
-        info!(
-            "Initializing Redis with {} keys from config...",
-            keys_from_config.len()
-        );
-        let rotation_set_key = format!("{key_prefix}{ROTATION_SET_KEY}");
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.sadd(&rotation_set_key, keys_from_config);
-
-        for key in keys_from_config {
-            let state_key = format!("{key_prefix}{}", key_state_key(key));
-            let group_name = key_info_map
-                .get(key)
-                .map_or("unknown", |info| &info.group_name);
-            pipe.hset_multiple(
-                &state_key,
-                &[
-                    ("is_blocked", "false"),
-                    ("consecutive_failures", "0"),
-                    ("group_name", group_name),
-                ],
-            );
-        }
-
-        let _: () = pipe.query_async(conn).await?;
-        info!("Successfully initialized Redis state.");
-        Ok(())
-    }
-
-    async fn clear_redis_for_test_mode(
-        conn: &mut MultiplexedConnection,
-        key_prefix: &str,
-        rotation_set_key: &str,
-    ) -> Result<()> {
-        info!("Test mode: Forcing re-initialization of Redis from config.");
-        let all_keys: Vec<String> = conn.smembers(rotation_set_key).await?;
-        if !all_keys.is_empty() {
-            let state_keys: Vec<_> = all_keys
-                .iter()
-                .map(|k| format!("{key_prefix}{}", key_state_key(k)))
-                .collect();
-            let _: () = conn.del(state_keys).await?;
-        }
-        let _: () = conn.del(rotation_set_key).await?;
-
-        // WARNING: Using KEYS in production is dangerous. This is acceptable ONLY for test isolation.
-        if key_prefix.contains("test") || key_prefix.contains("TEST") {
-            let counter_pattern = format!("{key_prefix}{ROTATION_COUNTER_KEY}:*");
-            let counters: Vec<String> = conn.keys(&counter_pattern).await?;
-            if !counters.is_empty() {
-                let _: () = conn.del(counters).await?;
-            }
-        } else {
-            warn!("Skipping KEYS command cleanup in production environment for safety");
-        }
-        info!("Cleared stale KeyManager keys from Redis for test isolation.");
-        Ok(())
-    }
-
-    async fn get_connection(&self) -> Result<deadpool_redis::Connection> {
-        self.pool.get().await.map_err(Into::into)
-    }
-
-    fn parse_key_state(&self, key: &str, redis_state: HashMap<String, String>) -> KeyState {
-        KeyState {
-            key: key.to_string(),
-            group_name: redis_state
-                .get("group_name")
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string()),
-            is_blocked: redis_state
-                .get("is_blocked")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(false),
-            consecutive_failures: redis_state
-                .get("consecutive_failures")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            last_failure: redis_state
-                .get("last_failure")
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc)),
-        }
-    }
-}
-
-#[async_trait]
-impl KeyStore for RedisStore {
-    async fn get_candidate_keys(&self) -> Result<Vec<String>> {
-        trace!("RedisStore::get_candidate_keys: start");
-        let mut conn = self.get_connection().await?;
-        trace!("RedisStore::get_candidate_keys: got connection");
-        let keys: Vec<String> = conn.smembers(self.prefix_key(ROTATION_SET_KEY)).await?;
-        trace!("RedisStore::get_candidate_keys: found {} keys", keys.len());
-        Ok(keys)
-    }
-
-    async fn get_next_rotation_index(&self, group_id: &str) -> Result<usize> {
-        trace!(
-            "RedisStore::get_next_rotation_index: start for group '{}'",
-            group_id
-        );
-        let mut conn = self.get_connection().await?;
-        trace!("RedisStore::get_next_rotation_index: got connection");
-        let counter_key = self.prefix_key(&format!("{ROTATION_COUNTER_KEY}:{group_id}"));
-        let index: usize = conn.incr(&counter_key, 1).await?;
-        trace!(
-            "RedisStore::get_next_rotation_index: new index is {}",
-            index
-        );
-        Ok(index)
-    }
-
-    async fn update_failure_state(
-        &self,
-        api_key: &str,
-        is_terminal: bool,
-        max_failures: u32,
-    ) -> Result<KeyState> {
-        trace!(
-            "RedisStore::update_failure_state: start for key '{}'",
-            api_key
-        );
-        let mut conn = self.get_connection().await?;
-        trace!("RedisStore::update_failure_state: got connection");
-        let state_key = self.prefix_key(&key_state_key(api_key));
-
-        let new_failure_count: u32 = conn.hincr(&state_key, "consecutive_failures", 1).await?;
-        let now = chrono::Utc::now().to_rfc3339();
-        let _: () = conn.hset(&state_key, "last_failure", &now).await?;
-
-        let should_block = is_terminal || new_failure_count >= max_failures;
-        if should_block {
-            let _: () = conn.hset(&state_key, "is_blocked", true).await?;
-        }
-
-        trace!(
-            "RedisStore::update_failure_state: updated state for key '{}'",
-            api_key
-        );
-        Ok(KeyState {
-            key: api_key.to_string(),
-            group_name: self
-                .key_info_map
-                .get(api_key)
-                .map_or_else(|| "unknown".to_string(), |i| i.group_name.clone()),
-            is_blocked: should_block,
-            consecutive_failures: new_failure_count,
-            last_failure: Some(chrono::Utc::now()),
-        })
-    }
-    async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>> {
-        trace!("RedisStore::get_key_state: start for key '{}'", key);
-        let mut conn = self.get_connection().await?;
-        trace!("RedisStore::get_key_state: got connection");
-        let state_key = self.prefix_key(&key_state_key(key));
-        let redis_state: HashMap<String, String> = conn.hgetall(&state_key).await?;
-        trace!("RedisStore::get_key_state: got hgetall result");
-
-        if redis_state.is_empty() {
-            return Ok(None);
-        }
-
-        let state = self.parse_key_state(key, redis_state);
-        Ok(Some(state))
-    }
-
-    async fn get_all_key_states(&self) -> Result<HashMap<String, KeyState>> {
-        let keys = self.get_candidate_keys().await?;
-        let mut states: HashMap<String, KeyState> = HashMap::new();
-        for key in &keys {
-            if let Ok(Some(state)) = self.get_key_state(key).await {
-                states.insert(key.to_string(), state);
-            }
-        }
-        Ok(states)
-    }
-
-    async fn set_key_rate_limited(&self, api_key: &str, duration: Duration) -> Result<()> {
-        let mut conn = self.get_connection().await?;
-        let state_key = self.prefix_key(&key_state_key(api_key));
-        
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.hset(&state_key, "is_blocked", true);
-        pipe.expire(&state_key, duration.as_secs() as i64);
-
-        let _: () = pipe.query_async(&mut conn).await?;
-        
-        warn!(
-            api_key.preview = %KeyManager::preview_key_str(api_key),
-            duration = ?duration,
-            "API key has been temporarily rate-limited."
-        );
-        Ok(())
-    }
-}
-// --- In-Memory Store Implementation ---
-struct InMemoryStore {
-    key_states: Arc<RwLock<HashMap<String, KeyState>>>,
-    counters: Arc<RwLock<HashMap<String, AtomicUsize>>>,
-}
-
-impl InMemoryStore {
-    fn new(key_info_map: &HashMap<String, FlattenedKeyInfo>) -> Self {
-        let key_states = key_info_map
-            .iter()
-            .map(|(key, info)| {
-                let state = KeyState {
-                    key: key.clone(),
-                    group_name: info.group_name.clone(),
-                    is_blocked: false,
-                    consecutive_failures: 0,
-                    last_failure: None,
-                };
-                (key.clone(), state)
-            })
-            .collect();
-
-        Self {
-            key_states: Arc::new(RwLock::new(key_states)),
-            counters: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-}
-
-#[async_trait]
-impl KeyStore for InMemoryStore {
-    async fn get_candidate_keys(&self) -> Result<Vec<String>> {
-        trace!("InMemoryStore::get_candidate_keys: waiting for read lock");
-        let states_guard = self.key_states.read().await;
-        trace!("InMemoryStore::get_candidate_keys: got read lock");
-        Ok(states_guard.keys().cloned().collect())
-    }
-
-    async fn get_next_rotation_index(&self, group_id: &str) -> Result<usize> {
-        trace!("InMemoryStore::get_next_rotation_index: waiting for write lock");
-        let mut counters_guard = self.counters.write().await;
-        trace!("InMemoryStore::get_next_rotation_index: got write lock");
-        let counter = counters_guard
-            .entry(group_id.to_string())
-            .or_insert_with(|| AtomicUsize::new(0));
-        Ok(counter.fetch_add(1, Ordering::SeqCst))
-    }
-
-    async fn update_failure_state(
-        &self,
-        api_key: &str,
-        is_terminal: bool,
-        max_failures: u32,
-    ) -> Result<KeyState> {
-        trace!("InMemoryStore::update_failure_state: waiting for write lock");
-        let mut states_guard = self.key_states.write().await;
-        trace!("InMemoryStore::update_failure_state: got write lock");
-        if let Some(state) = states_guard.get_mut(api_key) {
-            state.consecutive_failures += 1;
-            state.last_failure = Some(chrono::Utc::now());
-            if is_terminal || state.consecutive_failures >= max_failures {
-                state.is_blocked = true;
-            }
-            return Ok(state.clone());
-        }
-        Err(AppError::Validation {
-            field: "api_key".to_string(),
-            message: format!("API Key '{api_key}' not found in in-memory store."),
-        })
-    }
-
-    async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>> {
-        trace!("InMemoryStore::get_key_state: waiting for read lock");
-        let states_guard = self.key_states.read().await;
-        trace!("InMemoryStore::get_key_state: got read lock");
-        Ok(states_guard.get(key).cloned())
-    }
-
-    async fn get_all_key_states(&self) -> Result<HashMap<String, KeyState>> {
-        trace!("InMemoryStore::get_all_key_states: waiting for read lock");
-        let states_guard = self.key_states.read().await;
-        trace!("InMemoryStore::get_all_key_states: got read lock");
-        Ok(states_guard.clone())
-    }
-
-    async fn set_key_rate_limited(&self, api_key: &str, _duration: Duration) -> Result<()> {
-        let mut states_guard = self.key_states.write().await;
-        if let Some(state) = states_guard.get_mut(api_key) {
-            state.is_blocked = true;
-            // NOTE: In-memory store does not currently support TTLs for rate limiting.
-            // The key will be blocked until the next restart.
-            warn!(
-                api_key.preview = %KeyManager::preview_key_str(api_key),
-                "API key has been temporarily rate-limited (in-memory, blocked until restart)."
-            );
-        }
-        Ok(())
     }
 }

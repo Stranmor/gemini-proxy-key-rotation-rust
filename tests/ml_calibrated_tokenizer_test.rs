@@ -25,7 +25,7 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
     
     // Инициализируем ML-калиброванный токенизатор
     if let Err(e) = tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize().await {
-        panic!("Failed to initialize ML-calibrated tokenizer: {}", e);
+        panic!("Failed to initialize ML-calibrated tokenizer: {e}");
     }
     
     // Тестовые случаи на основе предыдущих результатов
@@ -103,7 +103,7 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
         total_our_tokens += our_count;
         total_google_tokens += google_count;
         
-        let absolute_error = (our_count as i32 - google_count as i32).abs() as usize;
+        let absolute_error = (our_count as i32 - google_count as i32).unsigned_abs() as usize;
         total_absolute_error += absolute_error;
         
         // Вычисляем точность
@@ -111,9 +111,7 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
             let diff = absolute_error as f64;
             let accuracy = (1.0 - (diff / google_count as f64)) * 100.0;
             accuracy.max(0.0)
-        } else {
-            if our_count == 0 { 100.0 } else { 0.0 }
-        };
+        } else if our_count == 0 { 100.0 } else { 0.0 };
         
         // Считаем тест точным если расхождение менее 10%
         if accuracy >= 90.0 {
@@ -125,8 +123,7 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
             very_accurate_tests += 1;
         }
         
-        println!("  ML-Calibrated: {} | Google: {} | Error: {} | Accuracy: {:.1}%", 
-            our_count, google_count, absolute_error, accuracy);
+        println!("  ML-Calibrated: {our_count} | Google: {google_count} | Error: {absolute_error} | Accuracy: {accuracy:.1}%");
         
         if accuracy >= 95.0 {
             println!("  🎯 Excellent accuracy!");
@@ -144,9 +141,9 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
     
     // Итоговая статистика
     println!("\n=== ML-Calibrated Tokenizer Summary ===");
-    println!("Total tests: {}", total_tests);
-    println!("Accurate tests (>90%): {}", accurate_tests);
-    println!("Very accurate tests (>95%): {}", very_accurate_tests);
+    println!("Total tests: {total_tests}");
+    println!("Accurate tests (>90%): {accurate_tests}");
+    println!("Very accurate tests (>95%): {very_accurate_tests}");
     println!("Overall accuracy: {:.1}%", (accurate_tests as f64 / total_tests as f64) * 100.0);
     println!("Excellent accuracy: {:.1}%", (very_accurate_tests as f64 / total_tests as f64) * 100.0);
     
@@ -158,10 +155,10 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
     
     let mean_absolute_error = total_absolute_error as f64 / total_tests as f64;
     
-    println!("Total ML-calibrated tokens: {}", total_our_tokens);
-    println!("Total Google tokens: {}", total_google_tokens);
-    println!("Overall ratio (ML/google): {:.3}", overall_ratio);
-    println!("Mean Absolute Error: {:.2} tokens", mean_absolute_error);
+    println!("Total ML-calibrated tokens: {total_our_tokens}");
+    println!("Total Google tokens: {total_google_tokens}");
+    println!("Overall ratio (ML/google): {overall_ratio:.3}");
+    println!("Mean Absolute Error: {mean_absolute_error:.2} tokens");
     
     if overall_ratio > 1.1 {
         println!("⚠️  Still slightly overestimating tokens");
@@ -177,34 +174,34 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
     
     println!("\nML-Calibration effectiveness:");
     if excellent_accuracy >= 70.0 {
-        println!("🚀 Outstanding ML-calibration! Excellent accuracy: {:.1}%", excellent_accuracy);
+        println!("🚀 Outstanding ML-calibration! Excellent accuracy: {excellent_accuracy:.1}%");
     } else if overall_accuracy >= 85.0 {
-        println!("🎉 Excellent ML-calibration! Overall accuracy: {:.1}%", overall_accuracy);
+        println!("🎉 Excellent ML-calibration! Overall accuracy: {overall_accuracy:.1}%");
     } else if overall_accuracy >= 75.0 {
-        println!("✅ Good ML-calibration! Overall accuracy: {:.1}%", overall_accuracy);
+        println!("✅ Good ML-calibration! Overall accuracy: {overall_accuracy:.1}%");
     } else {
-        println!("⚠️  ML-calibration needs more training data. Accuracy: {:.1}%", overall_accuracy);
+        println!("⚠️  ML-calibration needs more training data. Accuracy: {overall_accuracy:.1}%");
     }
     
     // Рекомендации по улучшению
     if mean_absolute_error > 2.0 {
         println!("\n📊 Recommendations:");
-        println!("- Mean error is {:.2} tokens - consider more training data", mean_absolute_error);
+        println!("- Mean error is {mean_absolute_error:.2} tokens - consider more training data");
         println!("- Focus on cases with >2 token errors for model improvement");
     } else if mean_absolute_error > 1.0 {
         println!("\n📊 Good performance with room for improvement:");
-        println!("- Mean error is {:.2} tokens - fine-tune model parameters", mean_absolute_error);
+        println!("- Mean error is {mean_absolute_error:.2} tokens - fine-tune model parameters");
     } else {
-        println!("\n🎯 Excellent performance! Mean error: {:.2} tokens", mean_absolute_error);
+        println!("\n🎯 Excellent performance! Mean error: {mean_absolute_error:.2} tokens");
     }
     
     // Тест проходит если точность > 70% (реалистичный порог для ML-модели)
     assert!(overall_accuracy >= 70.0, 
-        "ML-calibrated tokenizer accuracy {:.1}% is below 70% threshold", overall_accuracy);
+        "ML-calibrated tokenizer accuracy {overall_accuracy:.1}% is below 70% threshold");
     
     // Дополнительная проверка на соотношение токенов
-    assert!(overall_ratio >= 0.85 && overall_ratio <= 1.15, 
-        "Token ratio {:.3} is outside acceptable range [0.85, 1.15]", overall_ratio);
+    assert!((0.85..=1.15).contains(&overall_ratio), 
+        "Token ratio {overall_ratio:.3} is outside acceptable range [0.85, 1.15]");
 }
 
 /// Получает количество токенов от Google API
@@ -214,8 +211,7 @@ async fn get_google_token_count(
     text: &str
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={}", 
-        api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}"
     );
     
     let request_body = json!({
@@ -243,7 +239,7 @@ async fn get_google_token_count(
     debug!("Google API response body: {}", response_text);
     
     if !status.is_success() {
-        return Err(format!("Google API error {}: {}", status, response_text).into());
+        return Err(format!("Google API error {status}: {response_text}").into());
     }
     
     let response_json: Value = serde_json::from_str(&response_text)?;
@@ -274,15 +270,15 @@ async fn test_all_tokenizers_comparison() {
     println!("\n=== Tokenizer Comparison ===\n");
     
     for text in test_texts {
-        println!("Text: \"{}\"", text);
+        println!("Text: \"{text}\"");
         
         let simple_count = tokenizer::count_gemini_tokens(text).unwrap();
         let calibrated_count = tokenizer::count_calibrated_gemini_tokens(text).unwrap();
         let ml_calibrated_count = tokenizer::count_ml_calibrated_gemini_tokens(text).unwrap();
         
-        println!("  Simple: {} tokens", simple_count);
-        println!("  Calibrated: {} tokens", calibrated_count);
-        println!("  ML-Calibrated: {} tokens", ml_calibrated_count);
+        println!("  Simple: {simple_count} tokens");
+        println!("  Calibrated: {calibrated_count} tokens");
+        println!("  ML-Calibrated: {ml_calibrated_count} tokens");
         
         // Проверяем, что ML-калиброванный дает разумные результаты
         assert!(ml_calibrated_count > 0, "ML-calibrated should return > 0 tokens");
@@ -307,16 +303,16 @@ async fn test_ml_calibrated_performance() {
     let duration = start.elapsed();
     
     println!("\n=== ML-Calibrated Performance ===");
-    println!("{} ML-calibrated tokenizations took: {:?}", iterations, duration);
+    println!("{iterations} ML-calibrated tokenizations took: {duration:?}");
     println!("Average: {:?} per tokenization", duration / iterations);
     
     // ML-калиброванный токенизатор не должен быть слишком медленным
     let avg_ms = duration.as_millis() as f64 / iterations as f64;
-    println!("Average per operation: {:.3}ms", avg_ms);
+    println!("Average per operation: {avg_ms:.3}ms");
     
-    assert!(avg_ms < 1.0, "ML-calibrated tokenizer should be < 1ms per operation, got {:.3}ms", avg_ms);
+    assert!(avg_ms < 1.0, "ML-calibrated tokenizer should be < 1ms per operation, got {avg_ms:.3}ms");
     
     let count = tokenizer::count_ml_calibrated_gemini_tokens(test_text).unwrap();
-    println!("Token count for test text: {}", count);
-    println!("Text: \"{}\"", test_text);
+    println!("Token count for test text: {count}");
+    println!("Text: \"{test_text}\"");
 }

@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 use serde_json::Value;
 use tracing::{info, warn, debug};
 
+type ProcessMessageResult = Result<(usize, usize, usize, Vec<ImageTokenInfo>), Box<dyn Error + Send + Sync>>;
+
 
 /// Конфигурация для multimodal токенизации
 #[derive(Debug, Clone)]
@@ -157,7 +159,7 @@ impl MultimodalTokenizer {
     }
     
     /// Обрабатывает одно сообщение
-    fn process_message(&self, message: &Value) -> Result<(usize, usize, usize, Vec<ImageTokenInfo>), Box<dyn Error + Send + Sync>> {
+    fn process_message(&self, message: &Value) -> ProcessMessageResult {
         let mut text_tokens = 0;
         let mut image_tokens = 0;
         let mut image_count = 0;
@@ -338,7 +340,7 @@ mod tests {
         };
         
         let result = MultimodalTokenizer::initialize(Some(config));
-        assert!(result.is_ok(), "Multimodal tokenizer initialization failed: {:?}", result);
+        assert!(result.is_ok(), "Multimodal tokenizer initialization failed: {result:?}");
     }
     
     #[tokio::test]
@@ -363,7 +365,7 @@ mod tests {
         assert_eq!(result.image_count, 0);
         assert!(result.total_tokens >= result.text_tokens);
         
-        println!("Text-only result: {:?}", result);
+        println!("Text-only result: {result:?}");
     }
     
     #[tokio::test]
@@ -404,7 +406,7 @@ mod tests {
         assert_eq!(result.image_details.len(), 1);
         assert_eq!(result.image_details[0].format, ImageFormat::PNG);
         
-        println!("Multimodal result: {:?}", result);
+        println!("Multimodal result: {result:?}");
     }
     
     #[tokio::test]
@@ -430,7 +432,7 @@ mod tests {
         }
         
         let duration = start.elapsed();
-        println!("{} multimodal tokenizations took: {:?}", iterations, duration);
+        println!("{iterations} multimodal tokenizations took: {duration:?}");
         println!("Average: {:?} per tokenization", duration / iterations);
         
         // Должно быть быстро

@@ -316,8 +316,8 @@ mod tests {
         let tokens = count_tokens_post_response(&large_text, "Response");
         let counting_time = start.elapsed();
         
-        println!("Decision time: {:?}", decision_time);
-        println!("Counting time: {:?}", counting_time);
+        println!("Decision time: {decision_time:?}");
+        println!("Counting time: {counting_time:?}");
         println!("Estimated tokens: {}", tokens.request_tokens);
         
         // Должно быть очень быстро

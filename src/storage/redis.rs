@@ -2,13 +2,14 @@
 
 use crate::config::AppConfig;
 use crate::error::Result;
-use crate::key_manager_v2::FlattenedKeyInfo;
+use crate::key_manager::FlattenedKeyInfo;
 use crate::storage::{KeyState, KeyStateStore, KeyStore};
 use async_trait::async_trait;
 use deadpool_redis::{Connection as RedisConnection, Pool};
 use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{info, trace, warn};
 
 const ROTATION_SET_KEY: &str = "rotation_keys";
@@ -250,6 +251,25 @@ impl KeyStore for RedisStore {
             }
         }
         Ok(states)
+    }
+
+    async fn set_key_rate_limited(&self, api_key: &str, duration: Duration) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let state_key = self.prefix_key(&format!("key_state:{api_key}"));
+        
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        pipe.hset(&state_key, "is_blocked", true);
+        pipe.expire(&state_key, duration.as_secs() as i64);
+
+        let _: () = pipe.query_async(&mut conn).await?;
+        
+        warn!(
+            api_key.preview = %crate::key_manager::KeyManager::preview_key_str(api_key),
+            duration = ?duration,
+            "API key has been temporarily rate-limited."
+        );
+        Ok(())
     }
 }
 

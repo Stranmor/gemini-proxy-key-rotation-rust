@@ -1,7 +1,7 @@
 // tests/storage_tests.rs
 
 use gemini_proxy::{
-    key_manager_v2::FlattenedKeyInfo,
+    key_manager::FlattenedKeyInfo,
     storage::{memory::InMemoryStore, traits::KeyStore},
 };
 use secrecy::Secret;

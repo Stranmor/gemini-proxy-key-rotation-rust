@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::storage::KeyState;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Trait for key storage operations
 #[async_trait]
@@ -27,6 +28,9 @@ pub trait KeyStore: Send + Sync {
 
     /// Get all key states
     async fn get_all_key_states(&self) -> Result<HashMap<String, KeyState>>;
+
+    /// Temporarily block a key due to rate limiting
+    async fn set_key_rate_limited(&self, api_key: &str, duration: Duration) -> Result<()>;
 }
 
 /// Trait for key state management operations

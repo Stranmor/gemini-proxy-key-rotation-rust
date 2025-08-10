@@ -12,7 +12,7 @@ pub mod timeout;
 use crate::{
     error::{AppError, Result},
     handlers::base::Action,
-    key_manager::{FlattenedKeyInfo, KeyManagerTrait},
+    key_manager::FlattenedKeyInfo,
     proxy,
     state::AppState,
 };
@@ -475,7 +475,7 @@ mod token_limit_tests {
         rt.block_on(async {
             // Gemini токенизатор
             if let Err(e) = GeminiTokenizer::initialize().await {
-                eprintln!("Warning: Failed to initialize Gemini tokenizer in test: {}", e);
+                eprintln!("Warning: Failed to initialize Gemini tokenizer in test: {e}");
             }
             
             // Multimodal токенизатор
@@ -484,7 +484,7 @@ mod token_limit_tests {
                 ..Default::default()
             };
             if let Err(e) = MultimodalTokenizer::initialize(Some(config)) {
-                eprintln!("Warning: Failed to initialize multimodal tokenizer in test: {}", e);
+                eprintln!("Warning: Failed to initialize multimodal tokenizer in test: {e}");
             }
         });
     }
@@ -521,11 +521,11 @@ mod token_limit_tests {
         install_tokenizers();
         let err = validate_token_count_with_limit(&body, limit, true, None)
             .expect_err("Expected RequestTooLarge for over-limit");
-        assert!(matches!(err, AppError::RequestTooLarge { .. }), "Must be RequestTooLarge, got: {:?}", err);
+        assert!(matches!(err, AppError::RequestTooLarge { .. }), "Must be RequestTooLarge, got: {err:?}");
         
         // Проверяем, что сообщение об ошибке содержит "tokens", а не "bytes"
-        let error_message = format!("{}", err);
-        assert!(error_message.contains("tokens"), "Error message should contain 'tokens', got: {}", error_message);
-        assert!(!error_message.contains("bytes"), "Error message should not contain 'bytes', got: {}", error_message);
+        let error_message = format!("{err}");
+        assert!(error_message.contains("tokens"), "Error message should contain 'tokens', got: {error_message}");
+        assert!(!error_message.contains("bytes"), "Error message should not contain 'bytes', got: {error_message}");
     }
 }

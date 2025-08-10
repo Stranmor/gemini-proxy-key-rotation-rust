@@ -27,7 +27,7 @@ async fn test_token_count_accuracy_vs_google_api() {
     
     // Инициализируем наш токенизатор
     if let Err(e) = tokenizer::gemini_simple::GeminiTokenizer::initialize().await {
-        panic!("Failed to initialize our tokenizer: {}", e);
+        panic!("Failed to initialize our tokenizer: {e}");
     }
     
     // Тестовые случаи разной сложности
@@ -113,17 +113,14 @@ async fn test_token_count_accuracy_vs_google_api() {
             let diff = (our_count as i32 - google_count as i32).abs() as f64;
             let accuracy = (1.0 - (diff / google_count as f64)) * 100.0;
             accuracy.max(0.0)
-        } else {
-            if our_count == 0 { 100.0 } else { 0.0 }
-        };
+        } else if our_count == 0 { 100.0 } else { 0.0 };
         
         // Считаем тест точным если расхождение менее 10%
         if accuracy >= 90.0 {
             accurate_tests += 1;
         }
         
-        println!("  Our count: {} | Google count: {} | Accuracy: {:.1}%", 
-            our_count, google_count, accuracy);
+        println!("  Our count: {our_count} | Google count: {google_count} | Accuracy: {accuracy:.1}%");
         
         if accuracy < 90.0 {
             println!("  ⚠️  Significant discrepancy detected!");
@@ -135,8 +132,8 @@ async fn test_token_count_accuracy_vs_google_api() {
     
     // Итоговая статистика
     println!("\n=== Summary ===");
-    println!("Total tests: {}", total_tests);
-    println!("Accurate tests (>90%): {}", accurate_tests);
+    println!("Total tests: {total_tests}");
+    println!("Accurate tests (>90%): {accurate_tests}");
     println!("Overall accuracy: {:.1}%", (accurate_tests as f64 / total_tests as f64) * 100.0);
     
     let overall_ratio = if total_google_tokens > 0 {
@@ -145,9 +142,9 @@ async fn test_token_count_accuracy_vs_google_api() {
         1.0
     };
     
-    println!("Total our tokens: {}", total_our_tokens);
-    println!("Total Google tokens: {}", total_google_tokens);
-    println!("Overall ratio (our/google): {:.3}", overall_ratio);
+    println!("Total our tokens: {total_our_tokens}");
+    println!("Total Google tokens: {total_google_tokens}");
+    println!("Overall ratio (our/google): {overall_ratio:.3}");
     
     if overall_ratio > 2.0 {
         println!("🚨 CRITICAL: Our tokenizer counts more than 2x Google's count!");
@@ -174,7 +171,7 @@ async fn test_token_count_accuracy_vs_google_api() {
     // Тест должен пройти если общая точность > 50% (более реалистичный порог)
     let overall_accuracy = (accurate_tests as f64 / total_tests as f64) * 100.0;
     assert!(overall_accuracy >= 50.0, 
-        "Overall accuracy {:.1}% is below 50% threshold", overall_accuracy);
+        "Overall accuracy {overall_accuracy:.1}% is below 50% threshold");
 }
 
 /// Получает количество токенов от Google API
@@ -184,8 +181,7 @@ async fn get_google_token_count(
     text: &str
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={}", 
-        api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}"
     );
     
     let request_body = json!({
@@ -213,7 +209,7 @@ async fn get_google_token_count(
     debug!("Google API response body: {}", response_text);
     
     if !status.is_success() {
-        return Err(format!("Google API error {}: {}", status, response_text).into());
+        return Err(format!("Google API error {status}: {response_text}").into());
     }
     
     let response_json: Value = serde_json::from_str(&response_text)?;
@@ -239,7 +235,7 @@ async fn test_multimodal_token_accuracy() {
     
     // Инициализируем токенизаторы
     if let Err(e) = tokenizer::gemini_simple::GeminiTokenizer::initialize().await {
-        panic!("Failed to initialize our tokenizer: {}", e);
+        panic!("Failed to initialize our tokenizer: {e}");
     }
     
     tokenizer::multimodal::MultimodalTokenizer::initialize(None)
@@ -248,7 +244,7 @@ async fn test_multimodal_token_accuracy() {
     // Создаем простое тестовое изображение (1x1 PNG)
     let tiny_png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
     
-    let test_cases = vec![
+    let test_cases = [
         // Только текст
         json!({
             "contents": [{
@@ -293,7 +289,7 @@ async fn test_multimodal_token_accuracy() {
             }
         };
         
-        println!("  Google count: {}", google_count);
+        println!("  Google count: {google_count}");
         
         // Добавляем задержку между запросами
         sleep(Duration::from_millis(1000)).await;
@@ -307,8 +303,7 @@ async fn get_google_multimodal_token_count(
     contents: &Value
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={}", 
-        api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}"
     );
     
     debug!("Sending multimodal request to Google API: {}", url);
@@ -328,7 +323,7 @@ async fn get_google_multimodal_token_count(
     debug!("Google API multimodal response body: {}", response_text);
     
     if !status.is_success() {
-        return Err(format!("Google API error {}: {}", status, response_text).into());
+        return Err(format!("Google API error {status}: {response_text}").into());
     }
     
     let response_json: Value = serde_json::from_str(&response_text)?;
@@ -354,7 +349,7 @@ async fn test_calibrate_tokenizer() {
     
     // Инициализируем наш токенизатор
     if let Err(e) = tokenizer::gemini_simple::GeminiTokenizer::initialize().await {
-        panic!("Failed to initialize our tokenizer: {}", e);
+        panic!("Failed to initialize our tokenizer: {e}");
     }
     
     // Калибровочные тексты разной длины
@@ -381,7 +376,7 @@ async fn test_calibrate_tokenizer() {
                 calibration_data.push((text.len(), our_count, google_count, ratio));
                 
                 println!("Text length: {} chars", text.len());
-                println!("  Our: {} | Google: {} | Ratio: {:.3}", our_count, google_count, ratio);
+                println!("  Our: {our_count} | Google: {google_count} | Ratio: {ratio:.3}");
                 println!("  Text: \"{}\"", if text.len() > 50 { format!("{}...", &text[..50]) } else { text.to_string() });
                 println!();
             }
@@ -398,7 +393,7 @@ async fn test_calibrate_tokenizer() {
         let avg_ratio: f64 = calibration_data.iter().map(|(_, _, _, ratio)| ratio).sum::<f64>() / calibration_data.len() as f64;
         
         println!("=== Calibration Analysis ===");
-        println!("Average ratio (our/google): {:.3}", avg_ratio);
+        println!("Average ratio (our/google): {avg_ratio:.3}");
         
         if avg_ratio > 1.5 {
             println!("🚨 RECOMMENDATION: Reduce token estimates by factor of {:.2}", 1.0 / avg_ratio);
@@ -410,7 +405,7 @@ async fn test_calibrate_tokenizer() {
         
         // Предлагаем корректировочный коэффициент
         let correction_factor = 1.0 / avg_ratio;
-        println!("Suggested correction factor: {:.3}", correction_factor);
+        println!("Suggested correction factor: {correction_factor:.3}");
         println!("Apply this factor to your tokenizer estimates to improve accuracy.");
     }
 }

@@ -3,7 +3,7 @@
 use gemini_proxy::{
     key_manager::{FlattenedKeyInfo, KeyManagerTrait},
     monitoring::{key_health::KeyHealthMonitor, MonitoringSystem},
-    state::KeyState,
+    storage::key_state::KeyState,
 };
 use secrecy::{ExposeSecret, Secret};
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -93,6 +93,15 @@ impl KeyManagerTrait for MockKeyManager {
         &self,
         _api_key: &str,
         _duration: Duration,
+    ) -> Result<(), gemini_proxy::error::AppError> {
+        // Mock implementation, does nothing.
+        Ok(())
+    }
+
+    async fn reload(
+        &mut self,
+        _config: &gemini_proxy::config::AppConfig,
+        _redis_pool: Option<deadpool::managed::Pool<deadpool_redis::Manager, deadpool_redis::Connection>>,
     ) -> Result<(), gemini_proxy::error::AppError> {
         // Mock implementation, does nothing.
         Ok(())

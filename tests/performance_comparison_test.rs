@@ -27,7 +27,7 @@ async fn test_performance_for_large_requests() {
     
     println!("1. Gemini First Approach:");
     println!("   Decision time: {:>8.2}ms", gemini_first_time.as_millis());
-    println!("   Decision: {:?}", decision);
+    println!("   Decision: {decision:?}");
     println!("   ✅ RECOMMENDED: Send directly to Gemini");
     
     // 2. Простой токенизатор (для сравнения)
@@ -37,7 +37,7 @@ async fn test_performance_for_large_requests() {
     
     println!("\n2. Simple Tokenizer:");
     println!("   Processing time: {:>8.2}ms", simple_time.as_millis());
-    println!("   Token count: {}", simple_count);
+    println!("   Token count: {simple_count}");
     println!("   ❌ TOO SLOW for 180k tokens");
     
     // 3. ML-калиброванный токенизатор
@@ -47,7 +47,7 @@ async fn test_performance_for_large_requests() {
     
     println!("\n3. ML-Calibrated Tokenizer:");
     println!("   Processing time: {:>8.2}ms", ml_time.as_millis());
-    println!("   Token count: {}", ml_count);
+    println!("   Token count: {ml_count}");
     println!("   ❌ TOO SLOW for 180k tokens");
     
     // 4. Post-response counting (для статистики)
@@ -68,8 +68,8 @@ async fn test_performance_for_large_requests() {
     let speedup_vs_ml = ml_time.as_millis() as f64 / gemini_first_time.as_millis() as f64;
     
     println!("Performance improvements:");
-    println!("  Gemini First vs Simple:        {:.0}x faster", speedup_vs_simple);
-    println!("  Gemini First vs ML-Calibrated: {:.0}x faster", speedup_vs_ml);
+    println!("  Gemini First vs Simple:        {speedup_vs_simple:.0}x faster");
+    println!("  Gemini First vs ML-Calibrated: {speedup_vs_ml:.0}x faster");
     
     println!("\nRecommended approach for 180k tokens:");
     println!("  1. ✅ Send directly to Gemini (no pre-tokenization)");
@@ -172,8 +172,8 @@ async fn test_configuration_with_limits() {
         let decision = tokenizer::should_tokenize_before_request(text);
         
         println!("{}: {} chars", name, text.len());
-        println!("  Decision: {:?}", decision);
-        println!("  Expected: {}", expected);
+        println!("  Decision: {decision:?}");
+        println!("  Expected: {expected}");
         
         match decision {
             tokenizer::TokenizationDecision::SendDirectly => {
@@ -183,7 +183,7 @@ async fn test_configuration_with_limits() {
                 println!("  ⚠️  Will tokenize first (small text)");
             }
             tokenizer::TokenizationDecision::RejectTooLarge(tokens) => {
-                println!("  ❌ Rejected: {} estimated tokens", tokens);
+                println!("  ❌ Rejected: {tokens} estimated tokens");
             }
         }
         println!();
@@ -295,7 +295,7 @@ The integration of tokenization systems with modern cloud architectures requires
         }
         
         if i % 25 == 0 {
-            result.push_str(&format!("\n\n```python\n# Code example {}\ndef process_data_{}():\n    return 'processed'\n```\n", i, i));
+            result.push_str(&format!("\n\n```python\n# Code example {i}\ndef process_data_{i}():\n    return 'processed'\n```\n"));
         }
     }
     

@@ -121,6 +121,6 @@ fn test_app_error_creation() {
         message: "Test error".to_string(),
     };
     
-    let error_string = format!("{}", error);
+    let error_string = format!("{error}");
     assert!(error_string.contains("Test error"));
 }

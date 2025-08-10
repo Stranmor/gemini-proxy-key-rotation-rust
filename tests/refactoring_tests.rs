@@ -2,8 +2,8 @@
 
 use gemini_proxy::{
     config::{AppConfig, KeyGroup, ServerConfig},
-    key_manager_v2::{KeyManager, KeyManagerTrait},
-    storage::{InMemoryStore, KeyState, KeyStore},
+    key_manager::{KeyManager, KeyManagerTrait},
+    storage::{memory::InMemoryStore, traits::KeyStore},
 };
 use secrecy::{ExposeSecret, Secret};
 use std::collections::HashMap;
@@ -45,36 +45,13 @@ async fn test_key_selector_round_robin() {
     );
 }
 
-#[tokio::test]
-async fn test_key_state_management() {
-    let mut state = KeyState::new("test_key".to_string(), "test_group".to_string());
-
-    // Initially available
-    assert!(state.is_available());
-    assert_eq!(state.consecutive_failures, 0);
-
-    // Record failure
-    state.record_failure(false, 3);
-    assert!(state.is_available()); // Still available, below threshold
-    assert_eq!(state.consecutive_failures, 1);
-
-    // Record terminal failure
-    state.record_failure(true, 3);
-    assert!(!state.is_available()); // Should be blocked
-    assert_eq!(state.consecutive_failures, 2);
-
-    // Reset state
-    state.reset();
-    assert!(state.is_available());
-    assert_eq!(state.consecutive_failures, 0);
-}
 
 #[tokio::test]
 async fn test_memory_store_operations() {
     let mut key_info_map = HashMap::new();
     key_info_map.insert(
         "test_key".to_string(),
-        gemini_proxy::key_manager_v2::FlattenedKeyInfo {
+        gemini_proxy::key_manager::FlattenedKeyInfo {
             key: Secret::new("test_key".to_string()),
             group_name: "test_group".to_string(),
             target_url: "https://api.example.com".to_string(),

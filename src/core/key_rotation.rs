@@ -1,7 +1,7 @@
 // src/core/key_rotation.rs
 
 use crate::error::Result;
-use crate::key_manager_v2::FlattenedKeyInfo;
+use crate::key_manager::FlattenedKeyInfo;
 use crate::storage::KeyStore;
 use async_trait::async_trait;
 use secrecy::ExposeSecret;
@@ -61,7 +61,7 @@ impl RoundRobinStrategy {
     fn log_key_selection(&self, key_info: &FlattenedKeyInfo, total_candidates: usize) {
         info!(
             event = "key_selected",
-            api_key.preview = %crate::key_manager_v2::KeyManager::preview_key(&key_info.key),
+            api_key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key),
             group = %key_info.group_name,
             rotation_method = "round_robin",
             total_candidates,

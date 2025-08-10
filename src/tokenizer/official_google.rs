@@ -132,12 +132,12 @@ if __name__ == "__main__":
                     if stderr.contains("vertexai package not installed") {
                         Err("❌ Please install: pip install google-cloud-aiplatform[tokenization]".into())
                     } else {
-                        Err(format!("Python script error: {}", stderr).into())
+                        Err(format!("Python script error: {stderr}").into())
                     }
                 }
             }
             Err(e) => {
-                Err(format!("❌ Python3 not found or not accessible: {}", e).into())
+                Err(format!("❌ Python3 not found or not accessible: {e}").into())
             }
         }
     }
@@ -154,7 +154,7 @@ if __name__ == "__main__":
         
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Python tokenizer failed: {}", stderr).into());
+            return Err(format!("Python tokenizer failed: {stderr}").into());
         }
         
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -166,7 +166,7 @@ if __name__ == "__main__":
             Ok(token_count as usize)
         } else {
             let error_msg = result["error"].as_str().unwrap_or("Unknown error");
-            Err(format!("Google tokenizer error: {}", error_msg).into())
+            Err(format!("Google tokenizer error: {error_msg}").into())
         }
     }
     
@@ -227,17 +227,17 @@ mod tests {
                 for text in test_cases {
                     match count_official_google_tokens(text) {
                         Ok(count) => {
-                            println!("✅ '{}' -> {} tokens (100% accurate!)", text, count);
+                            println!("✅ '{text}' -> {count} tokens (100% accurate!)");
                             assert!(count > 0);
                         }
                         Err(e) => {
-                            println!("⚠️ Error for '{}': {}", text, e);
+                            println!("⚠️ Error for '{text}': {e}");
                         }
                     }
                 }
             }
             Err(e) => {
-                println!("⚠️ Official tokenizer not available: {}", e);
+                println!("⚠️ Official tokenizer not available: {e}");
                 println!("💡 To enable 100% accuracy, install: pip install google-cloud-aiplatform[tokenization]");
             }
         }
@@ -245,7 +245,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_model_support() {
-        if let Ok(_) = OfficialGoogleTokenizer::initialize().await {
+        if (OfficialGoogleTokenizer::initialize().await).is_ok() {
             let tokenizer = OFFICIAL_TOKENIZER.get().unwrap();
             
             let models = vec![
@@ -257,10 +257,10 @@ mod tests {
             for model in models {
                 match tokenizer.check_model_support(model) {
                     Ok(supported) => {
-                        println!("Model {} supported: {}", model, supported);
+                        println!("Model {model} supported: {supported}");
                     }
                     Err(e) => {
-                        println!("Error checking {}: {}", model, e);
+                        println!("Error checking {model}: {e}");
                     }
                 }
             }

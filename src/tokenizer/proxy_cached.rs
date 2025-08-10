@@ -9,13 +9,15 @@ use std::error::Error;
 use tracing::{info, warn, debug};
 use sha2::{Sha256, Digest};
 
+type FallbackTokenizer = Box<dyn Fn(&str) -> usize + Send + Sync>;
+
 /// Прокси-токенизатор с кешированием реальных результатов Google API
 /// Обеспечивает 100% точность за счет использования реального API
 pub struct ProxyCachedTokenizer {
     client: Client,
     api_key: String,
     cache: Arc<RwLock<HashMap<String, usize>>>,
-    fallback_tokenizer: Option<Box<dyn Fn(&str) -> usize + Send + Sync>>,
+    fallback_tokenizer: Option<FallbackTokenizer>,
 }
 
 impl ProxyCachedTokenizer {
@@ -68,7 +70,7 @@ impl ProxyCachedTokenizer {
                     warn!("Using fallback tokenizer result: {}", count);
                     Ok(count)
                 } else {
-                    Err(format!("Google API failed and no fallback available: {}", e).into())
+                    Err(format!("Google API failed and no fallback available: {e}").into())
                 }
             }
         }
@@ -185,7 +187,7 @@ mod tests {
         let (cache_size, _) = tokenizer.cache_stats().await;
         assert_eq!(cache_size, 1);
         
-        println!("✅ Proxy cached tokenizer works! Count: {}", count1);
+        println!("✅ Proxy cached tokenizer works! Count: {count1}");
     }
     
     #[tokio::test]
@@ -211,7 +213,7 @@ mod tests {
         tokenizer.warm_cache(common_texts).await.unwrap();
         
         let (cache_size, memory_mb) = tokenizer.cache_stats().await;
-        println!("Cache after warming: {} entries, {:.2} MB", cache_size, memory_mb);
+        println!("Cache after warming: {cache_size} entries, {memory_mb:.2} MB");
         
         assert!(cache_size >= 5);
     }

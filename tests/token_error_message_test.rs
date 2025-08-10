@@ -13,16 +13,14 @@ async fn test_request_too_large_error_message_contains_tokens() {
     };
 
     // Проверяем, что сообщение об ошибке содержит "tokens"
-    let error_message = format!("{}", error);
+    let error_message = format!("{error}");
     assert!(
         error_message.contains("tokens"),
-        "Error message should contain 'tokens', got: {}",
-        error_message
+        "Error message should contain 'tokens', got: {error_message}"
     );
     assert!(
         !error_message.contains("bytes"),
-        "Error message should not contain 'bytes', got: {}",
-        error_message
+        "Error message should not contain 'bytes', got: {error_message}"
     );
 
     // Проверяем JSON ответ
@@ -45,12 +43,10 @@ async fn test_request_too_large_error_message_contains_tokens() {
     let detail = json["detail"].as_str().unwrap();
     assert!(
         detail.contains("tokens"),
-        "Detail should contain 'tokens', got: {}",
-        detail
+        "Detail should contain 'tokens', got: {detail}"
     );
     assert!(
         !detail.contains("bytes"),
-        "Detail should not contain 'bytes', got: {}",
-        detail
+        "Detail should not contain 'bytes', got: {detail}"
     );
 }

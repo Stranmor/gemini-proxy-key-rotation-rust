@@ -58,7 +58,7 @@ async fn test_smart_parallel_logic() {
         
         // Проверяем что решение соответствует ожиданиям
         assert_eq!(decision_type, expected_decision, 
-            "Wrong decision for {}: expected {}, got {}", name, expected_decision, decision_type);
+            "Wrong decision for {name}: expected {expected_decision}, got {decision_type}");
     }
     
     println!("\n✅ Все решения приняты правильно!");
@@ -93,7 +93,7 @@ async fn test_parallel_processing_performance() {
     match result {
         Ok((response, processing_result)) => {
             println!("✅ Parallel processing successful!");
-            println!("Response: {}", response);
+            println!("Response: {response}");
             println!("\nPerformance metrics:");
             println!("  Decision time:      {}ms", processing_result.decision_time_ms);
             println!("  Tokenization time:  {}ms", 
@@ -116,7 +116,7 @@ async fn test_parallel_processing_performance() {
             let expected_sequential_time = tokenization_time + network_time;
             
             println!("\nParallel efficiency:");
-            println!("  Sequential would take: {}ms", expected_sequential_time);
+            println!("  Sequential would take: {expected_sequential_time}ms");
             println!("  Parallel took:         {}ms", processing_result.total_time_ms);
             println!("  Time saved:            {}ms", 
                 expected_sequential_time.saturating_sub(processing_result.total_time_ms));
@@ -126,7 +126,7 @@ async fn test_parallel_processing_performance() {
                 "Parallel should be faster than sequential");
         }
         Err(e) => {
-            panic!("Parallel processing failed: {}", e);
+            panic!("Parallel processing failed: {e}");
         }
     }
     
@@ -197,8 +197,8 @@ async fn test_performance_vs_traditional() {
     
     println!("   Traditional:  {:>6}ms", traditional_total.as_millis());
     println!("   Smart:        {:>6}ms", smart_total.as_millis());
-    println!("   Time saved:   {:>6}ms", time_saved);
-    println!("   Speedup:      {:>6.2}x", speedup);
+    println!("   Time saved:   {time_saved:>6}ms");
+    println!("   Speedup:      {speedup:>6.2}x");
     
     // Smart подход должен быть быстрее или равен традиционному,
     // но мы добавляем небольшой допуск (например, 50 мс) для стабильности теста,
@@ -207,5 +207,5 @@ async fn test_performance_vs_traditional() {
     assert!(smart_total <= traditional_total + tolerance,
         "Smart parallel should be faster or equal to traditional (with tolerance)");
     
-    println!("\n✅ Smart Parallel is {}x faster!", speedup);
+    println!("\n✅ Smart Parallel is {speedup}x faster!");
 }

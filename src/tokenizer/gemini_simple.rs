@@ -96,10 +96,10 @@ impl GeminiTokenizer {
         // - Обрабатывает Unicode
         
         let mut token_count = 0;
-        let mut chars = text.chars().peekable();
+        let chars = text.chars().peekable();
         let mut current_word = String::new();
         
-        while let Some(ch) = chars.next() {
+        for ch in chars {
             if ch.is_whitespace() {
                 if !current_word.is_empty() {
                     token_count += self.estimate_word_tokens(&current_word);
@@ -192,10 +192,10 @@ mod tests {
         let result = GeminiTokenizer::initialize().await;
         
         // Инициализация должна пройти успешно (с fallback если нужно)
-        assert!(result.is_ok(), "Gemini tokenizer initialization failed: {:?}", result);
+        assert!(result.is_ok(), "Gemini tokenizer initialization failed: {result:?}");
         
         let info = get_gemini_tokenizer_info().unwrap();
-        println!("Gemini tokenizer info: {}", info);
+        println!("Gemini tokenizer info: {info}");
     }
     
     #[tokio::test]
@@ -212,12 +212,11 @@ mod tests {
         
         for (text, expected_min) in test_cases {
             let count = count_gemini_tokens(text).unwrap();
-            println!("Text: '{}' -> {} tokens", text, count);
+            println!("Text: '{text}' -> {count} tokens");
             
             if expected_min > 0 {
                 assert!(count >= expected_min, 
-                    "Token count for '{}' should be at least {}, got {}", 
-                    text, expected_min, count);
+                    "Token count for '{text}' should be at least {expected_min}, got {count}");
             } else {
                 assert_eq!(count, 0, "Empty text should have 0 tokens");
             }
@@ -237,7 +236,7 @@ mod tests {
         }
         let duration = start.elapsed();
         
-        println!("{} tokenizations took: {:?}", iterations, duration);
+        println!("{iterations} tokenizations took: {duration:?}");
         println!("Average: {:?} per tokenization", duration / iterations);
         
         // Должно быть быстро (< 1ms на операцию)

@@ -39,7 +39,7 @@ async fn test_ultimate_tokenizer_comparison() {
             true
         }
         Err(e) => {
-            println!("⚠️  Official Google tokenizer not available: {}", e);
+            println!("⚠️  Official Google tokenizer not available: {e}");
             println!("💡 Install with: pip install google-cloud-aiplatform[tokenization]");
             false
         }
@@ -114,7 +114,7 @@ async fn test_ultimate_tokenizer_comparison() {
         
         // Выводим результаты
         let official_str = if official_available {
-            format!("{:>8}", official_count)
+            format!("{official_count:>8}")
         } else {
             "   N/A  ".to_string()
         };
@@ -122,8 +122,7 @@ async fn test_ultimate_tokenizer_comparison() {
         let best_accuracy = [simple_accuracy, ml_accuracy, official_accuracy, proxy_accuracy]
             .iter().fold(0.0f64, |a, &b| a.max(b));
         
-        println!("{:<15} | {:>8} | {:>8} | {:>8} | {} | {:>8} | {:>7.1}%", 
-            name, google_count, simple_count, ml_count, official_str, proxy_count, best_accuracy);
+        println!("{name:<15} | {google_count:>8} | {simple_count:>8} | {ml_count:>8} | {official_str} | {proxy_count:>8} | {best_accuracy:>7.1}%");
         
         sleep(Duration::from_millis(500)).await;
     }
@@ -141,14 +140,14 @@ async fn test_ultimate_tokenizer_comparison() {
     let proxy_score = (proxy_accurate as f64 / total_tests as f64) * 100.0;
     
     println!("📈 Accuracy Scores (>95% threshold):");
-    println!("  Simple Tokenizer:     {:.1}%", simple_score);
-    println!("  ML-Calibrated:       {:.1}%", ml_score);
+    println!("  Simple Tokenizer:     {simple_score:.1}%");
+    println!("  ML-Calibrated:       {ml_score:.1}%");
     if official_available {
-        println!("  Official Google:      {:.1}% ⭐", official_score);
+        println!("  Official Google:      {official_score:.1}% ⭐");
     } else {
         println!("  Official Google:      Not Available");
     }
-    println!("  Proxy-Cached:         {:.1}%", proxy_score);
+    println!("  Proxy-Cached:         {proxy_score:.1}%");
     
     // Рекомендации
     println!("\n🏆 RECOMMENDATIONS:\n");
@@ -169,7 +168,7 @@ async fn test_ultimate_tokenizer_comparison() {
         println!("   💡 Best for: High-accuracy with caching");
     } else if ml_score >= 80.0 {
         println!("🥈 RUNNER-UP: ML-Calibrated Tokenizer");
-        println!("   ✅ Good accuracy ({:.1}%)", ml_score);
+        println!("   ✅ Good accuracy ({ml_score:.1}%)");
         println!("   ✅ No external dependencies");
         println!("   ✅ Fast performance");
         println!("   💡 Best for: Offline systems with good accuracy");
@@ -195,8 +194,7 @@ async fn get_google_token_count(
     text: &str
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={}", 
-        api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}"
     );
     
     let request_body = json!({
@@ -279,7 +277,7 @@ async fn test_tokenizer_performance_comparison() {
         None
     };
     
-    println!("🏃 Performance Results ({} iterations):", iterations);
+    println!("🏃 Performance Results ({iterations} iterations):");
     println!("  Simple:        {:>8.2}ms avg ({:>6.2}ms total)", 
         simple_duration.as_millis() as f64 / iterations as f64,
         simple_duration.as_millis());
