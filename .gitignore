@@ -45,3 +45,4 @@ dump.rdb
 *.tmp
 *.temp
 .env.optimized
+target.backup/
