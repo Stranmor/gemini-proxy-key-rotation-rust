@@ -254,11 +254,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     // Вычислим подсказку модели заранее для метрик/логов
     let path_for_model = parts.uri.path().to_string();
     let model_hint_from_path = {
-        if let Some(caps) = regex::Regex::new(r"/v1beta/models/([^/:]+)").ok().and_then(|re| re.captures(&path_for_model)) {
-            Some(caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default())
-        } else {
-            None
-        }
+        regex::Regex::new(r"/v1beta/models/([^/:]+)").ok().and_then(|re| re.captures(&path_for_model)).map(|caps| caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default())
     };
 
     let cfg_guard = state.config.read().await;
@@ -391,6 +387,62 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                     .handle_api_failure(key_info.key.expose_secret(), true)
                     .await;
                 last_response = Some(final_response);
+            }
+            Some(Action::WaitFor(duration)) => {
+                trace!(
+                    "Rate limit with wait period received. Marking key and waiting."
+                );
+                let _ = state
+                    .key_manager
+                    .write()
+                    .await
+                    .handle_rate_limit(key_info.key.expose_secret(), duration)
+                    .await;
+                
+                // We wait for the specified duration and then retry with the same key
+                info!(?duration, "Rate limit hit. Waiting before retrying with the same key.");
+                tokio::time::sleep(duration).await;
+                
+                // Retry the request with the same key after waiting
+                let retry_response = match try_request_with_key(&state, &req_context, &key_info).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Retry request failed after waiting");
+                        let mut resp = Response::new(Body::from(format!("Proxy error: {e}")));
+                        *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                        last_response = Some(resp);
+                        break;
+                    }
+                };
+                
+                let (retry_parts, retry_body) = retry_response.into_parts();
+                let retry_response_bytes = to_bytes(retry_body, usize::MAX)
+                    .await
+                    .map_err(|e| AppError::internal(e.to_string()))?;
+                
+                let retry_response_for_analysis = Response::from_parts(retry_parts.clone(), Body::from(retry_response_bytes.clone()));
+                
+                // Process the retry response through handlers
+                let retry_action = response_handlers.iter().find_map(|handler| {
+                    handler.handle(
+                        &retry_response_for_analysis,
+                        &retry_response_bytes,
+                        key_info.key.expose_secret(),
+                    )
+                });
+                
+                let retry_final_response = Response::from_parts(retry_parts, Body::from(retry_response_bytes));
+                
+                match retry_action {
+                    Some(Action::ReturnToClient(response)) => return Ok(response),
+                    Some(Action::Terminal(response)) => return Ok(response),
+                    None => return Ok(retry_final_response),
+                    _ => {
+                        // If retry also fails, continue to next key
+                        last_response = Some(retry_final_response);
+                        continue;
+                    }
+                }
             }
             None => {
                 // No specific action, so this is the final response.

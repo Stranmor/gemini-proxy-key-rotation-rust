@@ -62,6 +62,7 @@ pub async fn forward_request(
     body_bytes: Bytes,
     circuit_breaker: Option<Arc<CircuitBreaker>>,
 ) -> Result<Response> {
+    debug!("Full request body: {:?}", String::from_utf8_lossy(&body_bytes));
     let outgoing_headers = build_forward_headers(&headers, key_info.key.expose_secret())?;
 
     debug!(
@@ -408,5 +409,47 @@ mod tests {
         assert!(!dest.contains_key("host"));
         assert!(!dest.contains_key("authorization"));
         assert_eq!(dest.len(), 2);
+    }
+
+    #[test]
+    fn test_build_forward_headers_replaces_auth() {
+        let mut original_headers = HeaderMap::new();
+        original_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer old_and_wrong_token"),
+        );
+        let result_headers = build_forward_headers(&original_headers, "new_correct_token").unwrap();
+        assert_eq!(
+            result_headers.get(header::AUTHORIZATION).unwrap(),
+            "Bearer new_correct_token"
+        );
+        assert_eq!(result_headers.len(), 1); // Only the new auth header should be present.
+    }
+
+    #[test]
+    fn test_build_forward_headers_empty_input() {
+        let original_headers = HeaderMap::new();
+        let result_headers = build_forward_headers(&original_headers, "any_token").unwrap();
+        assert_eq!(
+            result_headers.get(header::AUTHORIZATION).unwrap(),
+            "Bearer any_token"
+        );
+        assert_eq!(result_headers.len(), 1);
+    }
+
+    #[test]
+    fn test_build_response_headers_forwards_specific_headers() {
+        let mut upstream_headers = HeaderMap::new();
+        upstream_headers.insert("x-ratelimit-limit", HeaderValue::from_static("100"));
+        upstream_headers.insert("x-ratelimit-remaining", HeaderValue::from_static("99"));
+        // This is a hop-by-hop header and should be filtered.
+        upstream_headers.insert("proxy-authenticate", HeaderValue::from_static("Basic"));
+
+        let result_headers = build_response_headers(&upstream_headers);
+
+        assert_eq!(result_headers.get("x-ratelimit-limit").unwrap(), "100");
+        assert_eq!(result_headers.get("x-ratelimit-remaining").unwrap(), "99");
+        assert!(result_headers.get("proxy-authenticate").is_none());
+        assert_eq!(result_headers.len(), 2);
     }
 }

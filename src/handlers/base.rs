@@ -1,6 +1,7 @@
 // src/handlers/base.rs
 
 use axum::response::Response;
+use std::time::Duration;
 
 /// Defines the next action to be taken by the main request loop.
 #[derive(Debug)]
@@ -11,8 +12,24 @@ pub enum Action {
     BlockKeyAndRetry,
     /// The response is final and should be returned to the client immediately.
     ReturnToClient(Response),
+    /// A rate limit with a specific wait duration was encountered.
+    WaitFor(Duration),
     /// Terminal (non-retryable) response that should be returned to the client as-is.
     Terminal(Response),
+}
+
+impl PartialEq for Action {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Action::RetryNextKey, Action::RetryNextKey) => true,
+            (Action::BlockKeyAndRetry, Action::BlockKeyAndRetry) => true,
+            (Action::WaitFor(d1), Action::WaitFor(d2)) => d1 == d2,
+            // For responses, we can't directly compare them.
+            // In tests, we usually care about the variant, not the content.
+            // This implementation considers them not equal, which is fine for current tests.
+            _ => false,
+        }
+    }
 }
 
 /// A trait for handling responses from the upstream service.

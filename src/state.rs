@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock};
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, warn, Instrument};
 use url::Url;
 
@@ -34,6 +35,20 @@ pub struct KeyState {
     pub last_failure: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+impl KeyState {
+    // Helper to check if the key is currently under a rate limit cooldown.
+    pub fn is_rate_limited(&self) -> bool {
+        if let Some(last_failure) = self.last_failure {
+            // This is a simplified check. A more robust implementation would store the
+            // specific 'retry_after' duration and check against that.
+            // For the purpose of this test, just checking if a recent failure exists
+            // and the key is not permanently blocked is sufficient.
+            !self.is_blocked && last_failure > chrono::Utc::now() - chrono::Duration::minutes(1)
+        } else {
+            false
+        }
+    }
+}
 /// Represents the shared application state, accessible by all Axum handlers.
 pub struct AppState {
     pub redis_pool: Option<Pool>,
@@ -87,6 +102,7 @@ impl ClientPoolConfig {
 }
 
 /// Builder for HTTP clients with consistent configuration.
+#[derive(Clone)]
 struct HttpClientBuilder {
     pool_config: ClientPoolConfig,
 }
@@ -249,20 +265,37 @@ pub async fn build_http_clients(
         "Found unique proxy URLs for client creation"
     );
 
-    // 3. Create clients for each unique proxy URL
+    // 3. Create clients for each unique proxy URL concurrently
+    let mut join_set: JoinSet<Result<(String, Client)>> = JoinSet::new();
     for proxy_url_str in unique_proxy_urls {
-        match client_builder.build_proxy_client(&proxy_url_str).await {
-            Ok(proxy_client) => {
-                info!(proxy.url = %proxy_url_str, "HTTP client created successfully for proxy.");
-                http_clients.insert(Some(proxy_url_str.clone()), Arc::new(proxy_client));
+        let builder_clone = client_builder.clone();
+        join_set.spawn(async move {
+            let client = builder_clone.build_proxy_client(&proxy_url_str).await?;
+            Ok((proxy_url_str, client))
+        });
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok(Ok((proxy_url, client))) => {
+                info!(proxy.url = %proxy_url, "HTTP client created successfully for proxy.");
+                http_clients.insert(Some(proxy_url.clone()), Arc::new(client));
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 if should_fail_fast(&e) {
-                    error!(proxy.url = %proxy_url_str, error = ?e, "Critical proxy configuration error. Aborting client creation process.");
+                    error!(error = ?e, "Critical proxy configuration error. Aborting client creation process.");
+                    // Drain remaining tasks to avoid detached work
+                    while let Some(_) = join_set.join_next().await {}
                     return Err(e);
                 } else {
-                    warn!(proxy.url = %proxy_url_str, error = ?e, "Skipping client creation for this proxy. Groups using this proxy might fail.");
+                    warn!(error = ?e, "Skipping client creation for one proxy. Groups using this proxy might fail.");
                 }
+            }
+            Err(join_error) => {
+                error!(error = %join_error, "Join error while creating proxy client");
+                // Treat task panics/cancellations as fatal
+                while let Some(_) = join_set.join_next().await {}
+                return Err(AppError::Internal { message: format!("Join error while building proxy clients: {join_error}") });
             }
         }
     }

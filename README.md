@@ -3,7 +3,7 @@
 [![CI](https://github.com/stranmor/gemini-proxy-key-rotation-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/stranmor/gemini-proxy-key-rotation-rust/actions/workflows/rust.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Security](https://img.shields.io/badge/Security-Hardened-green.svg)](SECURITY.md)
-[![Tests](https://img.shields.io/badge/Tests-42%2B%20Passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/Tests-227%20Passing-brightgreen.svg)](#testing)
 
 A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemini models with **enterprise-grade security** and **intelligent monitoring**. Seamlessly integrates with OpenAI-compatible applications while providing advanced key rotation, load balancing, and comprehensive observability.
 
@@ -15,10 +15,10 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 - 🧱 **Token Limit Guardrails**: Configurable per-request token limit with metrics and fail-fast init
 - 🛡️ **Circuit Breaker**: Automatic failover for upstream services
 - 🔄 **Graceful Operations**: Zero-downtime restarts, proper signal handling
-- 🧪 **60+ Tests**: Comprehensive test coverage including large text scenarios
+- 🧪 **227 Tests**: Comprehensive test coverage including large text scenarios
 - 📦 **Easy Installation**: One-command setup with automated installer
 
-**📚 [Installation Guide](#-installation)** | **🔒 [Security Features](SECURITY.md)** | **📊 [Monitoring Guide](MONITORING.md)**
+**📚 [Installation Guide](#-installation)** | **🔒 [Security Features](SECURITY.md)** | **📊 [Monitoring Guide](MONITORING.md)** | **📋 [Project Status](PROJECT_STATUS_REPORT.md)** | **🗺️ [Development Roadmap](DEVELOPMENT_ROADMAP.md)** | **🧪 [Test Coverage](TEST_COVERAGE_REPORT.md)**
 
 ## 🎯 Key Benefits
 
@@ -55,7 +55,7 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 - **One-Command Setup**: Automated installer handles everything
 - **OpenAI Compatible**: Drop-in replacement for existing applications
 - **Docker Ready**: Production containers with health checks
-- **Comprehensive Testing**: 60+ automated tests ensure reliability
+- **Comprehensive Testing**: 227 automated tests ensure reliability
 
 ## 🌟 Features
 
@@ -91,7 +91,7 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 - **OpenAI Compatible**: Drop-in replacement for existing applications
 - **Flexible Configuration**: Single YAML file with hot-reload support
 - **Multiple Deployment Options**: Docker, systemd, or direct binary
-- **Comprehensive Testing**: 42+ automated tests ensure reliability
+- **Comprehensive Testing**: 227 automated tests ensure reliability
 
 ## 🎯 Advanced Tokenization
 
@@ -296,8 +296,8 @@ make run
    # Option A: Docker (Recommended)
    make docker-run
    
-   # Option B: Direct binary
-   make run
+   # Option B: Direct binary (use -H for host binding)
+   ./target/release/gemini-proxy -H 0.0.0.0 -p 4806
    
    # Option C: Systemd service (Linux)
    sudo systemctl start gemini-proxy
@@ -795,7 +795,7 @@ sudo journalctl -u gemini-proxy -f
 
 ## 🧪 Testing
 
-The project includes comprehensive test coverage with 60+ automated tests:
+The project includes comprehensive test coverage with 227 automated tests:
 
 ```bash
 # Run all tests

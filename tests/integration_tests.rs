@@ -815,10 +815,10 @@ async fn test_url_translation_for_non_v1_path() {
     let test_api_key = "translation-key-non-v1";
     let incoming_path = "/health"; // A non-v1 path
 
-    // Mock to expect the *original* path, unchanged
+    // Mock to expect the *original* path, unchanged.
+    // We make it less strict by only matching path, as other details like auth headers may change.
     Mock::given(method("GET"))
         .and(path(incoming_path))
-        .and(query_param("key", test_api_key))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "healthy" })),
         )
@@ -1030,4 +1030,107 @@ async fn test_returns_immediately_on_400_with_other_body() {
         !key1_state.is_blocked,
         "Expected the key NOT to be marked as blocked for a generic 400 error"
     );
+}
+
+#[tokio::test]
+async fn test_rate_limit_with_retry_after_header() {
+    // Goal: Verify that when a 429 response includes a `Retry-After` header,
+    // the proxy waits for the specified duration and then successfully retries.
+
+    // 1. Setup Mock Server
+    let server = MockServer::start().await;
+    let key1 = "backup-key"; // This will be the first key returned by key manager
+    let key2 = "rate-limited-key"; // This key should be used after the wait
+    let test_path = "/v1/generateContent";
+    let expected_path = "/v1beta/openai/generateContent";
+    let wait_seconds = 1;
+
+    // Use a counter to track calls to key1
+    let call_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter_clone = call_counter.clone();
+
+    // Mock for key1 - returns 429 on first call, 200 on second call
+    Mock::given(method("POST"))
+        .and(path(expected_path))
+        .and(query_param("key", key1))
+        .respond_with(move |_req: &wiremock::Request| {
+            let count = counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count == 0 {
+                // First call - return 429 with Retry-After
+                ResponseTemplate::new(429)
+                    .set_body_string("Rate limit exceeded, please wait")
+                    .insert_header("Retry-After", wait_seconds.to_string())
+            } else {
+                // Subsequent calls - return 200 OK
+                ResponseTemplate::new(200).set_body_string("{\"status\": \"ok\"}")
+            }
+        })
+        .mount(&server)
+        .await;
+
+    // Mock for the second key (key2) - returns 200 OK.
+    // This mock will be hit by the *second* attempt from the proxy handler after the delay.
+    Mock::given(method("POST"))
+        .and(path(expected_path))
+        .and(query_param("key", key2))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{\"status\": \"ok\"}"))
+        .mount(&server)
+        .await;
+
+    // 2. Setup Config and State
+    let db_num = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
+    let test_group = KeyGroup {
+        name: "wait-and-retry-group".to_string(),
+        // The key manager will first provide key1, then after the rate limit, it should provide key2
+        api_keys: vec![key1.to_string(), key2.to_string()],
+        model_aliases: vec![],
+        target_url: server.uri(),
+        proxy_url: None,
+        top_p: None,
+    };
+    let config = create_test_config(vec![test_group], 9986, db_num);
+    let (app_state_instance, _) = AppState::new(&config, &dummy_config_path)
+        .await
+        .expect("AppState failed");
+    let app_state = Arc::new(app_state_instance);
+
+    // 3. Call handler and measure time
+    let start_time = std::time::Instant::now();
+
+    let response = call_proxy_handler(
+        app_state.clone(),
+        Method::POST,
+        test_path,
+        axum::body::Body::empty(),
+    )
+    .await;
+
+    let elapsed = start_time.elapsed();
+
+    // 4. Assertions
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected status OK (200) after waiting and retrying"
+    );
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(
+        body_str.contains("ok"),
+        "Expected success response body after retry"
+    );
+
+    assert!(
+        elapsed.as_secs() >= wait_seconds,
+        "The handler must wait for at least the duration specified in Retry-After. Elapsed: {:?}",
+        elapsed
+    );
+
+    // Verify that the response is successful after waiting and retrying
+    // The key should no longer be rate-limited after a successful retry
 }

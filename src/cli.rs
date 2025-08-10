@@ -14,7 +14,7 @@ pub struct Cli {
     pub config: Option<PathBuf>,
 
     /// Server bind address
-    #[arg(short, long, default_value = "0.0.0.0", env = "GEMINI_PROXY_HOST")]
+    #[arg(short = 'H', long, default_value = "0.0.0.0", env = "GEMINI_PROXY_HOST")]
     pub host: String,
 
     /// Server port

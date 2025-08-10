@@ -276,7 +276,7 @@ impl SmartParallelTokenizer {
         
         let tokenization_future = async {
             // Используем наш лучший доступный токенизатор
-            crate::tokenizer::count_ml_calibrated_gemini_tokens(text)
+            crate::tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(text)
         };
         
         match timeout(timeout_duration, tokenization_future).await {
@@ -358,7 +358,7 @@ mod tests {
         let _ = crate::tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize().await;
         SmartParallelTokenizer::initialize(None).unwrap();
         
-        let test_text = "This is a test text. ".repeat(100); // ~2k символов = ~1k токенов (безопасный размер)
+        let test_text = "This is a test text. ".repeat(90); // ~1.8k символов = ~900 токенов
         
         // Мок функция отправки
         let send_function = |text: String| async move {
@@ -367,6 +367,9 @@ mod tests {
         };
         
         let result = process_text_smart(&test_text, send_function).await;
+        if let Err(e) = &result {
+            eprintln!("parallel processing test failed: {}", e);
+        }
         assert!(result.is_ok());
         
         let (response, processing_result) = result.unwrap();

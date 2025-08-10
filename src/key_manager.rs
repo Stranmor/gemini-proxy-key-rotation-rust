@@ -66,6 +66,7 @@ mod secret_string {
 }
 
 // --- Main Trait for KeyManager ---
+use std::time::Duration;
 #[async_trait]
 pub trait KeyManagerTrait: Send + Sync {
     async fn get_next_available_key_info(
@@ -73,6 +74,7 @@ pub trait KeyManagerTrait: Send + Sync {
         group_name: Option<&str>,
     ) -> Result<Option<FlattenedKeyInfo>>;
     async fn handle_api_failure(&self, api_key: &str, is_terminal: bool) -> Result<()>;
+    async fn handle_rate_limit(&self, api_key: &str, duration: Duration) -> Result<()>;
     async fn get_key_states(&self) -> Result<HashMap<String, KeyState>>;
     async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo>;
 }
@@ -88,6 +90,7 @@ trait KeyStore: Send + Sync {
         is_terminal: bool,
         max_failures: u32,
     ) -> Result<KeyState>;
+    async fn set_key_rate_limited(&self, api_key: &str, duration: Duration) -> Result<()>;
     async fn get_key_state(&self, key: &str) -> Result<Option<KeyState>>;
     async fn get_all_key_states(&self) -> Result<HashMap<String, KeyState>>;
 }
@@ -282,6 +285,11 @@ impl KeyManagerTrait for KeyManager {
             .await?;
         self.log_failure_handling(api_key, is_terminal, &updated_state);
         Ok(())
+    }
+
+    #[instrument(level = "warn", skip(self, api_key), fields(api_key.preview = %KeyManager::preview_key_str(api_key), duration = ?duration))]
+    async fn handle_rate_limit(&self, api_key: &str, duration: Duration) -> Result<()> {
+        self.store.set_key_rate_limited(api_key, duration).await
     }
 
     #[instrument(level = "debug", skip(self))]
@@ -532,6 +540,25 @@ impl KeyStore for RedisStore {
         }
         Ok(states)
     }
+
+    async fn set_key_rate_limited(&self, api_key: &str, duration: Duration) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let state_key = self.prefix_key(&key_state_key(api_key));
+        
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        pipe.hset(&state_key, "is_blocked", true);
+        pipe.expire(&state_key, duration.as_secs() as i64);
+
+        let _: () = pipe.query_async(&mut conn).await?;
+        
+        warn!(
+            api_key.preview = %KeyManager::preview_key_str(api_key),
+            duration = ?duration,
+            "API key has been temporarily rate-limited."
+        );
+        Ok(())
+    }
 }
 // --- In-Memory Store Implementation ---
 struct InMemoryStore {
@@ -616,5 +643,19 @@ impl KeyStore for InMemoryStore {
         let states_guard = self.key_states.read().await;
         trace!("InMemoryStore::get_all_key_states: got read lock");
         Ok(states_guard.clone())
+    }
+
+    async fn set_key_rate_limited(&self, api_key: &str, _duration: Duration) -> Result<()> {
+        let mut states_guard = self.key_states.write().await;
+        if let Some(state) = states_guard.get_mut(api_key) {
+            state.is_blocked = true;
+            // NOTE: In-memory store does not currently support TTLs for rate limiting.
+            // The key will be blocked until the next restart.
+            warn!(
+                api_key.preview = %KeyManager::preview_key_str(api_key),
+                "API key has been temporarily rate-limited (in-memory, blocked until restart)."
+            );
+        }
+        Ok(())
     }
 }

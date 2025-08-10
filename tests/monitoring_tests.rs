@@ -88,6 +88,15 @@ impl KeyManagerTrait for MockKeyManager {
     async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo> {
         self.keys.clone()
     }
+
+    async fn handle_rate_limit(
+        &self,
+        _api_key: &str,
+        _duration: Duration,
+    ) -> Result<(), gemini_proxy::error::AppError> {
+        // Mock implementation, does nothing.
+        Ok(())
+    }
 }
 
 #[tokio::test]
