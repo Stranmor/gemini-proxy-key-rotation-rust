@@ -66,7 +66,7 @@ pub trait KeyManagerTrait: Send + Sync {
     async fn get_key_states(&self) -> Result<HashMap<String, KeyState>>;
 
     async fn get_all_key_info(&self) -> HashMap<String, FlattenedKeyInfo>;
-    
+
     async fn reload(&mut self, config: &AppConfig, redis_pool: Option<Pool>) -> Result<()>;
 }
 
@@ -213,7 +213,7 @@ impl KeyManagerTrait for KeyManager {
     async fn reload(&mut self, config: &AppConfig, redis_pool: Option<Pool>) -> Result<()> {
         info!("Reloading KeyManager state from new configuration...");
         let new_key_info_map = Self::build_key_info_map(config);
-        
+
         let new_store: Arc<dyn KeyStore> = match redis_pool {
             Some(pool) => Arc::new(RedisStore::new(pool, config, &new_key_info_map).await?),
             None => Arc::new(InMemoryStore::new(&new_key_info_map)),
@@ -222,7 +222,7 @@ impl KeyManagerTrait for KeyManager {
         self.store = new_store;
         self.key_info_map = Arc::new(new_key_info_map);
         self.max_failures_threshold = config.max_failures_threshold.unwrap_or(3);
-        
+
         info!("KeyManager reloaded successfully.");
         Ok(())
     }

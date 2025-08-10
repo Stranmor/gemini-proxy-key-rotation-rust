@@ -139,10 +139,10 @@ Tested on various content types and sizes, including large-scale scenarios:
 server:
   # Choose tokenization strategy (RECOMMENDED: gemini_first for large texts)
   tokenizer_type: "gemini_first"  # Send directly to Gemini (fastest)
-  
+
   # Token limits and safety
   max_tokens_per_request: 250000
-  
+
   # Gemini First configuration (optimized for 180k+ tokens)
   tokenizer_config:
     enable_pre_check: false        # Skip pre-tokenization (fastest)
@@ -295,10 +295,10 @@ make run
    ```bash
    # Option A: Docker (Recommended)
    make docker-run
-   
+
    # Option B: Direct binary (use -H for host binding)
    ./target/release/gemini-proxy -H 0.0.0.0 -p 4806
-   
+
    # Option C: Systemd service (Linux)
    sudo systemctl start gemini-proxy
    ```
@@ -307,7 +307,7 @@ make run
    ```bash
    # Check health
    curl http://localhost:4806/health
-   
+
    # Test with your OpenAI client
    # Base URL: http://localhost:4806
    # API Key: any-dummy-key (ignored, real keys managed internally)
@@ -318,7 +318,7 @@ make run
 Access the admin panel at `http://localhost:4806/admin/` (configure `admin_token` in config.yaml):
 
 - 📈 Real-time key health scores
-- 📊 Request success rates and response times  
+- 📊 Request success rates and response times
 - 🔧 Key management and configuration
 - 🚨 Alert history and system status
 
@@ -506,14 +506,14 @@ The `config.yaml` file is your single source of truth. Start with the example:
 server:
   port: 4806
   admin_token: "your-secure-admin-token-here"  # Generate with: openssl rand -hex 32
-  
+
   # Security settings
   security:
     require_https: true
     max_login_attempts: 5
     lockout_duration_secs: 3600
     session_timeout_secs: 86400
-  
+
   # Performance tuning
   connect_timeout_secs: 10
   request_timeout_secs: 60
@@ -533,7 +533,7 @@ groups:
       - "your-gemini-api-key-1"
       - "your-gemini-api-key-2"
     target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-    
+
   - name: "Backup"
     api_keys:
       - "your-backup-key-1"
@@ -607,7 +607,7 @@ Each API key gets a health score from 0.0 (unhealthy) to 1.0 (perfect):
 
 - **1.0**: Perfect performance, no recent failures
 - **0.8-0.9**: Good performance, occasional failures
-- **0.5-0.7**: Degraded performance, frequent failures  
+- **0.5-0.7**: Degraded performance, frequent failures
 - **0.0-0.4**: Poor performance, mostly failing
 - **Blocked**: Temporarily disabled due to consecutive failures
 

@@ -62,7 +62,7 @@
    if unicode_ratio > 0.2 {
        tokens = (tokens as f64 * 0.8) as usize;
    }
-   
+
    // Для математических текстов
    if math_symbols > 5 {
        tokens = (tokens as f64 * 0.85) as usize;

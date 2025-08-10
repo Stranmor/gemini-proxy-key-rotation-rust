@@ -55,7 +55,7 @@ Optimal solution - combination:
 server:
   tokenizer_type: "openai"  # openai, claude, llama, gemini
   max_tokens_per_request: 250000
-  
+
   # Hybrid mode
   hybrid_tokenization:
     enabled: true
@@ -70,7 +70,7 @@ server:
 ```
 Text (100 words):
 - OpenAI tokenizer: 0.15ms
-- Claude tokenizer: 0.12ms  
+- Claude tokenizer: 0.12ms
 - Llama tokenizer: 0.25ms
 - Minimal tokenizer: 0.05ms
 

@@ -101,7 +101,9 @@ impl KeyManagerTrait for MockKeyManager {
     async fn reload(
         &mut self,
         _config: &gemini_proxy::config::AppConfig,
-        _redis_pool: Option<deadpool::managed::Pool<deadpool_redis::Manager, deadpool_redis::Connection>>,
+        _redis_pool: Option<
+            deadpool::managed::Pool<deadpool_redis::Manager, deadpool_redis::Connection>,
+        >,
     ) -> Result<(), gemini_proxy::error::AppError> {
         // Mock implementation, does nothing.
         Ok(())

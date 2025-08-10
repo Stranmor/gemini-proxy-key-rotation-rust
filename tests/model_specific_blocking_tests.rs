@@ -22,7 +22,7 @@ groups:
     api_keys: ["key1", "key2"]
     model_aliases: ["gemini-1.5-flash", "gemini-flash"]
     target_url: "https://generativelanguage.googleapis.com/"
-  
+
   - name: "Group2"
     api_keys: ["key3", "key4"]
     model_aliases: ["gemini-1.5-pro", "gemini-pro"]

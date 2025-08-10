@@ -137,17 +137,17 @@ let count = tokenizer::count_ml_calibrated_gemini_tokens(text)?;
 server:
   # Primary tokenization strategy
   tokenizer_type: "proxy_cached"
-  
+
   # Token limits
   max_tokens_per_request: 250000
-  
+
   # Cache settings
   tokenizer_cache_size_mb: 100
   cache_ttl_hours: 24
-  
+
   # Fallback strategy
   fallback_tokenizer: "ml_calibrated"
-  
+
   # Performance tuning
   tokenizer_timeout_secs: 10
   batch_size: 100
@@ -161,27 +161,27 @@ tokenization:
   # Strategy selection
   primary_strategy: "proxy_cached"
   fallback_strategy: "ml_calibrated"
-  
+
   # Proxy-cached settings
   proxy_cached:
     cache_size_mb: 100
     warm_cache_on_startup: true
     common_phrases_file: "common_phrases.txt"
     api_timeout_secs: 10
-  
+
   # Official Google settings
   official_google:
     python_path: "/usr/bin/python3"
     model_name: "gemini-2.0-flash"
     cache_vocabulary: true
-  
+
   # ML-calibrated settings
   ml_calibrated:
     accuracy_target: 0.95
     unicode_optimization: true
     code_detection: true
     debug_logging: false
-  
+
   # Monitoring
   monitoring:
     accuracy_tracking: true
@@ -226,11 +226,11 @@ async fn test_custom_accuracy() {
         "Another test case",
         // Add your specific use cases
     ];
-    
+
     for text in test_cases {
         let our_count = tokenizer::count_ml_calibrated_gemini_tokens(text)?;
         let google_count = get_google_token_count(text).await?;
-        
+
         let accuracy = calculate_accuracy(our_count, google_count);
         assert!(accuracy >= 90.0, "Accuracy too low: {:.1}%", accuracy);
     }

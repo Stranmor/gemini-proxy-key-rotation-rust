@@ -100,10 +100,6 @@ mod tests {
         let body = Bytes::new();
 
         assert_eq!(handler.handle(&response_ok, &body, "test-key"), None);
-        assert_eq!(
-            handler.handle(&response_bad_req, &body, "test-key"),
-            None
-        );
+        assert_eq!(handler.handle(&response_bad_req, &body, "test-key"), None);
     }
-
 }

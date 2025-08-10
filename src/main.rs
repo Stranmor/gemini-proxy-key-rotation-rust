@@ -103,10 +103,9 @@ async fn serve_command(
         #[cfg(feature = "tokenizer")]
         {
             use gemini_proxy::tokenizer::{
-                GeminiTokenizer, get_gemini_tokenizer_info,
-                MultimodalTokenizer, MultimodalConfig
+                get_gemini_tokenizer_info, GeminiTokenizer, MultimodalConfig, MultimodalTokenizer,
             };
-            
+
             // 1. Инициализируем базовый Gemini токенизатор
             info!("Initializing Gemini tokenizer for text processing");
             match GeminiTokenizer::initialize().await {
@@ -122,19 +121,20 @@ async fn serve_command(
                         error!(error = %e, "Failed to initialize Gemini tokenizer in production mode");
                         return Err(AppError::TokenizerInit {
                             message: format!("Failed to initialize Gemini tokenizer: {e}"),
-                        }.into());
+                        }
+                        .into());
                     }
                 }
             }
-            
+
             // 2. Инициализируем multimodal токенизатор
             info!("Initializing multimodal tokenizer for text + image processing");
             let multimodal_config = MultimodalConfig {
                 safety_multiplier: 1.2, // 20% запас для безопасности
-                debug_logging: dev,      // Детальное логирование в dev режиме
+                debug_logging: dev,     // Детальное логирование в dev режиме
                 ..Default::default()
             };
-            
+
             match MultimodalTokenizer::initialize(Some(multimodal_config)) {
                 Ok(_) => {
                     info!("Multimodal tokenizer initialized successfully");
@@ -146,7 +146,8 @@ async fn serve_command(
                         error!(error = %e, "Failed to initialize multimodal tokenizer in production mode");
                         return Err(AppError::TokenizerInit {
                             message: format!("Failed to initialize multimodal tokenizer: {e}"),
-                        }.into());
+                        }
+                        .into());
                     }
                 }
             }

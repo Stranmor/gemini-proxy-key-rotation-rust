@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/stranmor/gemini-proxy-key-rotation-
 
 # Follow the prompts - the installer will:
 # ✅ Install Rust and Docker (if needed)
-# ✅ Clone the repository  
+# ✅ Clone the repository
 # ✅ Build the application
 # ✅ Set up configuration files
 # ✅ Run tests to verify installation

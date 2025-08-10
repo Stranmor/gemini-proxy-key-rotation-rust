@@ -1,6 +1,6 @@
 // tests/config_module_tests.rs
 
-use gemini_proxy::config::{AppConfig, KeyGroup, ServerConfig, load_config, save_config};
+use gemini_proxy::config::{load_config, save_config, AppConfig, KeyGroup, ServerConfig};
 
 use tempfile::TempDir;
 use tokio::fs;
@@ -9,7 +9,7 @@ use tokio::fs;
 async fn test_config_load_from_file() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("test_config.yaml");
-    
+
     let config_content = r#"
 server:
   port: 8080
@@ -25,12 +25,12 @@ groups:
       - "test-key-2"
     target_url: "https://generativelanguage.googleapis.com"
 "#;
-    
+
     fs::write(&config_path, config_content).await.unwrap();
-    
+
     let config = load_config(&config_path);
     assert!(config.is_ok(), "Config should load successfully from file");
-    
+
     let config = config.unwrap();
     assert_eq!(config.server.port, 8080);
     assert_eq!(config.groups.len(), 1);
@@ -68,7 +68,7 @@ fn test_config_creation_valid() {
         rate_limit: None,
         circuit_breaker: None,
     };
-    
+
     // Проверяем, что конфиг создается корректно
     assert_eq!(config.server.port, 8080);
     assert_eq!(config.groups.len(), 1);
@@ -98,7 +98,7 @@ fn test_config_with_empty_groups() {
         rate_limit: None,
         circuit_breaker: None,
     };
-    
+
     // Проверяем, что конфиг с пустыми группами создается
     assert_eq!(config.groups.len(), 0);
 }
@@ -106,7 +106,7 @@ fn test_config_with_empty_groups() {
 #[test]
 fn test_server_config_defaults() {
     let config = ServerConfig::default();
-    
+
     assert_eq!(config.port, 8080);
     assert_eq!(config.connect_timeout_secs, 10);
     assert_eq!(config.request_timeout_secs, 60);
@@ -118,7 +118,7 @@ fn test_server_config_defaults() {
 #[test]
 fn test_key_group_defaults() {
     let group = KeyGroup::default();
-    
+
     // Проверяем, что группа создается с дефолтными значениями
     assert!(group.api_keys.is_empty());
     assert!(group.model_aliases.is_empty());
@@ -131,7 +131,7 @@ fn test_key_group_defaults() {
 async fn test_config_save_and_load() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("save_test_config.yaml");
-    
+
     let original_config = AppConfig {
         server: ServerConfig {
             port: 9090,
@@ -160,19 +160,18 @@ async fn test_config_save_and_load() {
         rate_limit: None,
         circuit_breaker: None,
     };
-    
+
     // Сохраняем конфиг
     let save_result = save_config(&original_config, &config_path).await;
     assert!(save_result.is_ok(), "Config should save successfully");
-    
+
     // Загружаем конфиг
     let loaded_config = load_config(&config_path);
     assert!(loaded_config.is_ok(), "Config should load successfully");
-    
+
     let loaded_config = loaded_config.unwrap();
     assert_eq!(loaded_config.server.port, original_config.server.port);
     assert_eq!(loaded_config.groups.len(), original_config.groups.len());
     assert_eq!(loaded_config.groups[0].name, original_config.groups[0].name);
     assert_eq!(loaded_config.redis_url, original_config.redis_url);
 }
-

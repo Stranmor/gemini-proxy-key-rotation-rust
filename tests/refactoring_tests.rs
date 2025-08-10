@@ -45,7 +45,6 @@ async fn test_key_selector_round_robin() {
     );
 }
 
-
 #[tokio::test]
 async fn test_memory_store_operations() {
     let mut key_info_map = HashMap::new();

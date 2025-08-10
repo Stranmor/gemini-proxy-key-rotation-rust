@@ -34,7 +34,9 @@ impl ConfigValidator {
         if let Some(limit) = config.server.max_tokens_per_request {
             if !(1..=2_000_000).contains(&limit) {
                 return Err(AppError::config_validation(
-                    format!("server.max_tokens_per_request must be within 1..=2_000_000, got {limit}"),
+                    format!(
+                        "server.max_tokens_per_request must be within 1..=2_000_000, got {limit}"
+                    ),
                     Some("server.max_tokens_per_request"),
                 ));
             }
@@ -46,7 +48,9 @@ impl ConfigValidator {
         if let Some(limit) = config.server.max_tokens_per_request {
             if !(1..=2_000_000).contains(&limit) {
                 return Err(AppError::config_validation(
-                    format!("server.max_tokens_per_request must be within 1..=2_000_000, got {limit}"),
+                    format!(
+                        "server.max_tokens_per_request must be within 1..=2_000_000, got {limit}"
+                    ),
                     Some("server.max_tokens_per_request"),
                 ));
             }

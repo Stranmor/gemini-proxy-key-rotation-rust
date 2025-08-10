@@ -3,7 +3,7 @@ info:
   title: Gemini Proxy API
   description: |
     A high-performance proxy for Google Gemini API with key rotation, caching, and monitoring.
-    
+
     This proxy provides OpenAI-compatible endpoints that forward requests to Google's Gemini API
     while managing multiple API keys, implementing intelligent retry logic, and providing
     comprehensive monitoring and caching capabilities.
@@ -279,7 +279,7 @@ components:
           $ref: '#/components/schemas/ServerInfo'
         key_status:
           $ref: '#/components/schemas/KeyStatus'
-        
+
 
     ServerInfo:
       type: object

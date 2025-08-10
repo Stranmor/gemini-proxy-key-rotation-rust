@@ -26,7 +26,7 @@ async fn test_request_too_large_error_message_contains_tokens() {
     // Проверяем JSON ответ
     let response = error.into_response();
     let (parts, body) = response.into_parts();
-    
+
     // Проверяем статус код
     assert_eq!(parts.status, 400);
 
@@ -38,7 +38,7 @@ async fn test_request_too_large_error_message_contains_tokens() {
     assert_eq!(json["type"], "https://gemini-proxy.dev/errors/validation");
     assert_eq!(json["title"], "Validation Error");
     assert_eq!(json["status"], 400);
-    
+
     // Проверяем, что detail содержит правильное сообщение
     let detail = json["detail"].as_str().unwrap();
     assert!(

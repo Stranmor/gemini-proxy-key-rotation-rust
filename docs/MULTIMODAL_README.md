@@ -44,7 +44,7 @@ multimodal:
 use gemini_proxy::tokenizer::count_multimodal_tokens;
 
 let result = count_multimodal_tokens(&json_body)?;
-println!("Total: {} (text: {}, images: {})", 
+println!("Total: {} (text: {}, images: {})",
     result.total_tokens, result.text_tokens, result.image_tokens);
 ```
 
@@ -69,7 +69,7 @@ println!("Total: {} (text: {}, images: {})",
 let base_tokens = if decoded_size < 1024 * 1024 {
     ((decoded_size as f64).sqrt() * 0.8).ceil() as usize  // Small images
 } else if decoded_size < 5 * 1024 * 1024 {
-    ((decoded_size as f64).sqrt()).ceil() as usize        // Medium images  
+    ((decoded_size as f64).sqrt()).ceil() as usize        // Medium images
 } else {
     ((decoded_size as f64).sqrt() * 1.2).ceil() as usize  // Large images
 };
@@ -111,7 +111,7 @@ gemini_proxy_multimodal_images_count
 {
   "message": "Multimodal token count calculated",
   "text_tokens": 25,
-  "image_tokens": 1200, 
+  "image_tokens": 1200,
   "total_tokens": 1470,
   "image_count": 2,
   "safety_multiplier": 1.2,
@@ -150,7 +150,7 @@ Text: "Explain quantum computing"
 - Our result: 4 tokens (100% accuracy)
 
 Multimodal: "What's in this image?" + 1MB JPEG
-- Gemini API: ~1050 tokens  
+- Gemini API: ~1050 tokens
 - Our result: ~1020 tokens (97% accuracy)
 - Time: 1.2ms vs 200ms
 ```
@@ -171,7 +171,7 @@ cargo bench tokenizer_benchmark
 - Use reasonable image size limits
 - Cache results for repeated images
 
-### Accuracy  
+### Accuracy
 - Regularly calibrate coefficients with real data
 - Monitor accuracy in production
 - Use A/B testing for optimization

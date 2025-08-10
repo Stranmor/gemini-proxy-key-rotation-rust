@@ -2,7 +2,7 @@
 
 use secrecy::{ExposeSecret, Secret};
 
-/// A wrapper around Secret<String> with additional utility methods
+/// A wrapper around `Secret<String>` with additional utility methods
 pub struct SecureString(Secret<String>);
 
 impl SecureString {

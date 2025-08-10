@@ -256,14 +256,14 @@ impl KeyStore for RedisStore {
     async fn set_key_rate_limited(&self, api_key: &str, duration: Duration) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let state_key = self.prefix_key(&format!("key_state:{api_key}"));
-        
+
         let mut pipe = redis::pipe();
         pipe.atomic();
         pipe.hset(&state_key, "is_blocked", true);
         pipe.expire(&state_key, duration.as_secs() as i64);
 
         let _: () = pipe.query_async(&mut conn).await?;
-        
+
         warn!(
             api_key.preview = %crate::key_manager::KeyManager::preview_key_str(api_key),
             duration = ?duration,

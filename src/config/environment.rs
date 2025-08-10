@@ -49,7 +49,7 @@ impl EnvironmentConfig {
     /// Get a summary of active environment overrides
     pub fn override_summary(&self) -> Vec<String> {
         let mut overrides = Vec::new();
-        
+
         if self.server_host.is_some() {
             overrides.push("GEMINI_PROXY_HOST".to_string());
         }
@@ -71,7 +71,7 @@ impl EnvironmentConfig {
         if self.request_timeout.is_some() {
             overrides.push("GEMINI_PROXY_REQUEST_TIMEOUT".to_string());
         }
-        
+
         overrides
     }
 }
@@ -129,12 +129,12 @@ mod tests {
         // Clear relevant env vars
         let vars_to_clear = [
             "GEMINI_PROXY_HOST",
-            "GEMINI_PROXY_PORT", 
+            "GEMINI_PROXY_PORT",
             "REDIS_URL",
             "RUST_LOG",
             "GEMINI_PROXY_ADMIN_TOKEN",
         ];
-        
+
         for var in &vars_to_clear {
             env::remove_var(var);
         }

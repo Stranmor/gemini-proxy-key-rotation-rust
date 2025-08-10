@@ -1,14 +1,14 @@
 // src/tokenizer.rs
 
-pub mod modern;
-pub mod gemini_simple;
 pub mod gemini_calibrated;
+pub mod gemini_first;
 pub mod gemini_ml_calibrated;
+pub mod gemini_simple;
+pub mod modern;
+pub mod multimodal;
 pub mod official_google;
 pub mod proxy_cached;
-pub mod gemini_first;
 pub mod smart_parallel;
-pub mod multimodal;
 
 use hf_hub::api::sync::Api;
 use std::error::Error;
@@ -17,20 +17,34 @@ use tokenizers::Tokenizer;
 use tokio::task;
 use tracing::{error, info, warn};
 
-pub use modern::{ModernTokenizer, TokenizerType, count_tokens_modern, get_tokenizer_type};
-pub use gemini_simple::{GeminiTokenizer, count_gemini_tokens, get_gemini_tokenizer_info};
-pub use gemini_calibrated::{GeminiCalibratedTokenizer, count_calibrated_gemini_tokens, get_calibrated_gemini_tokenizer_info};
-pub use gemini_ml_calibrated::{GeminiMLCalibratedTokenizer, count_ml_calibrated_gemini_tokens, get_ml_calibrated_gemini_tokenizer_info};
-pub use official_google::{OfficialGoogleTokenizer, count_official_google_tokens, count_official_google_tokens_for_model, get_official_google_tokenizer_info};
+pub use gemini_calibrated::{
+    count_calibrated_gemini_tokens, get_calibrated_gemini_tokenizer_info, GeminiCalibratedTokenizer,
+};
+pub use gemini_first::{
+    count_tokens_post_response, get_gemini_first_tokenizer, should_tokenize_before_request,
+    GeminiFirstConfig, GeminiFirstTokenizer, PostResponseTokens, TokenizationDecision,
+};
+pub use gemini_ml_calibrated::{
+    count_ml_calibrated_gemini_tokens, get_ml_calibrated_gemini_tokenizer_info,
+    GeminiMLCalibratedTokenizer,
+};
+pub use gemini_simple::{count_gemini_tokens, get_gemini_tokenizer_info, GeminiTokenizer};
+pub use modern::{count_tokens_modern, get_tokenizer_type, ModernTokenizer, TokenizerType};
+pub use multimodal::{
+    count_multimodal_tokens, get_multimodal_config, MultimodalConfig, MultimodalTokenizer,
+    TokenCount,
+};
+pub use official_google::{
+    count_official_google_tokens, count_official_google_tokens_for_model,
+    get_official_google_tokenizer_info, OfficialGoogleTokenizer,
+};
 pub use proxy_cached::ProxyCachedTokenizer;
-pub use gemini_first::{GeminiFirstTokenizer, GeminiFirstConfig, TokenizationDecision, PostResponseTokens, should_tokenize_before_request, count_tokens_post_response, get_gemini_first_tokenizer};
-pub use smart_parallel::{SmartParallelTokenizer, SmartParallelConfig, ProcessingDecision, ProcessingResult, process_text_smart, get_smart_parallel_tokenizer};
-pub use multimodal::{MultimodalTokenizer, MultimodalConfig, TokenCount, count_multimodal_tokens, get_multimodal_config};
+pub use smart_parallel::{
+    get_smart_parallel_tokenizer, process_text_smart, ProcessingDecision, ProcessingResult,
+    SmartParallelConfig, SmartParallelTokenizer,
+};
 
 pub static TOKENIZER: OnceLock<Tokenizer> = OnceLock::new();
-
-
-
 
 /// Initializes the global tokenizer by downloading it from the Hugging Face Hub
 /// in a blocking-safe manner.
@@ -78,7 +92,6 @@ pub fn ensure_initialized(test_mode: bool) -> Result<(), Box<dyn Error + Send + 
     }
 }
 
-
 fn minimal_whitespace_tokenizer() -> Result<Tokenizer, Box<dyn Error + Send + Sync>> {
     // Минимальный валидный JSON-конфиг для tokenizers:
     // WordLevel модель + Whitespace pre_tokenizer, без декодера/нормализатора
@@ -96,7 +109,6 @@ fn minimal_whitespace_tokenizer() -> Result<Tokenizer, Box<dyn Error + Send + Sy
     let tk = Tokenizer::from_bytes(simple_tokenizer_json.as_bytes())?;
     Ok(tk)
 }
-
 
 /// Counts the number of tokens in a given text using the global tokenizer.
 pub fn count_tokens(text: &str) -> Result<usize, Box<dyn Error + Send + Sync>> {

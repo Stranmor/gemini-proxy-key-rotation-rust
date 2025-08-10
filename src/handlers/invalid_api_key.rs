@@ -32,9 +32,10 @@ mod tests {
             .status(StatusCode::BAD_REQUEST)
             .body(axum::body::Body::from(body))
             .unwrap();
-        
+
         let (parts, body) = response.into_parts();
-        let body_bytes = futures::executor::block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
+        let body_bytes =
+            futures::executor::block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
         let response = Response::from_parts(parts, axum::body::Body::empty()); // Reconstruct response without body for handle
 
         let action = handler.handle(&response, &body_bytes, "test_key");
@@ -49,9 +50,10 @@ mod tests {
             .status(StatusCode::BAD_REQUEST)
             .body(axum::body::Body::from(body))
             .unwrap();
-        
+
         let (parts, body) = response.into_parts();
-        let body_bytes = futures::executor::block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
+        let body_bytes =
+            futures::executor::block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
         let response = Response::from_parts(parts, axum::body::Body::empty());
 
         let action = handler.handle(&response, &body_bytes, "test_key");
@@ -68,7 +70,8 @@ mod tests {
             .unwrap();
 
         let (parts, body) = response.into_parts();
-        let body_bytes = futures::executor::block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
+        let body_bytes =
+            futures::executor::block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
         let response = Response::from_parts(parts, axum::body::Body::empty());
 
         let action = handler.handle(&response, &body_bytes, "test_key");

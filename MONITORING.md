@@ -80,7 +80,7 @@ monitoring:
     unhealthy_keys: 3
     error_rate: 0.1  # 10%
     response_time_secs: 5
-    
+
   # Alert destinations (future feature)
   notifications:
     webhook_url: "https://your-webhook.com/alerts"
@@ -235,7 +235,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-        
+
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.11.0
     volumes:
@@ -295,7 +295,7 @@ spec:
         port: 4806
       initialDelaySeconds: 30
       periodSeconds: 10
-      
+
     readinessProbe:
       httpGet:
         path: /health/detailed

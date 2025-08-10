@@ -1,18 +1,18 @@
 // tests/large_text_tokenizer_test.rs
 
+use gemini_proxy::tokenizer;
+use reqwest::Client;
+use serde_json::{json, Value};
 use std::env;
 use std::error::Error;
-use serde_json::{json, Value};
-use reqwest::Client;
 use tokio::time::{sleep, Duration};
 use tracing::warn;
-use gemini_proxy::tokenizer;
 
 /// Тест токенизаторов на больших текстах
 #[tokio::test]
 async fn test_large_text_tokenization() {
     tracing_subscriber::fmt::init();
-    
+
     let api_key = match env::var("GOOGLE_API_KEY") {
         Ok(key) => key,
         Err(_) => {
@@ -20,57 +20,50 @@ async fn test_large_text_tokenization() {
             return;
         }
     };
-    
+
     println!("\n📚 LARGE TEXT TOKENIZATION TEST\n");
-    
+
     // Инициализируем токенизаторы
-    tokenizer::gemini_simple::GeminiTokenizer::initialize().await.unwrap();
-    tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize().await.unwrap();
-    
+    tokenizer::gemini_simple::GeminiTokenizer::initialize()
+        .await
+        .unwrap();
+    tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize()
+        .await
+        .unwrap();
+
     let proxy_tokenizer = tokenizer::ProxyCachedTokenizer::new(api_key.clone())
         .with_fallback(|text| text.split_whitespace().count() + text.len() / 20);
-    
+
     // Большие тексты разных типов
     let large_texts = vec![
-        (
-            "Technical Documentation",
-            generate_technical_doc(),
-        ),
-        (
-            "Code File",
-            generate_large_code_file(),
-        ),
-        (
-            "Natural Language",
-            generate_natural_language_text(),
-        ),
-        (
-            "Mixed Content",
-            generate_mixed_content(),
-        ),
-        (
-            "Unicode Heavy",
-            generate_unicode_heavy_text(),
-        ),
+        ("Technical Documentation", generate_technical_doc()),
+        ("Code File", generate_large_code_file()),
+        ("Natural Language", generate_natural_language_text()),
+        ("Mixed Content", generate_mixed_content()),
+        ("Unicode Heavy", generate_unicode_heavy_text()),
     ];
-    
+
     let client = Client::new();
-    
-    println!("{:<20} | {:>8} | {:>8} | {:>8} | {:>8} | {:>8} | {:>8}", 
-        "Text Type", "Length", "Google", "Simple", "ML-Cal", "Proxy", "Accuracy");
-    println!("{:-<20}-+-{:->8}-+-{:->8}-+-{:->8}-+-{:->8}-+-{:->8}-+-{:->8}", 
-        "", "", "", "", "", "", "");
-    
+
+    println!(
+        "{:<20} | {:>8} | {:>8} | {:>8} | {:>8} | {:>8} | {:>8}",
+        "Text Type", "Length", "Google", "Simple", "ML-Cal", "Proxy", "Accuracy"
+    );
+    println!(
+        "{:-<20}-+-{:->8}-+-{:->8}-+-{:->8}-+-{:->8}-+-{:->8}-+-{:->8}",
+        "", "", "", "", "", "", ""
+    );
+
     let mut total_tests = 0;
     let mut proxy_perfect = 0;
     let mut simple_good = 0;
     let mut ml_good = 0;
-    
+
     for (name, text) in large_texts {
         let text_length = text.len();
-        
+
         println!("🔍 Testing: {name} ({text_length} chars)");
-        
+
         // Google API (эталон)
         let google_count = match get_google_token_count(&client, &api_key, &text).await {
             Ok(count) => count,
@@ -80,74 +73,96 @@ async fn test_large_text_tokenization() {
                 continue;
             }
         };
-        
+
         // Наши токенизаторы
         let simple_count = tokenizer::count_gemini_tokens(&text).unwrap_or(0);
         let ml_count = tokenizer::count_ml_calibrated_gemini_tokens(&text).unwrap_or(0);
         let proxy_count = proxy_tokenizer.count_tokens(&text).await.unwrap_or(0);
-        
+
         // Вычисляем точность
         let simple_accuracy = calculate_accuracy(simple_count, google_count);
         let ml_accuracy = calculate_accuracy(ml_count, google_count);
         let proxy_accuracy = calculate_accuracy(proxy_count, google_count);
-        
+
         total_tests += 1;
-        if proxy_accuracy >= 99.0 { proxy_perfect += 1; }
-        if simple_accuracy >= 85.0 { simple_good += 1; }
-        if ml_accuracy >= 85.0 { ml_good += 1; }
-        
+        if proxy_accuracy >= 99.0 {
+            proxy_perfect += 1;
+        }
+        if simple_accuracy >= 85.0 {
+            simple_good += 1;
+        }
+        if ml_accuracy >= 85.0 {
+            ml_good += 1;
+        }
+
         let best_accuracy = [simple_accuracy, ml_accuracy, proxy_accuracy]
-            .iter().fold(0.0f64, |a, &b| a.max(b));
-        
+            .iter()
+            .fold(0.0f64, |a, &b| a.max(b));
+
         println!("{name:<20} | {text_length:>8} | {google_count:>8} | {simple_count:>8} | {ml_count:>8} | {proxy_count:>8} | {best_accuracy:>7.1}%");
-        
+
         // Детальный анализ для больших расхождений
         if best_accuracy < 90.0 {
             println!("  ⚠️  Large discrepancy detected!");
-            println!("    Simple error: {}", (simple_count as i32 - google_count as i32).abs());
-            println!("    ML error: {}", (ml_count as i32 - google_count as i32).abs());
-            println!("    Proxy error: {}", (proxy_count as i32 - google_count as i32).abs());
+            println!(
+                "    Simple error: {}",
+                (simple_count as i32 - google_count as i32).abs()
+            );
+            println!(
+                "    ML error: {}",
+                (ml_count as i32 - google_count as i32).abs()
+            );
+            println!(
+                "    Proxy error: {}",
+                (proxy_count as i32 - google_count as i32).abs()
+            );
         }
-        
+
         sleep(Duration::from_millis(1000)).await;
     }
-    
+
     // Итоговая статистика
     println!("\n📊 LARGE TEXT RESULTS\n");
-    
+
     let proxy_score = (proxy_perfect as f64 / total_tests as f64) * 100.0;
     let simple_score = (simple_good as f64 / total_tests as f64) * 100.0;
     let ml_score = (ml_good as f64 / total_tests as f64) * 100.0;
-    
+
     println!("🎯 Performance on Large Texts:");
     println!("  Proxy-Cached (>99%):  {proxy_score:.1}%");
     println!("  Simple (>85%):        {simple_score:.1}%");
     println!("  ML-Calibrated (>85%): {ml_score:.1}%");
-    
+
     // Тест производительности на больших текстах
     println!("\n⚡ PERFORMANCE ON LARGE TEXTS\n");
-    
+
     let large_text = generate_very_large_text();
     println!("Testing performance on {} character text", large_text.len());
-    
+
     // Простой токенизатор
     let start = std::time::Instant::now();
     let _ = tokenizer::count_gemini_tokens(&large_text).unwrap();
     let simple_time = start.elapsed();
-    
+
     // ML-калиброванный
     let start = std::time::Instant::now();
     let _ = tokenizer::count_ml_calibrated_gemini_tokens(&large_text).unwrap();
     let ml_time = start.elapsed();
-    
+
     println!("Performance Results:");
     println!("  Simple:        {:>8.2}ms", simple_time.as_millis());
     println!("  ML-Calibrated: {:>8.2}ms", ml_time.as_millis());
-    
+
     // Проверяем что производительность приемлемая даже для больших текстов
-    assert!(simple_time.as_millis() < 100, "Simple tokenizer too slow on large text");
-    assert!(ml_time.as_millis() < 200, "ML tokenizer too slow on large text");
-    
+    assert!(
+        simple_time.as_millis() < 100,
+        "Simple tokenizer too slow on large text"
+    );
+    assert!(
+        ml_time.as_millis() < 200,
+        "ML tokenizer too slow on large text"
+    );
+
     println!("\n✅ Large text tokenization test completed!");
 }
 
@@ -219,7 +234,7 @@ match tokenizer.count_tokens(text) {
 
 Typical tokenization performance:
 - Small texts (<1KB): <1ms
-- Medium texts (1-10KB): 1-5ms  
+- Medium texts (1-10KB): 1-5ms
 - Large texts (10-100KB): 5-50ms
 - Very large texts (>100KB): 50-500ms
 
@@ -292,20 +307,20 @@ impl AdvancedTokenizer {
             stats: Arc::new(Mutex::new(TokenizerStats::default())),
         }
     }
-    
+
     pub async fn count_tokens(&self, text: &str) -> Result<usize, TokenizerError> {
         let start_time = std::time::Instant::now();
-        
+
         // Update stats
         {
             let mut stats = self.stats.lock().unwrap();
             stats.total_requests += 1;
         }
-        
+
         // Check cache first
         if self.config.cache_enabled {
             let cache_key = self.generate_cache_key(text);
-            
+
             if let Ok(cache) = self.cache.lock() {
                 if let Some(&cached_count) = cache.get(&cache_key) {
                     let mut stats = self.stats.lock().unwrap();
@@ -314,38 +329,38 @@ impl AdvancedTokenizer {
                 }
             }
         }
-        
+
         // Perform actual tokenization
         let token_count = self.perform_tokenization(text).await?;
-        
+
         // Update cache
         if self.config.cache_enabled {
             if let Ok(mut cache) = self.cache.lock() {
                 let cache_key = self.generate_cache_key(text);
                 cache.insert(cache_key, token_count);
-                
+
                 // Cleanup cache if too large
                 if cache.len() > 10000 {
                     cache.clear();
                 }
             }
         }
-        
+
         // Update stats
         {
             let mut stats = self.stats.lock().unwrap();
             stats.cache_misses += 1;
             stats.total_tokens_processed += token_count as u64;
-            
+
             let processing_time = start_time.elapsed().as_millis() as f64;
-            stats.average_processing_time_ms = 
-                (stats.average_processing_time_ms * (stats.total_requests - 1) as f64 + processing_time) 
+            stats.average_processing_time_ms =
+                (stats.average_processing_time_ms * (stats.total_requests - 1) as f64 + processing_time)
                 / stats.total_requests as f64;
         }
-        
+
         Ok(token_count)
     }
-    
+
     async fn perform_tokenization(&self, text: &str) -> Result<usize, TokenizerError> {
         // Simulate different tokenization strategies
         match self.config.model_name.as_str() {
@@ -355,19 +370,19 @@ impl AdvancedTokenizer {
             _ => Err(TokenizerError::UnsupportedModel(self.config.model_name.clone())),
         }
     }
-    
+
     async fn tokenize_v1(&self, text: &str) -> Result<usize, TokenizerError> {
         // Gemini 1.0 tokenization logic
         let base_count = text.split_whitespace().count();
         let punctuation_count = text.chars().filter(|c| c.is_ascii_punctuation()).count();
         Ok(base_count + punctuation_count / 2)
     }
-    
+
     async fn tokenize_v15(&self, text: &str) -> Result<usize, TokenizerError> {
         // Gemini 1.5 tokenization logic (more sophisticated)
         let words = text.split_whitespace().collect::<Vec<_>>();
         let mut token_count = 0;
-        
+
         for word in words {
             token_count += match word.len() {
                 0 => 0,
@@ -377,46 +392,46 @@ impl AdvancedTokenizer {
                 _ => (word.len() + 3) / 4,
             };
         }
-        
+
         // Add tokens for punctuation and special characters
         let special_chars = text.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
         token_count += special_chars / 2;
-        
+
         Ok(token_count)
     }
-    
+
     async fn tokenize_v2(&self, text: &str) -> Result<usize, TokenizerError> {
         // Gemini 2.0 tokenization logic (most advanced)
         let mut token_count = 0;
         let chars: Vec<char> = text.chars().collect();
         let mut i = 0;
-        
+
         while i < chars.len() {
             if chars[i].is_whitespace() {
                 i += 1;
                 continue;
             }
-            
+
             // Extract word or token
             let start = i;
             while i < chars.len() && !chars[i].is_whitespace() {
                 i += 1;
             }
-            
+
             let token = chars[start..i].iter().collect::<String>();
             token_count += self.estimate_token_count_v2(&token);
         }
-        
+
         Ok(token_count)
     }
-    
+
     fn estimate_token_count_v2(&self, token: &str) -> usize {
         // Advanced token estimation for Gemini 2.0
         let len = token.chars().count();
         let has_numbers = token.chars().any(|c| c.is_ascii_digit());
         let has_special = token.chars().any(|c| c.is_ascii_punctuation());
         let has_unicode = token.chars().any(|c| !c.is_ascii());
-        
+
         let base_tokens = match len {
             0 => 0,
             1..=3 => 1,
@@ -424,24 +439,24 @@ impl AdvancedTokenizer {
             7..=10 => if has_unicode { 2 } else { 1 + (len - 6) / 3 },
             _ => (len + 2) / 3,
         };
-        
+
         base_tokens.max(1)
     }
-    
+
     fn generate_cache_key(&self, text: &str) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
         self.config.model_name.hash(&mut hasher);
         format!("{:x}", hasher.finish())
     }
-    
+
     pub fn get_stats(&self) -> TokenizerStats {
         self.stats.lock().unwrap().clone()
     }
-    
+
     pub fn clear_cache(&self) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.clear();
@@ -453,13 +468,13 @@ impl AdvancedTokenizer {
 pub enum TokenizerError {
     #[error("Unsupported model: {0}")]
     UnsupportedModel(String),
-    
+
     #[error("Tokenization failed: {0}")]
     TokenizationFailed(String),
-    
+
     #[error("Cache error: {0}")]
     CacheError(String),
-    
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
 }
@@ -467,19 +482,19 @@ pub enum TokenizerError {
 // Helper functions and utilities
 pub mod utils {
     use super::*;
-    
+
     pub fn estimate_tokens_simple(text: &str) -> usize {
         // Simple estimation: ~4 characters per token
         (text.len() + 3) / 4
     }
-    
+
     pub fn estimate_tokens_by_words(text: &str) -> usize {
         // Word-based estimation
         let words = text.split_whitespace().count();
         let punctuation = text.chars().filter(|c| c.is_ascii_punctuation()).count();
         words + punctuation / 2
     }
-    
+
     pub fn analyze_text_complexity(text: &str) -> TextComplexity {
         let total_chars = text.len();
         let words = text.split_whitespace().count();
@@ -487,7 +502,7 @@ pub mod utils {
         let unicode_chars = text.chars().filter(|c| !c.is_ascii()).count();
         let numbers = text.chars().filter(|c| c.is_ascii_digit()).count();
         let punctuation = text.chars().filter(|c| c.is_ascii_punctuation()).count();
-        
+
         TextComplexity {
             total_chars,
             words,
@@ -499,13 +514,13 @@ pub mod utils {
             complexity_score: calculate_complexity_score(total_chars, words, unicode_chars, punctuation),
         }
     }
-    
+
     fn calculate_complexity_score(chars: usize, words: usize, unicode: usize, punct: usize) -> f64 {
         let base_score = chars as f64 / 100.0;
         let word_factor = if words > 0 { chars as f64 / words as f64 } else { 1.0 };
         let unicode_factor = 1.0 + (unicode as f64 / chars as f64) * 0.5;
         let punct_factor = 1.0 + (punct as f64 / chars as f64) * 0.3;
-        
+
         base_score * word_factor * unicode_factor * punct_factor
     }
 }
@@ -526,28 +541,28 @@ pub struct TextComplexity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_advanced_tokenizer() {
         let config = TokenizerConfig::default();
         let tokenizer = AdvancedTokenizer::new(config);
-        
+
         let test_text = "Hello, world! This is a test of the advanced tokenizer.";
         let count = tokenizer.count_tokens(test_text).await.unwrap();
-        
+
         assert!(count > 0);
         assert!(count < test_text.len());
-        
+
         let stats = tokenizer.get_stats();
         assert_eq!(stats.total_requests, 1);
         assert_eq!(stats.cache_misses, 1);
     }
-    
+
     #[test]
     fn test_text_complexity_analysis() {
         let text = "Hello, world! 世界 🌍 How are you today?";
         let complexity = utils::analyze_text_complexity(text);
-        
+
         assert!(complexity.unicode_chars > 0);
         assert!(complexity.punctuation > 0);
         assert!(complexity.complexity_score > 0.0);
@@ -656,7 +671,7 @@ genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
 class TokenCounter:
     def __init__(self, model_name: str = "gemini-pro"):
         self.model = genai.GenerativeModel(model_name)
-    
+
     def count_tokens(self, text: str) -> int:
         """Count tokens in the given text."""
         try:
@@ -665,7 +680,7 @@ class TokenCounter:
         except Exception as e:
             print(f"Error counting tokens: {e}")
             return 0
-    
+
     def batch_count(self, texts: List[str]) -> Dict[str, int]:
         """Count tokens for multiple texts."""
         results = {}
@@ -718,29 +733,29 @@ impl TokenizerClient {
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
         }
     }
-    
+
     async fn count_tokens(&self, text: &str, model: &str) -> Result<usize, Box<dyn Error>> {
-        let url = format!("{}/models/{}:countTokens?key={}", 
+        let url = format!("{}/models/{}:countTokens?key={}",
             self.base_url, model, self.api_key);
-        
+
         let payload = json!({
             "contents": [{
                 "parts": [{"text": text}]
             }]
         });
-        
+
         let response = self.client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
             .await?;
-        
+
         let result: Value = response.json().await?;
         let token_count = result["totalTokens"]
             .as_u64()
             .ok_or("Invalid response format")?;
-        
+
         Ok(token_count as usize)
     }
 }
@@ -749,23 +764,23 @@ impl TokenizerClient {
 async fn main() -> Result<(), Box<dyn Error>> {
     let api_key = std::env::var("GOOGLE_API_KEY")
         .expect("GOOGLE_API_KEY environment variable not set");
-    
+
     let client = TokenizerClient::new(api_key);
-    
+
     let test_texts = vec![
         "Hello, Rust! 🦀",
         "Complex text with 中文, العربية, and Русский",
         "fn main() { println!(\"Hello, world!\"); }",
         "Data: [1, 2, 3, 4, 5] → sum = 15, avg = 3.0",
     ];
-    
+
     for text in test_texts {
         match client.count_tokens(text, "gemini-pro").await {
             Ok(count) => println!("✅ {} tokens: {}", count, text),
             Err(e) => println!("❌ Error: {} for text: {}", e, text),
         }
     }
-    
+
     Ok(())
 }
 ```
@@ -984,26 +999,26 @@ This test document contains various languages, character sets, symbols, and form
 fn generate_very_large_text() -> String {
     let base_text = generate_technical_doc();
     let mut large_text = String::new();
-    
+
     // Повторяем базовый текст 10 раз для создания большого документа
     for i in 0..10 {
         large_text.push_str(&format!("\n\n=== SECTION {} ===\n\n", i + 1));
         large_text.push_str(&base_text);
     }
-    
+
     large_text
 }
 
 /// Получает количество токенов от Google API
 async fn get_google_token_count(
-    client: &Client, 
-    api_key: &str, 
-    text: &str
+    client: &Client,
+    api_key: &str,
+    text: &str,
 ) -> Result<usize, Box<dyn Error + Send + Sync>> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}"
     );
-    
+
     let request_body = json!({
         "contents": [{
             "parts": [{
@@ -1011,7 +1026,7 @@ async fn get_google_token_count(
             }]
         }]
     });
-    
+
     let response = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -1019,18 +1034,18 @@ async fn get_google_token_count(
         .timeout(Duration::from_secs(30)) // Увеличенный таймаут для больших текстов
         .send()
         .await?;
-    
+
     if !response.status().is_success() {
         return Err(format!("Google API error: {}", response.status()).into());
     }
-    
+
     let response_json: Value = response.json().await?;
-    
+
     let total_tokens = response_json
         .get("totalTokens")
         .and_then(|t| t.as_u64())
         .ok_or("Missing totalTokens in response")?;
-    
+
     Ok(total_tokens as usize)
 }
 
@@ -1039,7 +1054,7 @@ fn calculate_accuracy(our_count: usize, google_count: usize) -> f64 {
     if google_count == 0 {
         return if our_count == 0 { 100.0 } else { 0.0 };
     }
-    
+
     let diff = (our_count as i32 - google_count as i32).abs() as f64;
     let accuracy = (1.0 - (diff / google_count as f64)) * 100.0;
     accuracy.max(0.0)

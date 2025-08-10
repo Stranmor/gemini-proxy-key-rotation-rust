@@ -5,11 +5,11 @@ server:
   connect_timeout_secs: 30
   request_timeout_secs: 60
   test_mode: false
-  
+
   # Tokenizer settings optimized for reliability + performance
   tokenizer_type: "smart_parallel"  # Умная параллельная обработка
   max_tokens_per_request: 250000   # Token limit (configurable for your needs)
-  
+
   # Smart Parallel tokenizer settings
   tokenizer_config:
     token_limit: 250000            # Жесткий лимит токенов
@@ -17,7 +17,7 @@ server:
     chars_per_token_conservative: 2.0  # Очень консервативная оценка (реально ~4)
     precise_tokenization_timeout_ms: 100  # Таймаут точной токенизации
     enable_parallel_sending: true  # Параллельная отправка + токенизация
-  
+
   # Optional fine-tuning settings
   top_p: 0.9
 
@@ -30,17 +30,17 @@ groups:
     keys:
       - key: "your-gemini-api-key-1"
         weight: 1
-      - key: "your-gemini-api-key-2" 
+      - key: "your-gemini-api-key-2"
         weight: 1
-    
+
     # Group settings
     circuit_breaker:
       failure_threshold: 5
       recovery_timeout_secs: 60
-    
+
     rate_limit:
       requests_per_minute: 1000
-      
+
     health_check:
       enabled: true
       interval_secs: 30
@@ -49,7 +49,7 @@ groups:
 monitoring:
   enabled: true
   prometheus_port: 9090
-  
+
   # Detailed token statistics
   token_metrics:
     enabled: true
@@ -59,6 +59,6 @@ monitoring:
 logging:
   level: "info"
   format: "json"  # or "text"
-  
+
   # Special tokenizer settings
   tokenizer_debug: false  # Enable for tokenization debugging

@@ -24,7 +24,6 @@ impl ResponseHandler for SuccessHandler {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

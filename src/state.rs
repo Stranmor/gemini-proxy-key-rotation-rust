@@ -270,7 +270,9 @@ pub async fn build_http_clients(
                 error!(error = %join_error, "Join error while creating proxy client");
                 // Treat task panics/cancellations as fatal
                 while (join_set.join_next().await).is_some() {}
-                return Err(AppError::Internal { message: format!("Join error while building proxy clients: {join_error}") });
+                return Err(AppError::Internal {
+                    message: format!("Join error while building proxy clients: {join_error}"),
+                });
             }
         }
     }

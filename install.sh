@@ -95,7 +95,7 @@ install_docker() {
         # Linux installation
         curl -fsSL https://get.docker.com -o get-docker.sh
         sudo sh get-docker.sh
-        sudo usermod -aG docker $USER
+        sudo usermod -aG docker "$USER"
         rm get-docker.sh
         print_warning "Please log out and back in for Docker permissions to take effect"
     elif [[ "$OSTYPE" == "darwin"* ]]; then
@@ -161,7 +161,8 @@ create_systemd_service() {
     print_step "Creating systemd service..."
     
     local service_file="/etc/systemd/system/${SERVICE_NAME}.service"
-    local user=$(whoami)
+    local user
+    user=$(whoami)
     
     sudo tee "$service_file" > /dev/null <<EOF
 [Unit]

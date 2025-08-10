@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
-
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
 pub struct KeyGroup {
     pub name: String,

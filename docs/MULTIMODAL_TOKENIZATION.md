@@ -35,7 +35,7 @@ fn calculate_image_tokens(&self, decoded_size: usize, format: &ImageFormat) -> u
         // Large images (> 5MB): less efficient packing
         ((decoded_size as f64).sqrt() * 1.2).ceil() as usize
     };
-    
+
     // Apply format coefficient
     let format_factor = match format {
         ImageFormat::WebP => 0.75,      // Most efficient
@@ -43,7 +43,7 @@ fn calculate_image_tokens(&self, decoded_size: usize, format: &ImageFormat) -> u
         ImageFormat::GIF => 1.1,        // Less efficient
         ImageFormat::Unknown => 1.0,    // Conservative estimate
     };
-    
+
     (base_tokens as f64 * format_factor).ceil() as usize
 }
 ```
@@ -99,7 +99,7 @@ pub struct MultimodalConfig {
 server:
   tokenizer_type: "multimodal"
   max_tokens_per_request: 250000
-  
+
   # Multimodal tokenization settings
   multimodal:
     safety_multiplier: 1.2
@@ -132,7 +132,7 @@ let json_body = json!({
 });
 
 let result = count_multimodal_tokens(&json_body)?;
-println!("Total tokens: {} (text: {}, images: {})", 
+println!("Total tokens: {} (text: {}, images: {})",
     result.total_tokens, result.text_tokens, result.image_tokens);
 ```
 
@@ -157,7 +157,7 @@ Time: 1.2ms vs 200ms
 ```
 Input: Long text + 3 images of different formats
 Gemini API: ~5200 tokens
-Our result: ~5100 tokens (98% accuracy)  
+Our result: ~5100 tokens (98% accuracy)
 Time: 3.5ms vs 800ms
 ```
 
@@ -200,7 +200,7 @@ gemini_proxy_multimodal_images_count
       "estimated_tokens": 600
     },
     {
-      "format": "PNG", 
+      "format": "PNG",
       "base64_size": 67890,
       "decoded_size": 50917,
       "estimated_tokens": 600
@@ -226,7 +226,7 @@ let config = MultimodalConfig {
     ..Default::default()
 };
 
-// Для максимальной безопасности  
+// Для максимальной безопасности
 let config = MultimodalConfig {
     safety_multiplier: 1.5,  // Больший запас
     image_coefficients: ImageCoefficients {
@@ -245,11 +245,11 @@ let config = MultimodalConfig {
 // Сравнение с API для калибровки
 async fn calibrate_accuracy() {
     let test_cases = load_test_multimodal_messages();
-    
+
     for case in test_cases {
         let our_result = count_multimodal_tokens(&case)?;
         let api_result = call_gemini_api_for_token_count(&case).await?;
-        
+
         let accuracy = our_result.total_tokens as f64 / api_result as f64;
         println!("Accuracy: {:.2}%", accuracy * 100.0);
     }

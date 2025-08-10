@@ -65,7 +65,7 @@ echo "Starting container on port $PORT..."
 # This avoids all host filesystem permission issues.
 $CONTAINER_RUNTIME run -d --name $CONTAINER_NAME \
     -e RUST_BACKTRACE=1 \
-    -p $PORT:$PORT \
+    -p "$PORT":"$PORT" \
     -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
     $IMAGE_NAME
 

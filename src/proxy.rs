@@ -62,7 +62,10 @@ pub async fn forward_request(
     body_bytes: Bytes,
     circuit_breaker: Option<Arc<CircuitBreaker>>,
 ) -> Result<Response> {
-    debug!("Full request body: {:?}", String::from_utf8_lossy(&body_bytes));
+    debug!(
+        "Full request body: {:?}",
+        String::from_utf8_lossy(&body_bytes)
+    );
     let outgoing_headers = build_forward_headers(&headers, key_info.key.expose_secret())?;
 
     debug!(

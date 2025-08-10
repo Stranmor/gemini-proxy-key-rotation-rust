@@ -128,17 +128,17 @@ pub mod redis {
 
     pub async fn cleanup_test_keys(redis_url: &str, prefix: &str) -> Result<()> {
         use redis::AsyncCommands;
-        
+
         let client = redis::Client::open(redis_url)?;
         let mut conn = client.get_async_connection().await?;
-        
+
         let pattern = format!("{}*", prefix);
         let keys: Vec<String> = conn.keys(pattern).await?;
-        
+
         if !keys.is_empty() {
             conn.del(keys).await?;
         }
-        
+
         Ok(())
     }
 }
@@ -182,34 +182,34 @@ pub mod assertions {
 
     pub async fn assert_json_response(response: Response, expected_status: u16) -> Value {
         assert_eq!(response.status().as_u16(), expected_status);
-        
+
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body)
             .expect("Response body should be valid JSON");
-        
+
         json
     }
 
     pub async fn assert_error_response(response: Response, expected_status: u16, error_type: &str) -> Value {
         let json = assert_json_response(response, expected_status).await;
-        
+
         assert!(json.get("type").is_some(), "Error response should have 'type' field");
         assert_eq!(
             json["type"].as_str().unwrap(),
             error_type,
             "Error type mismatch"
         );
-        
+
         json
     }
 
     pub async fn assert_success_response(response: Response) -> Value {
         assert!(response.status().is_success(), "Response should be successful");
-        
+
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body)
             .expect("Response body should be valid JSON");
-        
+
         json
     }
 }
@@ -262,7 +262,7 @@ mod tests {
     async fn test_mock_server() {
         let mock_server = MockServer::start().await;
         let uri = mock_server.uri();
-        
+
         assert!(uri.starts_with("http://"));
         assert!(uri.contains("127.0.0.1"));
     }

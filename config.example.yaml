@@ -7,14 +7,14 @@ server:
   # Optional: Default top_p value for generation, must be between 0.0 and 1.0.
   # This value will be injected into the request body if it's not already present.
   # top_p: 0.9
-  
+
   # HTTP client timeout settings (in seconds)
   connect_timeout_secs: 10  # Connection timeout (default: 10, max: 300)
   request_timeout_secs: 60  # Overall request timeout (default: 60, max: 600)
-  
+
   # Admin panel access token (set to enable admin panel)
   # admin_token: "your-secure-admin-token-here"
-  
+
   # Security settings
   security:
     require_https: true

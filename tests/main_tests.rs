@@ -9,7 +9,7 @@ use tokio::fs;
 async fn test_run_with_valid_config() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("test_config.yaml");
-    
+
     // Создаем валидный конфиг
     let config_content = r#"
 server:
@@ -26,9 +26,9 @@ groups:
       - "test-key-2"
     target_url: "https://generativelanguage.googleapis.com"
 "#;
-    
+
     fs::write(&config_path, config_content).await.unwrap();
-    
+
     let result = run(Some(config_path)).await;
     assert!(result.is_ok(), "Run should succeed with valid config");
 }
@@ -37,16 +37,16 @@ groups:
 async fn test_run_with_invalid_config() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("invalid_config.yaml");
-    
+
     // Создаем невалидный конфиг
     let config_content = r#"
 server:
   port: "invalid_port"
 groups: []
 "#;
-    
+
     fs::write(&config_path, config_content).await.unwrap();
-    
+
     let result = run(Some(config_path)).await;
     assert!(result.is_err(), "Run should fail with invalid config");
 }
@@ -55,7 +55,7 @@ groups: []
 async fn test_config_load_valid() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("test_config.yaml");
-    
+
     // Создаем валидный конфиг
     let config_content = r#"
 server:
@@ -72,12 +72,15 @@ groups:
       - "test-key-2"
     target_url: "https://generativelanguage.googleapis.com"
 "#;
-    
+
     fs::write(&config_path, config_content).await.unwrap();
-    
+
     let result = config::load_config(&config_path);
-    assert!(result.is_ok(), "Config loading should succeed for valid config");
-    
+    assert!(
+        result.is_ok(),
+        "Config loading should succeed for valid config"
+    );
+
     let config = result.unwrap();
     assert_eq!(config.server.port, 8080);
     assert_eq!(config.groups.len(), 1);
@@ -88,31 +91,37 @@ groups:
 async fn test_config_load_invalid() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("invalid_config.yaml");
-    
+
     // Создаем невалидный конфиг
     let config_content = r#"
 server:
   port: "invalid_port"
 groups: []
 "#;
-    
+
     fs::write(&config_path, config_content).await.unwrap();
-    
+
     let result = config::load_config(&config_path);
-    assert!(result.is_err(), "Config loading should fail for invalid config");
+    assert!(
+        result.is_err(),
+        "Config loading should fail for invalid config"
+    );
 }
 
 #[tokio::test]
 async fn test_config_load_missing_file() {
     let result = config::load_config(&PathBuf::from("nonexistent.yaml"));
-    assert!(result.is_err(), "Config loading should fail for missing file");
+    assert!(
+        result.is_err(),
+        "Config loading should fail for missing file"
+    );
 }
 
 #[tokio::test]
 async fn test_config_save_and_load() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("save_test_config.yaml");
-    
+
     // Создаем тестовый конфиг
     let original_config = config::AppConfig {
         server: config::ServerConfig {
@@ -141,17 +150,16 @@ async fn test_config_save_and_load() {
         max_failures_threshold: Some(10),
         rate_limit: None,
         circuit_breaker: None,
-
     };
-    
+
     // Сохраняем конфиг
     let save_result = config::save_config(&original_config, &config_path).await;
     assert!(save_result.is_ok(), "Config should save successfully");
-    
+
     // Загружаем конфиг
     let loaded_config = config::load_config(&config_path);
     assert!(loaded_config.is_ok(), "Config should load successfully");
-    
+
     let loaded_config = loaded_config.unwrap();
     assert_eq!(loaded_config.server.port, original_config.server.port);
     assert_eq!(loaded_config.groups.len(), original_config.groups.len());

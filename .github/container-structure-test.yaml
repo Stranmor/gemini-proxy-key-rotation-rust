@@ -6,12 +6,12 @@ fileExistenceTests:
     path: '/app/app'
     shouldExist: true
     permissions: '-rwxr-xr-x'
-  
+
   - name: 'Static files exist'
     path: '/app/static'
     shouldExist: true
     isDirectory: true
-  
+
   - name: 'Config example exists'
     path: '/app/config.example.yaml'
     shouldExist: true
@@ -22,7 +22,7 @@ commandTests:
     command: '/app/app'
     args: ['--version']
     expectedOutput: ['gemini-proxy']
-  
+
   - name: 'Binary help check'
     command: '/app/app'
     args: ['--help']

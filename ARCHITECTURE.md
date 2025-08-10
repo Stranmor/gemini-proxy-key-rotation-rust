@@ -12,19 +12,19 @@ graph TB
     LB --> Proxy1[Gemini Proxy Instance 1]
     LB --> Proxy2[Gemini Proxy Instance 2]
     LB --> ProxyN[Gemini Proxy Instance N]
-    
+
     Proxy1 --> Redis[(Redis Cluster)]
     Proxy2 --> Redis
     ProxyN --> Redis
-    
+
     Proxy1 --> Gemini[Google Gemini API]
     Proxy2 --> Gemini
     ProxyN --> Gemini
-    
+
     Proxy1 --> Metrics[Prometheus/Grafana]
     Proxy2 --> Metrics
     ProxyN --> Metrics
-    
+
     subgraph "Monitoring Stack"
         Metrics --> Alerting[Alert Manager]
         Alerting --> Notifications[Slack/Email/PagerDuty]
@@ -38,7 +38,7 @@ graph TB
 **Location**: `src/main.rs`, `src/lib.rs`
 
 - **Framework**: Axum with Tokio async runtime
-- **Features**: 
+- **Features**:
   - Graceful shutdown handling
   - Request/response middleware pipeline
   - Health check endpoints
@@ -240,7 +240,7 @@ services:
       - ./config.yaml:/app/config.yaml
     depends_on:
       - redis
-  
+
   redis:
     image: redis:7-alpine
     volumes:
@@ -289,7 +289,7 @@ spec:
 
 ### Latency
 - **P50**: <5ms overhead
-- **P95**: <15ms overhead  
+- **P95**: <15ms overhead
 - **P99**: <50ms overhead
 
 ### Scalability

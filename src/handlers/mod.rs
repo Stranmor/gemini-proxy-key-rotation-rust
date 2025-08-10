@@ -25,10 +25,9 @@ use axum::{
 use secrecy::ExposeSecret;
 use std::sync::Arc;
 
-use tracing::{error, info, instrument, trace, warn};
 use crate::metrics::METRICS;
+use tracing::{error, info, instrument, trace, warn};
 use url::Url;
-
 
 /// Lightweight health check handler used by /health route
 pub async fn health_check() -> Response {
@@ -95,7 +94,12 @@ struct RequestContext<'a> {
     body: &'a Bytes,
 }
 
-fn validate_token_count_with_limit(json_body: &serde_json::Value, limit: u64, test_mode: bool, model_hint: Option<String>) -> Result<()> {
+fn validate_token_count_with_limit(
+    json_body: &serde_json::Value,
+    limit: u64,
+    test_mode: bool,
+    model_hint: Option<String>,
+) -> Result<()> {
     let total_text: String = json_body
         .get("messages")
         .and_then(|m| m.as_array())
@@ -115,7 +119,7 @@ fn validate_token_count_with_limit(json_body: &serde_json::Value, limit: u64, te
     #[cfg(feature = "tokenizer")]
     {
         use crate::tokenizer::count_multimodal_tokens;
-        
+
         // Используем multimodal токенизатор для точного подсчета текста и изображений
         match count_multimodal_tokens(json_body) {
             Ok(token_result) => {
@@ -132,8 +136,7 @@ fn validate_token_count_with_limit(json_body: &serde_json::Value, limit: u64, te
                 if (token_result.total_tokens as u64) > limit {
                     warn!(
                         total_tokens = token_result.total_tokens,
-                        limit,
-                        "Request exceeds token limit. Rejecting request."
+                        limit, "Request exceeds token limit. Rejecting request."
                     );
                     METRICS.record_token_limit_block(model_hint.clone());
                     return Err(AppError::RequestTooLarge {
@@ -157,7 +160,13 @@ fn validate_token_count_with_limit(json_body: &serde_json::Value, limit: u64, te
 
     Ok(())
 }
-fn process_request_body(body_bytes: Bytes, top_p: Option<f64>, limit: u64, test_mode: bool, model_hint: Option<String>) -> Result<(Bytes, HeaderMap)> {
+fn process_request_body(
+    body_bytes: Bytes,
+    top_p: Option<f64>,
+    limit: u64,
+    test_mode: bool,
+    model_hint: Option<String>,
+) -> Result<(Bytes, HeaderMap)> {
     let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let mut headers = HeaderMap::new();
 
@@ -254,19 +263,28 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     // Вычислим подсказку модели заранее для метрик/логов
     let path_for_model = parts.uri.path().to_string();
     let model_hint_from_path = {
-        regex::Regex::new(r"/v1beta/models/([^/:]+)").ok().and_then(|re| re.captures(&path_for_model)).map(|caps| caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default())
+        regex::Regex::new(r"/v1beta/models/([^/:]+)")
+            .ok()
+            .and_then(|re| re.captures(&path_for_model))
+            .map(|caps| {
+                caps.get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default()
+            })
     };
 
     let cfg_guard = state.config.read().await;
-    let limit = cfg_guard
-        .server
-        .max_tokens_per_request
-        .unwrap_or(250_000);
+    let limit = cfg_guard.server.max_tokens_per_request.unwrap_or(250_000);
     let test_mode = cfg_guard.server.test_mode;
     drop(cfg_guard);
 
-    let (processed_body, additional_headers) =
-        process_request_body(body_bytes, top_p.map(|v| v as f64), limit, test_mode, model_hint_from_path.clone())?;
+    let (processed_body, additional_headers) = process_request_body(
+        body_bytes,
+        top_p.map(|v| v as f64),
+        limit,
+        test_mode,
+        model_hint_from_path.clone(),
+    )?;
 
     // Merge additional headers
     for (key, value) in additional_headers {
@@ -389,22 +407,25 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                 last_response = Some(final_response);
             }
             Some(Action::WaitFor(duration)) => {
-                trace!(
-                    "Rate limit with wait period received. Marking key and waiting."
-                );
+                trace!("Rate limit with wait period received. Marking key and waiting.");
                 let _ = state
                     .key_manager
                     .write()
                     .await
                     .handle_rate_limit(key_info.key.expose_secret(), duration)
                     .await;
-                
+
                 // We wait for the specified duration and then retry with the same key
-                info!(?duration, "Rate limit hit. Waiting before retrying with the same key.");
+                info!(
+                    ?duration,
+                    "Rate limit hit. Waiting before retrying with the same key."
+                );
                 tokio::time::sleep(duration).await;
-                
+
                 // Retry the request with the same key after waiting
-                let retry_response = match try_request_with_key(&state, &req_context, &key_info).await {
+                let retry_response = match try_request_with_key(&state, &req_context, &key_info)
+                    .await
+                {
                     Ok(r) => r,
                     Err(e) => {
                         error!(error = ?e, key.preview = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Retry request failed after waiting");
@@ -414,14 +435,17 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                         break;
                     }
                 };
-                
+
                 let (retry_parts, retry_body) = retry_response.into_parts();
                 let retry_response_bytes = to_bytes(retry_body, usize::MAX)
                     .await
                     .map_err(|e| AppError::internal(e.to_string()))?;
-                
-                let retry_response_for_analysis = Response::from_parts(retry_parts.clone(), Body::from(retry_response_bytes.clone()));
-                
+
+                let retry_response_for_analysis = Response::from_parts(
+                    retry_parts.clone(),
+                    Body::from(retry_response_bytes.clone()),
+                );
+
                 // Process the retry response through handlers
                 let retry_action = response_handlers.iter().find_map(|handler| {
                     handler.handle(
@@ -430,9 +454,10 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                         key_info.key.expose_secret(),
                     )
                 });
-                
-                let retry_final_response = Response::from_parts(retry_parts, Body::from(retry_response_bytes));
-                
+
+                let retry_final_response =
+                    Response::from_parts(retry_parts, Body::from(retry_response_bytes));
+
                 match retry_action {
                     Some(Action::ReturnToClient(response)) => return Ok(response),
                     Some(Action::Terminal(response)) => return Ok(response),
@@ -464,12 +489,11 @@ mod token_limit_tests {
 
     use serde_json::json;
 
-
     // Helper to initialize tokenizers for tests
     fn install_tokenizers() {
-        use crate::tokenizer::{GeminiTokenizer, MultimodalTokenizer, MultimodalConfig};
+        use crate::tokenizer::{GeminiTokenizer, MultimodalConfig, MultimodalTokenizer};
         use tokio::runtime::Runtime;
-        
+
         // Инициализируем токенизаторы в тестах
         let rt = Runtime::new().expect("Failed to create tokio runtime for test");
         rt.block_on(async {
@@ -477,7 +501,7 @@ mod token_limit_tests {
             if let Err(e) = GeminiTokenizer::initialize().await {
                 eprintln!("Warning: Failed to initialize Gemini tokenizer in test: {e}");
             }
-            
+
             // Multimodal токенизатор
             let config = MultimodalConfig {
                 debug_logging: true,
@@ -521,11 +545,20 @@ mod token_limit_tests {
         install_tokenizers();
         let err = validate_token_count_with_limit(&body, limit, true, None)
             .expect_err("Expected RequestTooLarge for over-limit");
-        assert!(matches!(err, AppError::RequestTooLarge { .. }), "Must be RequestTooLarge, got: {err:?}");
-        
+        assert!(
+            matches!(err, AppError::RequestTooLarge { .. }),
+            "Must be RequestTooLarge, got: {err:?}"
+        );
+
         // Проверяем, что сообщение об ошибке содержит "tokens", а не "bytes"
         let error_message = format!("{err}");
-        assert!(error_message.contains("tokens"), "Error message should contain 'tokens', got: {error_message}");
-        assert!(!error_message.contains("bytes"), "Error message should not contain 'bytes', got: {error_message}");
+        assert!(
+            error_message.contains("tokens"),
+            "Error message should contain 'tokens', got: {error_message}"
+        );
+        assert!(
+            !error_message.contains("bytes"),
+            "Error message should not contain 'bytes', got: {error_message}"
+        );
     }
 }
