@@ -78,15 +78,15 @@ check: lint format test ## Run all checks (lint, format, test)
 run: build setup-config ## Run the proxy directly (foreground)
 	@echo "🚀 Starting Gemini Proxy..."
 	@echo "📝 Make sure you've configured your API keys in config.yaml"
-	RUST_LOG=info ./target/release/gemini-proxy-key-rotation-rust
+	RUST_LOG=info ./target/release/gemini-proxy
 
 run-dev: build-dev setup-config ## Run in development mode with debug logging (foreground)
 	@echo "🚀 Starting Gemini Proxy (dev mode)..."
-	RUST_LOG=debug ./target/debug/gemini-proxy-key-rotation-rust
+	RUST_LOG=debug ./target/debug/gemini-proxy
 
 run-dev-bg: build-dev setup-config ## Run in development mode (background, logs to /tmp/gemini-dev.log)
 	@echo "🚀 Starting Gemini Proxy (dev mode, background)..."
-	@( (RUST_LOG=debug ./target/debug/gemini-proxy-key-rotation-rust > /tmp/gemini-dev.log 2>&1 & echo $$! > /tmp/gemini-dev.pid) && echo "PID: $$(cat /tmp/gemini-dev.pid); log: /tmp/gemini-dev.log" )
+	@( (RUST_LOG=debug ./target/debug/gemini-proxy > /tmp/gemini-dev.log 2>&1 & echo $$! > /tmp/gemini-dev.pid) && echo "PID: $$(cat /tmp/gemini-dev.pid); log: /tmp/gemini-dev.log" )
 
 # Docker commands
 docker-build: ## Build optimized Docker image
@@ -175,7 +175,7 @@ status: ## Show service status
 		echo "🐳 Docker services: Not running"; \
 	fi
 	@echo ""
-	@if pgrep -f "gemini-proxy-key-rotation-rust" > /dev/null; then \
+	@if pgrep -f "gemini-proxy" > /dev/null; then \
 		echo "🔧 Direct process: Running"; \
 	else \
 		echo "🔧 Direct process: Not running"; \

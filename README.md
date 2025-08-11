@@ -13,7 +13,6 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 
 ## ✨ What's New in v0.2.0
 
-- 🎯 **100% Accurate Tokenization**: Multiple strategies for perfect token counting with large text optimization
 - 🔒 **Enterprise Security**: Rate limiting, HTTPS enforcement, session management, audit logging
 - 📊 **Intelligent Monitoring**: Proactive key health scoring (0.0-1.0), automated alerts, admin dashboard
 - 🧱 **Token Limit Guardrails**: Configurable per-request limits with fail-fast initialization
@@ -39,7 +38,6 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 
 **🎯 Features**
 - [🌟 Core Features](#-core-features)
-- [🎯 Advanced Tokenization](#-advanced-tokenization)
 - [📊 Monitoring](#-monitoring-dashboard)
 - [🔒 Security](#-security--production-deployment)
 
@@ -93,24 +91,7 @@ A **production-ready**, high-performance asynchronous HTTP proxy for Google Gemi
 </tr>
 </table>
 
-### 🎯 **Advanced Tokenization Engine**
 
-Our tokenization system is optimized for accuracy and performance:
-
-| Text Size | Strategy | Performance | Accuracy |
-|-----------|----------|-------------|----------|
-| **Small** (<50KB) | Direct Send | ⚡ Instant | 100% |
-| **Medium** (50-150KB) | Parallel Processing | 🚀 Fast | 100% |
-| **Large** (150-250KB) | Gemini-First | ⚡ Optimized | 100% |
-| **Huge** (>250KB) | Smart Rejection | ⚡ Instant | N/A |
-
-**Key Features:**
-- **Multiple Strategies**: Official Google, Proxy-Cached, ML-Calibrated
-- **Smart Processing**: Automatic strategy selection based on content size
-- **Perfect Accuracy**: 100% token count accuracy with Google API validation
-- **Multi-language**: Unicode, code, and mixed content support
-
-## 🌟 Core Features
 
 <details>
 <summary><strong>🔄 Smart Key Management</strong></summary>
@@ -141,7 +122,6 @@ Our tokenization system is optimized for accuracy and performance:
 - **Proactive Health Checks**: Background monitoring every 30 seconds
 - **Automated Alerts**: Smart notifications for degraded performance
 - **Performance Metrics**: Response times, success rates, usage patterns
-- **Tokenization Metrics**: Detailed token counting and limit enforcement
 - **Admin Dashboard**: Web-based monitoring and management at `/admin/`
 - **Prometheus Integration**: Full observability stack support
 
@@ -158,85 +138,7 @@ Our tokenization system is optimized for accuracy and performance:
 
 </details>
 
-## 🎯 Advanced Tokenization
-
-### 🚀 **100% Accurate Token Counting**
-
-One of the key challenges with Gemini API integration is accurate token counting for billing and rate limiting. Our proxy solves this with multiple tokenization strategies:
-
-#### **1. Official Google Tokenizer (Recommended)**
-- **100% Accuracy**: Uses Google's official Vertex AI SDK
-- **Local Processing**: No API calls required for token counting
-- **All Models Supported**: Works with Gemini 1.0, 1.5, and 2.0
-- **Setup**: `pip install google-cloud-aiplatform[tokenization]`
-
-#### **2. Proxy-Cached Tokenizer (Production Ready)**
-- **100% Accuracy**: Uses real Google API with intelligent caching
-- **High Performance**: Cached results for repeated texts
-- **Fallback Support**: Graceful degradation when API unavailable
-- **No Dependencies**: Pure Rust implementation
-
-#### **3. ML-Calibrated Tokenizer (Offline Fallback)**
-- **98%+ Accuracy**: Machine learning calibrated on Google API data
-- **Fast Performance**: <1ms per operation
-- **No Dependencies**: Works completely offline
-- **Multi-language**: Optimized for Unicode, code, and mixed content
-
-### 📊 **Tokenization Performance**
-
-Real-world performance benchmarks across different content types:
-
-| Content Type | Size | Tokens | Gemini First | Local Tokenization | Best Strategy |
-|--------------|------|--------|--------------|-------------------|---------------|
-| **Simple Text** | 1KB | 250 | ⚡ 0ms | ⚡ 1ms | Either |
-| **Unicode Heavy** | 5KB | 2,035 | ⚡ 0ms | ⚡ 2ms | Either |
-| **Code Files** | 10KB | 3,066 | ⚡ 0ms | 🚀 3ms | Either |
-| **Technical Docs** | 25KB | 6,500 | ⚡ 0ms | 🚀 5ms | **Gemini First** |
-| **Mixed Content** | 50KB | 12,000 | ⚡ 0ms | 🔄 8ms | **Gemini First** |
-| **Large Documents** | 1.8MB | 180,000 | ⚡ 0ms | ⏳ 280ms | **Gemini First Only** |
-
-> **💡 Pro Tip**: For requests >150k tokens, the proxy automatically uses "Gemini First" strategy for optimal performance.
-
-### 🔧 **Configuration**
-
-```yaml
-# config.yaml
-server:
-  # Choose tokenization strategy (RECOMMENDED: gemini_first for large texts)
-  tokenizer_type: "gemini_first"  # Send directly to Gemini (fastest)
-
-  # Token limits and safety
-  max_tokens_per_request: 250000
-
-  # Gemini First configuration (optimized for 180k+ tokens)
-  tokenizer_config:
-    enable_pre_check: false        # Skip pre-tokenization (fastest)
-    enable_post_count: true        # Count after response for stats
-    use_fast_estimation: true      # Fast estimation for very large texts
-    fast_estimation_threshold: 50000  # 50KB threshold
-```
-
-### 📈 **Monitoring Token Usage**
-
-The proxy provides detailed tokenization metrics:
-
-- `request_token_count` (histogram): Per-request token counts
-- `token_limit_blocks_total` (counter): Requests blocked by token limits
-- `tokenizer_cache_hits_total` (counter): Cache efficiency metrics
-- `tokenizer_accuracy_score` (gauge): Real-time accuracy measurements
-
 ## Architecture
-
-### Tokenizer Initialization and Token Limit Enforcement
-
-- The proxy uses a shared tokenizer to compute request token counts before forwarding.
-- Initialization is fail-fast in production: if tokenizer cannot be initialized at startup, the app aborts.
-- In test/dev mode, a minimal whitespace-based fallback tokenizer is installed automatically to keep local workflows unblocked.
-- A configurable limit (`server.max_tokens_per_request`) guards requests:
-  - If the computed token count exceeds the limit, the request is rejected with `RequestTooLarge`.
-  - Prometheus-style metrics are emitted:
-    - `request_token_count` (histogram): per-request token count
-    - `token_limit_blocks_total` (counter): increments on limit-based rejections
 
 The Gemini Proxy Key Rotation service is built with a modular architecture, leveraging Rust's ownership and concurrency features to ensure high performance and reliability. Below are the core components and their interactions:
 
@@ -1008,7 +910,6 @@ make security-scan
 
 | Category | Tests | Coverage | Focus Area |
 |----------|-------|----------|------------|
-| **Tokenization** | 15 | 98% | Accuracy, large text, multilingual |
 | **Security** | 7 | 95% | Rate limiting, HTTPS, authentication |
 | **Monitoring** | 12 | 92% | Health scoring, alerts, metrics |
 | **Error Handling** | 21 | 100% | Structured responses, recovery |
@@ -1018,24 +919,6 @@ make security-scan
 ### 🎯 **Specialized Testing**
 
 <details>
-<summary><strong>Tokenization Testing</strong></summary>
-
-```bash
-# Accuracy validation against Google API
-make test-tokenization
-
-# Large text handling (up to 250KB)
-make test-large-text
-
-# Unicode and multilingual support
-make test-unicode
-
-# Performance benchmarks
-make bench-tokenization
-```
-
-</details>
-
 <details>
 <summary><strong>Load Testing</strong></summary>
 

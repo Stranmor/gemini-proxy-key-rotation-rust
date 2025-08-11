@@ -82,7 +82,6 @@ fn test_app_config_creation() {
             request_timeout_secs: 60,
             admin_token: None,
             top_p: None,
-            tokenizer_type: None,
         },
         groups: vec![gemini_proxy::config::KeyGroup {
             name: "test-group".to_string(),

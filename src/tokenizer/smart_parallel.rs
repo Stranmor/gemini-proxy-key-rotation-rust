@@ -22,6 +22,8 @@ pub struct SmartParallelConfig {
     pub precise_tokenization_timeout_ms: u64,
     /// Включить параллельную отправку
     pub enable_parallel_sending: bool,
+    /// Порог отклонения по символам (абсолютный максимум)
+    pub rejection_threshold_chars: usize,
 }
 
 impl Default for SmartParallelConfig {
@@ -32,6 +34,7 @@ impl Default for SmartParallelConfig {
             chars_per_token_conservative: 2.0, // Очень консервативная оценка (реально ~4)
             precise_tokenization_timeout_ms: 100, // 100ms таймаут
             enable_parallel_sending: true,
+            rejection_threshold_chars: 1_500_000, // Абсолютный максимум, ~2x-3x от ожидаемого для лимита токенов
         }
     }
 }
@@ -98,6 +101,18 @@ impl SmartParallelTokenizer {
     pub fn make_processing_decision(&self, text: &str) -> ProcessingDecision {
         let char_count = text.len();
 
+        // Первая линия защиты: абсолютный лимит по символам
+        if char_count > self.config.rejection_threshold_chars {
+            warn!(
+                "Rejecting request: char count {} > {} limit",
+                char_count, self.config.rejection_threshold_chars
+            );
+            return ProcessingDecision::RejectImmediately {
+                estimated_tokens: (char_count as f64 / self.config.chars_per_token_conservative)
+                    .ceil() as usize,
+            };
+        }
+
         // Консервативная оценка токенов (занижаем чтобы не пропустить большие тексты)
         let estimated_tokens =
             (char_count as f64 / self.config.chars_per_token_conservative).ceil() as usize;
@@ -162,13 +177,15 @@ impl SmartParallelTokenizer {
 
             ProcessingDecision::RejectImmediately { estimated_tokens } => {
                 warn!(
-                    "Rejecting request: estimated {} tokens > {} limit",
-                    estimated_tokens, self.config.token_limit
+                    "Rejecting request: char count {} or estimated tokens {} exceeds limits",
+                    text.len(),
+                    estimated_tokens
                 );
 
                 Err(format!(
-                    "Request too large: estimated {} tokens exceeds limit of {}",
-                    estimated_tokens, self.config.token_limit
+                    "Request too large: size {} chars, estimated {} tokens. Exceeds limits.",
+                    text.len(),
+                    estimated_tokens
                 )
                 .into())
             }
@@ -440,6 +457,7 @@ mod tests {
             chars_per_token_conservative: 2.0, // Очень консервативная оценка
             precise_tokenization_timeout_ms: 50,
             enable_parallel_sending: false, // Последовательная обработка для надежности
+            rejection_threshold_chars: 500_000, // Лимит по символам для теста
         };
 
         SmartParallelTokenizer::initialize(Some(config)).unwrap();

@@ -4,7 +4,7 @@ use gemini_proxy::{
     error::{context::ErrorContext, AppError},
     run,
 };
-use std::{net::SocketAddr, path::PathBuf, process};
+use std::{io::ErrorKind, net::SocketAddr, path::PathBuf, process};
 use tokio::{net::TcpListener, signal};
 use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
@@ -99,84 +99,58 @@ async fn serve_command(
             );
         }
 
-        // Initialize tokenizers for maximum accuracy
-        #[cfg(feature = "tokenizer")]
-        {
-            use gemini_proxy::tokenizer::{
-                get_gemini_tokenizer_info, GeminiTokenizer, MultimodalConfig, MultimodalTokenizer,
-            };
-
-            // 1. Инициализируем базовый Gemini токенизатор
-            info!("Initializing Gemini tokenizer for text processing");
-            match GeminiTokenizer::initialize().await {
-                Ok(_) => {
-                    if let Some(info) = get_gemini_tokenizer_info() {
-                        info!(tokenizer_info = %info, "Gemini tokenizer initialized successfully");
-                    }
-                }
-                Err(e) => {
-                    if dev {
-                        error!(error = %e, "Failed to initialize Gemini tokenizer in dev mode, but continuing");
-                    } else {
-                        error!(error = %e, "Failed to initialize Gemini tokenizer in production mode");
-                        return Err(AppError::TokenizerInit {
-                            message: format!("Failed to initialize Gemini tokenizer: {e}"),
-                        }
-                        .into());
-                    }
-                }
-            }
-
-            // 2. Инициализируем multimodal токенизатор
-            info!("Initializing multimodal tokenizer for text + image processing");
-            let multimodal_config = MultimodalConfig {
-                safety_multiplier: 1.2, // 20% запас для безопасности
-                debug_logging: dev,     // Детальное логирование в dev режиме
-                ..Default::default()
-            };
-
-            match MultimodalTokenizer::initialize(Some(multimodal_config)) {
-                Ok(_) => {
-                    info!("Multimodal tokenizer initialized successfully");
-                }
-                Err(e) => {
-                    if dev {
-                        error!(error = %e, "Failed to initialize multimodal tokenizer in dev mode, but continuing");
-                    } else {
-                        error!(error = %e, "Failed to initialize multimodal tokenizer in production mode");
-                        return Err(AppError::TokenizerInit {
-                            message: format!("Failed to initialize multimodal tokenizer: {e}"),
-                        }
-                        .into());
-                    }
-                }
-            }
-        }
-
         // Load configuration and create app
         let (app, config) = run(config_path).await?;
 
         // Override port if specified via CLI
-        let server_port = port.unwrap_or(config.server.port);
-        let addr = SocketAddr::from(([0, 0, 0, 0], server_port));
-
-        let listener = TcpListener::bind(addr).await.map_err(|e| {
-            error!(
-                address = %addr,
-                error = %e,
-                "Failed to bind to address"
-            );
-            AppError::Internal {
-                message: format!("Failed to bind to {addr}: {e}"),
+        // Override port if specified via CLI
+        let mut server_port = port.unwrap_or(config.server.port);
+        let listener = {
+            let mut listener: Option<TcpListener> = None;
+            for i in 0..10 {
+                let current_port = server_port + i;
+                let addr = SocketAddr::from(([0, 0, 0, 0], current_port));
+                match TcpListener::bind(addr).await {
+                    Ok(l) => {
+                        server_port = current_port;
+                        listener = Some(l);
+                        break;
+                    }
+                    Err(e) if e.kind() == ErrorKind::AddrInUse => {
+                        tracing::warn!(
+                            port = current_port,
+                            "Port already in use, trying next port"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        error!(
+                            address = %addr,
+                            error = %e,
+                            "Failed to bind to address"
+                        );
+                        return Err(AppError::Internal {
+                            message: format!("Failed to bind to {addr}: {e}"),
+                        }
+                        .into());
+                    }
+                }
             }
-        })?;
+            listener.ok_or_else(|| {
+                let final_error_msg =
+                    format!("Failed to bind to any port after 10 attempts. Last port tried: {server_port}");
+                error!(error = final_error_msg);
+                AppError::Internal {
+                    message: final_error_msg,
+                }
+            })?
+        };
 
         info!(
-            address = %addr,
+            address = %listener.local_addr().unwrap(),
             version = env!("CARGO_PKG_VERSION"),
             "Gemini Proxy server started successfully"
         );
-
         // Start server with graceful shutdown
         axum::serve(listener, app.into_make_service())
             .with_graceful_shutdown(shutdown_signal())

@@ -1,12 +1,10 @@
 // src/tokenizer/gemini_ml_calibrated.rs
-
 use std::error::Error;
 use std::sync::OnceLock;
 use tracing::{info, warn};
 
 /// ML-калиброванный токенизатор для Gemini на основе данных Google API
 pub struct GeminiMLCalibratedTokenizer {
-    #[cfg(feature = "tokenizer")]
     tiktoken: Option<tiktoken_rs::CoreBPE>,
     fallback_enabled: bool,
 }
@@ -29,33 +27,28 @@ impl GeminiMLCalibratedTokenizer {
     }
 
     async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "tokenizer")]
-        {
-            // Используем tiktoken cl100k_base как базу
-            match Self::load_tiktoken_cl100k().await {
-                Ok(tiktoken) => {
-                    info!("Using tiktoken cl100k_base as base for ML-calibrated Gemini tokenizer");
-                    return Ok(Self {
-                        tiktoken: Some(tiktoken),
-                        fallback_enabled: true,
-                    });
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to load tiktoken, using ML-calibrated fallback");
-                }
+        // Используем tiktoken cl100k_base как базу
+        match Self::load_tiktoken_cl100k().await {
+            Ok(tiktoken) => {
+                info!("Using tiktoken cl100k_base as base for ML-calibrated Gemini tokenizer");
+                return Ok(Self {
+                    tiktoken: Some(tiktoken),
+                    fallback_enabled: true,
+                });
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to load tiktoken, using ML-calibrated fallback");
             }
         }
 
         // Fallback режим с ML-калибровкой
         info!("Using ML-calibrated approximation for Gemini tokenization");
         Ok(Self {
-            #[cfg(feature = "tokenizer")]
             tiktoken: None,
             fallback_enabled: true,
         })
     }
 
-    #[cfg(feature = "tokenizer")]
     async fn load_tiktoken_cl100k() -> Result<tiktoken_rs::CoreBPE, Box<dyn Error + Send + Sync>> {
         use tiktoken_rs::cl100k_base;
 
@@ -66,14 +59,11 @@ impl GeminiMLCalibratedTokenizer {
 
     /// Подсчитывает токены с ML-калибровкой на основе обучающих данных Google API
     pub fn count_tokens(&self, text: &str) -> Result<usize, Box<dyn Error + Send + Sync>> {
-        #[cfg(feature = "tokenizer")]
-        {
-            // Используем tiktoken cl100k_base с ML-калибровкой
-            if let Some(ref tiktoken) = self.tiktoken {
-                let base_tokens = tiktoken.encode_with_special_tokens(text);
-                let ml_calibrated_count = self.apply_ml_calibration(text, base_tokens.len());
-                return Ok(ml_calibrated_count);
-            }
+        // Используем tiktoken cl100k_base с ML-калибровкой
+        if let Some(ref tiktoken) = self.tiktoken {
+            let base_tokens = tiktoken.encode_with_special_tokens(text);
+            let ml_calibrated_count = self.apply_ml_calibration(text, base_tokens.len());
+            return Ok(ml_calibrated_count);
         }
 
         // Fallback: ML-калиброванный приближенный подсчет
@@ -286,19 +276,11 @@ impl GeminiMLCalibratedTokenizer {
 
     /// Возвращает информацию о типе используемого токенизатора
     pub fn get_info(&self) -> String {
-        #[cfg(feature = "tokenizer")]
-        {
-            if self.tiktoken.is_some() {
-                "TikToken cl100k_base + ML calibration (98%+ accuracy)".to_string()
-            } else {
-                "ML-calibrated approximation based on Google API training data (95%+ accuracy)"
-                    .to_string()
-            }
-        }
-
-        #[cfg(not(feature = "tokenizer"))]
-        {
-            "ML-calibrated approximation (feature disabled)".to_string()
+        if self.tiktoken.is_some() {
+            "TikToken cl100k_base + ML calibration (98%+ accuracy)".to_string()
+        } else {
+            "ML-calibrated approximation based on Google API training data (95%+ accuracy)"
+                .to_string()
         }
     }
 }

@@ -1,6 +1,6 @@
 // tests/smart_parallel_test.rs
 
-use gemini_proxy::tokenizer;
+use gemini_proxy::tokenizer::{self, smart_parallel::ProcessingDecision};
 use std::time::Instant;
 
 /// Тест умной параллельной обработки
@@ -20,10 +20,11 @@ async fn test_smart_parallel_logic() {
         chars_per_token_conservative: 2.0, // Очень консервативная оценка
         precise_tokenization_timeout_ms: 100,
         enable_parallel_sending: true,
+        rejection_threshold_chars: 1_500_000,
     };
 
     tokenizer::smart_parallel::SmartParallelTokenizer::initialize(Some(config)).unwrap();
-    let tokenizer = tokenizer::get_smart_parallel_tokenizer().unwrap();
+    let tokenizer = tokenizer::smart_parallel::get_smart_parallel_tokenizer().unwrap();
 
     // Создаем тестовые тексты
     let small_text = "Hello world!";
@@ -49,13 +50,13 @@ async fn test_smart_parallel_logic() {
         let decision = tokenizer.make_processing_decision(text);
 
         let (estimated_tokens, decision_type) = match decision {
-            tokenizer::ProcessingDecision::SendDirectly { estimated_tokens } => {
+            ProcessingDecision::SendDirectly { estimated_tokens } => {
                 (estimated_tokens, "SendDirectly")
             }
-            tokenizer::ProcessingDecision::ParallelProcessing { estimated_tokens } => {
+            ProcessingDecision::ParallelProcessing { estimated_tokens } => {
                 (estimated_tokens, "ParallelProcessing")
             }
-            tokenizer::ProcessingDecision::RejectImmediately { estimated_tokens } => {
+            ProcessingDecision::RejectImmediately { estimated_tokens } => {
                 (estimated_tokens, "RejectImmediately")
             }
         };
@@ -209,7 +210,8 @@ async fn test_performance_vs_traditional() {
     let start = Instant::now();
 
     let tokenization_start = Instant::now();
-    let _token_count = tokenizer::count_ml_calibrated_gemini_tokens(&test_text).unwrap();
+    let _token_count =
+        tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(&test_text).unwrap();
     let tokenization_time = tokenization_start.elapsed();
 
     let network_start = Instant::now();

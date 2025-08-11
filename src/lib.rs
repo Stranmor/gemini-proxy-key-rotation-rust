@@ -18,12 +18,11 @@ pub mod monitoring;
 pub mod proxy;
 pub mod security;
 pub mod state;
-#[cfg(feature = "tokenizer")]
 pub mod tokenizer;
 pub mod utils;
 
 // --- Зависимости и пере-экспорты ---
-use crate::handlers::{health_check, proxy_handler};
+use crate::{handlers::{health_check, proxy_handler}};
 use axum::{
     body::Body,
     http::{HeaderValue, Request as AxumRequest},
@@ -123,7 +122,14 @@ pub async fn run(
     // 1. Настройка конфигурации
     let (app_config, config_path) = setup_configuration(config_path_override)?;
 
-    // 2. Инициализация состояния приложения
+    // 2. Инициализация токенизатора
+    tokenizer::GeminiMLCalibratedTokenizer::initialize()
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to initialize tokenizer: {e}")))?;
+    tokenizer::SmartParallelTokenizer::initialize(None)
+        .map_err(|e| AppError::internal(format!("Failed to initialize tokenizer: {e}")))?;
+
+    // 3. Инициализация состояния приложения
     let (app_state, mut config_update_rx) =
         build_application_state(&app_config, &config_path).await?;
 

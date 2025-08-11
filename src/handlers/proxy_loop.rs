@@ -28,16 +28,26 @@ async fn try_request_with_key(
     let client = state.get_client(key_info.proxy_url.as_deref()).await?;
     let circuit_breaker = state.get_circuit_breaker(&key_info.target_url).await;
 
-    proxy::forward_request(
-        &client,
-        key_info,
-        req_context.method.clone(),
-        url,
-        req_context.headers.clone(),
-        req_context.body.clone(),
-        circuit_breaker,
-    )
-    .await
+    let request_body_str =
+        String::from_utf8(req_context.body.to_vec()).unwrap_or_else(|_| "".to_string());
+
+    let send_request = |body_str: String| async move {
+        proxy::forward_request(
+            &client,
+            key_info,
+            req_context.method.clone(),
+            url.clone(),
+            req_context.headers.clone(),
+            body_str.into(),
+            circuit_breaker.clone(),
+        )
+        .await
+    };
+
+    match crate::tokenizer::process_text_smart(&request_body_str, send_request).await {
+        Ok((response, _processing_result)) => Ok(response),
+        Err(e) => Err(AppError::internal(e.to_string())),
+    }
 }
 
 /// Analyzes the response and determines the next action.

@@ -84,7 +84,8 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
         );
 
         // Получаем количество токенов от ML-калиброванного токенизатора
-        let our_count = match tokenizer::count_ml_calibrated_gemini_tokens(text) {
+        let our_count =
+            match tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(text) {
             Ok(count) => count,
             Err(e) => {
                 error!("ML-calibrated tokenizer failed for text: {}", e);
@@ -272,54 +273,6 @@ async fn get_google_token_count(
     Ok(total_tokens as usize)
 }
 
-/// Сравнение всех токенизаторов
-#[tokio::test]
-async fn test_all_tokenizers_comparison() {
-    // Инициализируем все токенизаторы
-    tokenizer::gemini_simple::GeminiTokenizer::initialize()
-        .await
-        .unwrap();
-    tokenizer::gemini_calibrated::GeminiCalibratedTokenizer::initialize()
-        .await
-        .unwrap();
-    tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize()
-        .await
-        .unwrap();
-
-    let test_texts = vec![
-        "Hello world",
-        "Hello 世界! 🌍 How are you?",
-        "Mathematical symbols: ∑, ∫, ∂, ∇, ∞, π",
-        r#"function test() { return 42; }"#,
-    ];
-
-    println!("\n=== Tokenizer Comparison ===\n");
-
-    for text in test_texts {
-        println!("Text: \"{text}\"");
-
-        let simple_count = tokenizer::count_gemini_tokens(text).unwrap();
-        let calibrated_count = tokenizer::count_calibrated_gemini_tokens(text).unwrap();
-        let ml_calibrated_count = tokenizer::count_ml_calibrated_gemini_tokens(text).unwrap();
-
-        println!("  Simple: {simple_count} tokens");
-        println!("  Calibrated: {calibrated_count} tokens");
-        println!("  ML-Calibrated: {ml_calibrated_count} tokens");
-
-        // Проверяем, что ML-калиброванный дает разумные результаты
-        assert!(
-            ml_calibrated_count > 0,
-            "ML-calibrated should return > 0 tokens"
-        );
-        assert!(
-            ml_calibrated_count < text.len(),
-            "ML-calibrated should return < text length"
-        );
-
-        println!();
-    }
-}
-
 /// Тест производительности ML-калиброванного токенизатора
 #[tokio::test]
 async fn test_ml_calibrated_performance() {
@@ -332,7 +285,8 @@ async fn test_ml_calibrated_performance() {
 
     let start = std::time::Instant::now();
     for _ in 0..iterations {
-        let _ = tokenizer::count_ml_calibrated_gemini_tokens(test_text).unwrap();
+        let _ = tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(test_text)
+            .unwrap();
     }
     let duration = start.elapsed();
 
@@ -349,7 +303,8 @@ async fn test_ml_calibrated_performance() {
         "ML-calibrated tokenizer should be < 1ms per operation, got {avg_ms:.3}ms"
     );
 
-    let count = tokenizer::count_ml_calibrated_gemini_tokens(test_text).unwrap();
+    let count =
+        tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(test_text).unwrap();
     println!("Token count for test text: {count}");
     println!("Text: \"{test_text}\"");
 }
