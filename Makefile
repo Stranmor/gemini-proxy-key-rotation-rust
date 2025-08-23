@@ -260,6 +260,23 @@ docker-up-quiet: lock-check ## docker compose up -d with short status
 	ID=$$(docker compose ps -q gemini-proxy); \
 	if [ -n "$$ID" ]; then docker inspect "$$ID" --format 'Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'; fi
 
+# Monitoring commands
+monitor-redis: ## Run Redis health diagnostics
+	@echo "🔍 Running Redis diagnostics..."
+	@./scripts/redis-health-check.sh
+
+monitor-api: ## Monitor Google API errors
+	@echo "🔍 Monitoring Google API errors..."
+	@./scripts/google-api-monitor.sh
+
+monitor-all: ## Run comprehensive system monitoring
+	@echo "🔍 Running comprehensive monitoring..."
+	@./scripts/automated-monitoring.sh
+
+monitor-watch: ## Continuous monitoring (every 5 minutes)
+	@echo "🔍 Starting continuous monitoring (Ctrl+C to stop)..."
+	@watch -n 300 ./scripts/automated-monitoring.sh
+
 # CI/CD helpers
 ci-test: ## Run tests suitable for CI
 	cargo test --all-features --no-fail-fast

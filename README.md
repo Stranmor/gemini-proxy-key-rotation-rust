@@ -275,7 +275,6 @@ nano config.yaml
 ```bash
 # Docker (Recommended)
 make docker-run
-
 # Direct binary
 ./target/release/gemini-proxy
 

@@ -114,12 +114,24 @@ fn validate_token_count_with_limit(json_body: &serde_json::Value) -> Result<()> 
 
     Ok(())
 }
+pub fn is_streaming_request(body_bytes: &Bytes) -> bool {
+    if let Ok(json_body) = serde_json::from_slice::<serde_json::Value>(body_bytes) {
+        json_body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    } else {
+        false
+    }
+}
+
 fn process_request_body(
     body_bytes: Bytes,
     top_p: Option<f64>,
-) -> Result<(Bytes, HeaderMap)> {
+) -> Result<(Bytes, HeaderMap, bool)> {
     let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let mut headers = HeaderMap::new();
+    let is_streaming = is_streaming_request(&body_bytes);
 
     if let Some(json_body) = &json_body_opt {
         validate_token_count_with_limit(json_body)?;
@@ -156,7 +168,7 @@ fn process_request_body(
                             }
                         })?,
                     );
-                    return Ok((body_bytes, headers));
+                    return Ok((body_bytes, headers, is_streaming));
                 }
                 Err(e) => {
                     error!(error = ?e, "Failed to re-serialize JSON body after modification.");
@@ -165,13 +177,14 @@ fn process_request_body(
         }
     }
 
-    Ok((body_bytes, headers))
+    Ok((body_bytes, headers, is_streaming))
 }
 
 async fn try_request_with_key(
     state: &Arc<AppState>,
     req_context: &RequestContext<'_>,
     key_info: &FlattenedKeyInfo,
+    is_streaming: bool,
 ) -> Result<Response> {
     let url = build_target_url(req_context.uri, key_info)?;
     let client = state.get_client(key_info.proxy_url.as_deref()).await?;
@@ -192,6 +205,19 @@ async fn try_request_with_key(
         AppError::internal(e.to_string())
     })?;
 
+    // For streaming requests, return response directly without buffering
+    if is_streaming && response.status().is_success() {
+        info!("Streaming response detected, bypassing response handlers");
+        // For streaming, we need to check the content-type to ensure it's actually streaming
+        if let Some(content_type) = response.headers().get("content-type") {
+            if content_type.to_str().unwrap_or("").contains("text/event-stream") 
+                || content_type.to_str().unwrap_or("").contains("text/plain") {
+                return Ok(response);
+            }
+        }
+        // If no streaming content-type, fall through to normal processing
+    }
+
     let (parts, body) = response.into_parts();
     let response_bytes = to_bytes(body, usize::MAX)
         .await
@@ -211,7 +237,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
     // Process request body (token validation and top_p injection)
     let top_p = state.config.read().await.top_p;
-    let (processed_body, additional_headers) =
+    let (processed_body, additional_headers, is_streaming) =
         process_request_body(body_bytes, top_p.map(|v| v as f64))?;
 
     // Merge additional headers
@@ -263,7 +289,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
         info!(key = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Attempting to use key");
 
-        let response = match try_request_with_key(&state, &req_context, &key_info).await {
+        let response = match try_request_with_key(&state, &req_context, &key_info, is_streaming).await {
             Ok(r) => r,
             Err(e) => {
                 // Важно: сохраняем семантику ошибок апстрима.
@@ -351,7 +377,7 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                 tokio::time::sleep(duration).await;
 
                 // Retry the request with the same key after waiting
-                let retry_response = match try_request_with_key(&state, &req_context, &key_info)
+                let retry_response = match try_request_with_key(&state, &req_context, &key_info, is_streaming)
                     .await
                 {
                     Ok(r) => r,
