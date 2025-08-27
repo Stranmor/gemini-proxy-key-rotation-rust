@@ -6,13 +6,13 @@ use serde_json::Value;
 
 #[tokio::test]
 async fn test_request_too_large_error_message_contains_tokens() {
-    // Создаем ошибку RequestTooLarge
+    // Create RequestTooLarge error
     let error = AppError::RequestTooLarge {
         size: 300000,
         max_size: 250000,
     };
 
-    // Проверяем, что сообщение об ошибке содержит "tokens"
+    // Check that error message contains "tokens"
     let error_message = format!("{error}");
     assert!(
         error_message.contains("tokens"),
@@ -23,23 +23,23 @@ async fn test_request_too_large_error_message_contains_tokens() {
         "Error message should not contain 'bytes', got: {error_message}"
     );
 
-    // Проверяем JSON ответ
+    // Check JSON response
     let response = error.into_response();
     let (parts, body) = response.into_parts();
 
-    // Проверяем статус код
+    // Check status code
     assert_eq!(parts.status, 400);
 
-    // Извлекаем JSON из тела ответа
+    // Extract JSON from response body
     let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body_bytes).unwrap();
 
-    // Проверяем поля JSON ответа
+    // Check JSON response fields
     assert_eq!(json["type"], "https://gemini-proxy.dev/errors/validation");
     assert_eq!(json["title"], "Validation Error");
     assert_eq!(json["status"], 400);
 
-    // Проверяем, что detail содержит правильное сообщение
+    // Check that detail contains correct message
     let detail = json["detail"].as_str().unwrap();
     assert!(
         detail.contains("tokens"),

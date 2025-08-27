@@ -196,14 +196,14 @@ fn test_app_error_from_std_error() {
     let std_error = std::io::Error::new(std::io::ErrorKind::Other, "IO error");
     let app_error: AppError = std_error.into();
 
-    // Проверяем, что ошибка преобразована
+    // Check that error is converted
     let error_string = format!("{app_error}");
     assert!(error_string.contains("IO error"));
 }
 
 #[test]
 fn test_app_error_status_codes() {
-    // Тестируем различные статус коды
+    // Test various status codes
     let auth_error = AppError::Authentication {
         message: "Invalid token".to_string(),
     };

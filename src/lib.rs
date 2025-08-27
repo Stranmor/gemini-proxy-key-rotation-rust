@@ -21,8 +21,8 @@ pub mod state;
 pub mod tokenizer;
 pub mod utils;
 
-// --- Зависимости и пере-экспорты ---
-use crate::{handlers::{health_check, proxy_handler}};
+// --- Dependencies and Re-exports ---
+use crate::handlers::{health_check, proxy_handler};
 use axum::{
     body::Body,
     http::{HeaderValue, Request as AxumRequest},
@@ -44,9 +44,9 @@ pub use config::AppConfig;
 pub use error::{context::ErrorContext, AppError, Result};
 pub use state::AppState;
 
-/// Создает основной роутер Axum для приложения.
+/// Creates the main Axum router for the application.
 pub fn create_router(state: Arc<AppState>) -> Router {
-    // Объединяем маршруты прокси для уменьшения дублирования
+    // Combine proxy routes to reduce duplication
     let proxy_routes = [
         "/v1/*path",
         "/v1beta/*path",
@@ -67,7 +67,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     router.layer(CookieManagerLayer::new()).with_state(state)
 }
 
-/// Middleware для добавления Request ID и трассировки запросов.
+/// Middleware for adding Request ID and request tracing.
 async fn trace_requests(
     mut req: AxumRequest<Body>,
     next: axum::middleware::Next,
@@ -77,7 +77,7 @@ async fn trace_requests(
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
-    // Создаем span для трассировки запроса с полезными полями
+    // Create span for request tracing with useful fields
     let span = info_span!(
         "request",
         request_id = %request_id,
@@ -85,21 +85,21 @@ async fn trace_requests(
         url.path = %path,
     );
 
-    // Добавляем request_id в расширения запроса для доступа в других обработчиках
+    // Add request_id to request extensions for access in other handlers
     req.extensions_mut().insert(request_id);
 
-    // Выполняем запрос внутри span
+    // Execute request within span
     async move {
         let mut response = next.run(req).await;
         let elapsed = start_time.elapsed();
 
-        // Добавляем заголовок X-Request-ID в ответ
+        // Add X-Request-ID header to response
         response.headers_mut().insert(
             "X-Request-ID",
             HeaderValue::from_str(&request_id.to_string()).unwrap(),
         );
 
-        // Логируем завершение обработки запроса с кодом ответа и длительностью
+        // Log request completion with response code and duration
         info!(
             http.response.duration = ?elapsed,
             http.status_code = response.status().as_u16(),
@@ -112,35 +112,35 @@ async fn trace_requests(
     .await
 }
 
-/// Основная функция настройки приложения, отвечающая за конфигурацию,
-/// инициализацию состояния и создание роутера.
+/// Main application setup function responsible for configuration,
+/// state initialization and router creation.
 pub async fn run(
     config_path_override: Option<PathBuf>,
 ) -> std::result::Result<(Router, AppConfig), AppError> {
     info!("Starting Gemini API Key Rotation Proxy...");
 
-    // 1. Настройка конфигурации
+    // 1. Configuration setup
     let (app_config, config_path) = setup_configuration(config_path_override)?;
 
-    // 2. Инициализация токенизатора
+    // 2. Tokenizer initialization
     tokenizer::GeminiMLCalibratedTokenizer::initialize()
         .await
         .map_err(|e| AppError::internal(format!("Failed to initialize tokenizer: {e}")))?;
     tokenizer::SmartParallelTokenizer::initialize(None)
         .map_err(|e| AppError::internal(format!("Failed to initialize tokenizer: {e}")))?;
 
-    // 3. Инициализация состояния приложения
+    // 3. Application state initialization
     let (app_state, mut config_update_rx) =
         build_application_state(&app_config, &config_path).await?;
 
-    // 3. Запуск фонового обработчика для обновления конфигурации
+    // 3. Start background handler for configuration updates
     let state_for_worker = app_state.clone();
     tokio::spawn(async move {
         loop {
             match config_update_rx.recv().await {
                 Ok(new_config) => {
                     info!("Received configuration update message. Reloading state...");
-                    // Эта логика перенесена из `modify_config_and_reload`
+                    // This logic is moved from `modify_config_and_reload`
                     if let Err(e) =
                         admin::reload_state_from_config(state_for_worker.clone(), new_config).await
                     {
@@ -155,7 +155,7 @@ pub async fn run(
         }
     });
 
-    // 4. Настройка роутера и middleware
+    // 4. Router and middleware setup
     let app = create_router(app_state)
         .layer(axum::middleware::from_fn(
             crate::middleware::request_size_limit_middleware,
@@ -168,7 +168,7 @@ pub async fn run(
     Ok((app, app_config))
 }
 
-/// Загружает, валидирует и логирует конфигурацию приложения.
+/// Loads, validates and logs application configuration.
 fn setup_configuration(config_path_override: Option<PathBuf>) -> Result<(AppConfig, PathBuf)> {
     let config_path = config_path_override.unwrap_or_else(|| {
         std::env::var("CONFIG_PATH").map_or_else(|_| PathBuf::from("config.yaml"), PathBuf::from)
@@ -203,14 +203,14 @@ fn setup_configuration(config_path_override: Option<PathBuf>) -> Result<(AppConf
     Ok((app_config, config_path))
 }
 
-/// Создает и инициализирует состояние приложения, включая подключение к Redis.
+/// Creates and initializes application state, including Redis connection.
 async fn build_application_state(
     app_config: &AppConfig,
     config_path: &Path,
 ) -> Result<(Arc<AppState>, tokio::sync::broadcast::Receiver<AppConfig>)> {
-    // Примечание: Логика создания пула Redis теперь должна быть внутри `AppState::new`.
-    // Это улучшает инкапсуляцию, так как AppState управляет своими собственными зависимостями.
-    // Функция `run` больше не должна беспокоиться о деталях создания пула.
+    // Note: Redis pool creation logic should now be inside `AppState::new`.
+    // This improves encapsulation as AppState manages its own dependencies.
+    // The `run` function no longer needs to worry about pool creation details.
 
     let (app_state, rx) = AppState::new(app_config, config_path).await.map_err(|e| {
         error!(error = ?e, "Failed to initialize application state. Exiting.");

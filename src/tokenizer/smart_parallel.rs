@@ -5,24 +5,24 @@ use std::sync::OnceLock;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, info, warn};
 
-/// Умный параллельный токенизатор с надежной защитой от превышения лимитов
+/// Smart parallel tokenizer with reliable protection against limit overruns
 pub struct SmartParallelTokenizer {
     config: SmartParallelConfig,
 }
 
 #[derive(Debug, Clone)]
 pub struct SmartParallelConfig {
-    /// Лимит токенов (по умолчанию 250k)
+    /// Token limit (default 250k)
     pub token_limit: usize,
-    /// Безопасный порог для быстрой проверки (200k = 80% от лимита)
+    /// Safe threshold for quick check (200k = 80% of limit)
     pub safe_threshold: usize,
-    /// Символов на токен для быстрой оценки (консервативная оценка)
+    /// Characters per token for quick estimation (conservative estimate)
     pub chars_per_token_conservative: f64,
-    /// Таймаут для точной токенизации (мс)
+    /// Timeout for precise tokenization (ms)
     pub precise_tokenization_timeout_ms: u64,
-    /// Включить параллельную отправку
+    /// Enable parallel sending
     pub enable_parallel_sending: bool,
-    /// Порог отклонения по символам (абсолютный максимум)
+    /// Rejection threshold by characters (absolute maximum)
     pub rejection_threshold_chars: usize,
 }
 
@@ -30,22 +30,22 @@ impl Default for SmartParallelConfig {
     fn default() -> Self {
         Self {
             token_limit: 250_000,
-            safe_threshold: 150_000, // 60% от лимита - более консервативный порог
-            chars_per_token_conservative: 2.0, // Очень консервативная оценка (реально ~4)
-            precise_tokenization_timeout_ms: 100, // 100ms таймаут
+            safe_threshold: 150_000, // 60% of limit - more conservative threshold
+            chars_per_token_conservative: 2.0, // Very conservative estimate (actually ~4)
+            precise_tokenization_timeout_ms: 100, // 100ms timeout
             enable_parallel_sending: true,
-            rejection_threshold_chars: 1_500_000, // Абсолютный максимум, ~2x-3x от ожидаемого для лимита токенов
+            rejection_threshold_chars: 1_500_000, // Absolute maximum, ~2x-3x expected for token limit
         }
     }
 }
 
 #[derive(Debug)]
 pub enum ProcessingDecision {
-    /// Отправляем сразу - очевидно безопасно
+    /// Send directly - obviously safe
     SendDirectly { estimated_tokens: usize },
-    /// Параллельная обработка - считаем точно + отправляем
+    /// Parallel processing - count precisely + send
     ParallelProcessing { estimated_tokens: usize },
-    /// Отклоняем сразу - очевидно превышен лимит
+    /// Reject immediately - obviously exceeds limit
     RejectImmediately { estimated_tokens: usize },
 }
 
@@ -64,12 +64,12 @@ pub struct ProcessingResult {
 static SMART_PARALLEL_TOKENIZER: OnceLock<SmartParallelTokenizer> = OnceLock::new();
 
 impl SmartParallelTokenizer {
-    /// Создает новый экземпляр умного параллельного токенизатора
+    /// Creates a new instance of the smart parallel tokenizer
     pub fn new(config: SmartParallelConfig) -> Self {
         Self { config }
     }
 
-    /// Инициализирует умный параллельный токенизатор
+    /// Initializes the smart parallel tokenizer
     pub fn initialize(
         config: Option<SmartParallelConfig>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -97,11 +97,11 @@ impl SmartParallelTokenizer {
         Ok(())
     }
 
-    /// Принимает решение о том, как обрабатывать текст
+    /// Makes a decision on how to process the text
     pub fn make_processing_decision(&self, text: &str) -> ProcessingDecision {
         let char_count = text.len();
 
-        // Первая линия защиты: абсолютный лимит по символам
+        // First line of defense: absolute character limit
         if char_count > self.config.rejection_threshold_chars {
             warn!(
                 "Rejecting request: char count {} > {} limit",
@@ -113,7 +113,7 @@ impl SmartParallelTokenizer {
             };
         }
 
-        // Консервативная оценка токенов (занижаем чтобы не пропустить большие тексты)
+        // Conservative token estimation (underestimate to avoid missing large texts)
         let estimated_tokens =
             (char_count as f64 / self.config.chars_per_token_conservative).ceil() as usize;
 
@@ -123,21 +123,21 @@ impl SmartParallelTokenizer {
         );
 
         if estimated_tokens < self.config.safe_threshold {
-            // Очевидно безопасно - отправляем сразу
+            // Obviously safe - send immediately
             debug!("Below safe threshold, sending directly");
             ProcessingDecision::SendDirectly { estimated_tokens }
         } else if estimated_tokens > self.config.token_limit {
-            // Очевидно превышен лимит - отклоняем сразу
+            // Obviously exceeds limit - reject immediately
             debug!("Obviously exceeds limit, rejecting immediately");
             ProcessingDecision::RejectImmediately { estimated_tokens }
         } else {
-            // Серая зона - нужна точная проверка + параллельная отправка
+            // Gray zone - need precise check + parallel sending
             debug!("In gray zone, using parallel processing");
             ProcessingDecision::ParallelProcessing { estimated_tokens }
         }
     }
 
-    /// Обрабатывает текст с умной логикой
+    /// Processes text with smart logic
     pub async fn process_text<F, Fut, T>(
         &self,
         text: &str,
@@ -204,7 +204,7 @@ impl SmartParallelTokenizer {
         }
     }
 
-    /// Параллельная обработка: токенизация + отправка одновременно
+    /// Parallel processing: tokenization + sending simultaneously
     async fn process_parallel<F, Fut, T>(
         &self,
         text: &str,
@@ -218,20 +218,20 @@ impl SmartParallelTokenizer {
     {
         let text_clone = text.to_string();
 
-        // Запускаем токенизацию и отправку параллельно
+        // Start tokenization and sending in parallel
         let tokenization_task = self.count_tokens_with_timeout(text);
         let network_task = send_function(text_clone);
 
         let tokenization_start = std::time::Instant::now();
         let network_start = std::time::Instant::now();
 
-        // Ждем оба результата
+        // Wait for both results
         let (tokenization_result, network_result) = tokio::join!(tokenization_task, network_task);
 
         let tokenization_time = tokenization_start.elapsed();
         let network_time = network_start.elapsed();
 
-        // Проверяем результат токенизации
+        // Check tokenization result
         match tokenization_result {
             Ok(actual_tokens) => {
                 if actual_tokens > self.config.token_limit {
@@ -239,8 +239,8 @@ impl SmartParallelTokenizer {
                         "Token limit exceeded: {} > {}, but request already sent",
                         actual_tokens, self.config.token_limit
                     );
-                    // Запрос уже отправлен, но мы знаем что превысили лимит
-                    // В реальной системе здесь можно логировать для мониторинга
+                    // Request already sent, but we know we exceeded the limit
+                    // In a real system, this can be logged for monitoring
                 }
 
                 let network_response = network_result?;
@@ -248,7 +248,7 @@ impl SmartParallelTokenizer {
                 Ok((
                     network_response,
                     ProcessingResult {
-                        decision_time_ms: 0, // Уже учтено в start_time
+                        decision_time_ms: 0, // Already accounted for in start_time
                         tokenization_time_ms: Some(tokenization_time.as_millis() as u64),
                         network_time_ms: Some(network_time.as_millis() as u64),
                         total_time_ms: start_time.elapsed().as_millis() as u64,
@@ -281,7 +281,7 @@ impl SmartParallelTokenizer {
         }
     }
 
-    /// Последовательная обработка: сначала токенизация, потом отправка
+    /// Sequential processing: tokenization first, then sending
     async fn process_sequential<F, Fut, T>(
         &self,
         text: &str,
@@ -293,12 +293,12 @@ impl SmartParallelTokenizer {
         F: FnOnce(String) -> Fut,
         Fut: std::future::Future<Output = Result<T, Box<dyn Error + Send + Sync>>>,
     {
-        // Сначала точная токенизация
+        // First precise tokenization
         let tokenization_start = std::time::Instant::now();
         let actual_tokens = self.count_tokens_with_timeout(text).await?;
         let tokenization_time = tokenization_start.elapsed();
 
-        // Проверяем лимит
+        // Check limit
         if actual_tokens > self.config.token_limit {
             return Err(format!(
                 "Request too large: {} tokens exceeds limit of {}",
@@ -307,7 +307,7 @@ impl SmartParallelTokenizer {
             .into());
         }
 
-        // Отправляем запрос
+        // Send request
         let network_start = std::time::Instant::now();
         let result = send_function(text.to_string()).await?;
         let network_time = network_start.elapsed();
@@ -327,7 +327,7 @@ impl SmartParallelTokenizer {
         ))
     }
 
-    /// Подсчитывает токены с таймаутом
+    /// Counts tokens with timeout
     async fn count_tokens_with_timeout(
         &self,
         text: &str,
@@ -335,7 +335,7 @@ impl SmartParallelTokenizer {
         let timeout_duration = Duration::from_millis(self.config.precise_tokenization_timeout_ms);
 
         let tokenization_future = async {
-            // Используем наш лучший доступный токенизатор
+            // Use our best available tokenizer
             crate::tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(text)
         };
 
@@ -347,7 +347,7 @@ impl SmartParallelTokenizer {
                     "Tokenization timeout after {}ms",
                     self.config.precise_tokenization_timeout_ms
                 );
-                // Возвращаем консервативную оценку при таймауте
+                // Return conservative estimate on timeout
                 let conservative_estimate =
                     (text.len() as f64 / self.config.chars_per_token_conservative).ceil() as usize;
                 Ok(conservative_estimate)
@@ -355,18 +355,18 @@ impl SmartParallelTokenizer {
         }
     }
 
-    /// Возвращает конфигурацию
+    /// Returns configuration
     pub fn get_config(&self) -> &SmartParallelConfig {
         &self.config
     }
 }
 
-/// Получает экземпляр умного параллельного токенизатора
+/// Gets instance of smart parallel tokenizer
 pub fn get_smart_parallel_tokenizer() -> Option<&'static SmartParallelTokenizer> {
     SMART_PARALLEL_TOKENIZER.get()
 }
 
-/// Обрабатывает текст с умной логикой
+/// Processes text with smart logic
 pub async fn process_text_smart<F, Fut, T>(
     text: &str,
     send_function: F,
@@ -387,12 +387,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_smart_parallel_initialization() {
-        // Инициализируем с конфигурацией по умолчанию
+        // Initialize with default configuration
         let result = SmartParallelTokenizer::initialize(None);
         assert!(result.is_ok());
 
         let tokenizer = get_smart_parallel_tokenizer().unwrap();
-        // Проверяем что токенизатор инициализирован (значения могут отличаться от умолчаний из-за других тестов)
+        // Check that tokenizer is initialized (values may differ from defaults due to other tests)
         assert!(tokenizer.config.token_limit > 0);
         assert!(tokenizer.config.safe_threshold > 0);
         assert!(tokenizer.config.chars_per_token_conservative > 0.0);
@@ -403,32 +403,32 @@ mod tests {
         SmartParallelTokenizer::initialize(None).unwrap();
         let tokenizer = get_smart_parallel_tokenizer().unwrap();
 
-        // Маленький текст - должен отправляться сразу
+        // Small text - should be sent immediately
         let small_text = "Hello world!";
         let decision = tokenizer.make_processing_decision(small_text);
         matches!(decision, ProcessingDecision::SendDirectly { .. });
 
-        // Очень большой текст - должен отклоняться сразу
-        let huge_text = "Hello world! ".repeat(100_000); // ~1.2M символов
+        // Very large text - should be rejected immediately
+        let huge_text = "Hello world! ".repeat(100_000); // ~1.2M characters
         let decision = tokenizer.make_processing_decision(&huge_text);
         matches!(decision, ProcessingDecision::RejectImmediately { .. });
 
-        // Средний текст - должен использовать параллельную обработку
-        let medium_text = "Hello world! ".repeat(20_000); // ~240k символов
+        // Medium text - should use parallel processing
+        let medium_text = "Hello world! ".repeat(20_000); // ~240k characters
         let decision = tokenizer.make_processing_decision(&medium_text);
         matches!(decision, ProcessingDecision::ParallelProcessing { .. });
     }
 
     #[tokio::test]
     async fn test_parallel_processing() {
-        // Инициализируем ML-токенизатор для точного подсчета
+        // Initialize ML tokenizer for precise counting
         let _ =
             crate::tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize().await;
         SmartParallelTokenizer::initialize(None).unwrap();
 
-        let test_text = "This is a test text. ".repeat(90); // ~1.8k символов = ~900 токенов
+        let test_text = "This is a test text. ".repeat(90); // ~1.8k characters = ~900 tokens
 
-        // Мок функция отправки
+        // Mock send function
         let send_function = |text: String| async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             Ok(format!("Response for {} chars", text.len()))
@@ -442,9 +442,9 @@ mod tests {
 
         let (response, processing_result) = result.unwrap();
         assert!(response.contains("Response for"));
-        // Проверяем что обработка прошла успешно (может быть как параллельной, так и прямой)
+        // Check that processing was successful (can be either parallel or direct)
         assert!(!processing_result.was_rejected);
-        assert!(processing_result.total_time_ms < 500); // Должно быть быстро благодаря параллелизму
+        assert!(processing_result.total_time_ms < 500); // Should be fast thanks to parallelism
 
         println!("Parallel processing result: {processing_result:?}");
     }
@@ -452,22 +452,22 @@ mod tests {
     #[tokio::test]
     async fn test_safety_guarantees() {
         let config = SmartParallelConfig {
-            token_limit: 1000, // Очень низкий лимит для теста
+            token_limit: 1000, // Very low limit for test
             safe_threshold: 800,
-            chars_per_token_conservative: 2.0, // Очень консервативная оценка
+            chars_per_token_conservative: 2.0, // Very conservative estimate
             precise_tokenization_timeout_ms: 50,
-            enable_parallel_sending: false, // Последовательная обработка для надежности
-            rejection_threshold_chars: 500_000, // Лимит по символам для теста
+            enable_parallel_sending: false, // Sequential processing for reliability
+            rejection_threshold_chars: 500_000, // Character limit for test
         };
 
         SmartParallelTokenizer::initialize(Some(config)).unwrap();
 
-        let large_text = "Hello world! ".repeat(50_000); // ~600k символов = ~300k токенов
+        let large_text = "Hello world! ".repeat(50_000); // ~600k characters = ~300k tokens
 
         let send_function = |_text: String| async move { Ok("Should not be called".to_string()) };
 
         let result = process_text_smart(&large_text, send_function).await;
-        assert!(result.is_err()); // Должен отклонить запрос
+        assert!(result.is_err()); // Should reject request
 
         let error = result.unwrap_err();
         assert!(error.to_string().contains("too large"));

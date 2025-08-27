@@ -3,11 +3,11 @@ use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::info;
 
-/// Простейшие счетчики (заглушка под Prometheus):
+/// Simple counters (Prometheus stub):
 static TOTAL_REQUESTS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 static TOTAL_ERRORS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 
-/// Вспомогательные функции для инкремента (могут вызываться из middleware в будущем)
+/// Helper functions for increment (can be called from middleware in the future)
 pub fn inc_total_requests() {
     TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
 }
@@ -15,8 +15,8 @@ pub fn inc_total_errors() {
     TOTAL_ERRORS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Экспортер метрик: возвращает текст в формате, совместимом с простым парсером.
-/// Позже будет заменено на prometheus_client.
+/// Metrics exporter: returns text in format compatible with simple parser.
+/// Will be replaced with prometheus_client later.
 pub async fn metrics_handler() -> impl IntoResponse {
     info!("Metrics handler called");
     let total = TOTAL_REQUESTS.load(Ordering::Relaxed);

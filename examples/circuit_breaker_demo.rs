@@ -1,5 +1,5 @@
 // examples/circuit_breaker_demo.rs
-// Демонстрация работы circuit breaker
+// Circuit breaker demonstration
 
 use gemini_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError};
 use std::sync::Arc;
@@ -8,10 +8,10 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    // Настройка логирования
+    // Setup logging
     tracing_subscriber::fmt::init();
 
-    // Создание circuit breaker с агрессивными настройками для демо
+    // Create circuit breaker with aggressive settings for demo
     let config = CircuitBreakerConfig {
         failure_threshold: 3,
         recovery_timeout: Duration::from_secs(2),
@@ -23,7 +23,7 @@ async fn main() {
     println!("🔧 Circuit Breaker Demo");
     println!("📊 Config: 3 failures → open, 2s recovery, 2 successes → close\n");
 
-    // Симуляция нормальной работы
+    // Simulate normal operation
     println!("✅ Phase 1: Normal operation");
     for i in 1..=3 {
         let result = cb
@@ -40,7 +40,7 @@ async fn main() {
     }
 
     println!("\n🔥 Phase 2: Simulating failures");
-    // Симуляция ошибок для размыкания circuit breaker
+    // Simulate errors to open circuit breaker
     for i in 1..=4 {
         let result = cb
             .call(|| async {
@@ -59,7 +59,7 @@ async fn main() {
             }
         }
 
-        // Показать текущее состояние
+        // Show current state
         let state = cb.get_state().await;
         println!("  📊 Circuit state: {state:?}");
 
@@ -70,7 +70,7 @@ async fn main() {
     sleep(Duration::from_secs(3)).await;
 
     println!("🔄 Phase 4: Testing recovery (half-open state)");
-    // Первый запрос после таймаута должен перевести в half-open
+    // First request after timeout should transition to half-open
     let result = cb
         .call(|| async {
             println!("  📤 Recovery test request - Success");
@@ -86,7 +86,7 @@ async fn main() {
         Err(e) => println!("  ❌ Recovery test failed: {e:?}"),
     }
 
-    // Еще один успешный запрос должен закрыть circuit
+    // Another successful request should close the circuit
     let result = cb
         .call(|| async {
             println!("  📤 Second recovery request - Success");

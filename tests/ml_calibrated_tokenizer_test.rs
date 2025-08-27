@@ -8,13 +8,13 @@ use std::error::Error;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, warn};
 
-/// Финальный тест ML-калиброванного токенизатора против Google API
+/// Final test of ML-calibrated tokenizer against Google API
 #[tokio::test]
 async fn test_ml_calibrated_tokenizer_accuracy() {
-    // Инициализируем логирование
+    // Initialize logging
     tracing_subscriber::fmt::init();
 
-    // Проверяем наличие API ключа
+    // Check for API key presence
     let api_key = match env::var("GOOGLE_API_KEY") {
         Ok(key) => key,
         Err(_) => {
@@ -23,27 +23,27 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
         }
     };
 
-    // Инициализируем ML-калиброванный токенизатор
+    // Initialize ML-calibrated tokenizer
     if let Err(e) = tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize().await
     {
         panic!("Failed to initialize ML-calibrated tokenizer: {e}");
     }
 
-    // Тестовые случаи на основе предыдущих результатов
+    // Test cases based on previous results
     let test_cases = vec![
-        // Простые случаи (должны быть точными)
+        // Simple cases (should be accurate)
         "Hello",
         "Hello world",
         "Hello, world!",
         "The quick brown fox jumps over the lazy dog.",
         "What is the capital of France?",
 
-        // Проблемные случаи (требуют ML-калибровки)
+        // Problematic cases (require ML calibration)
         "Explain quantum computing in simple terms.",
-        "Hello 世界! 🌍 How are you? Привет мир! ¿Cómo estás?",
+        "Hello 世界! 🌍 How are you? Hello world! ¿Cómo estás?",
         "Mathematical symbols: ∑, ∫, ∂, ∇, ∞, π, α, β, γ, δ",
 
-        // Код (требует увеличения оценки)
+        // Code (requires increased estimation)
         r#"
         function fibonacci(n) {
             if (n <= 1) return n;
@@ -55,7 +55,7 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
         // JSON
         r#"{"name": "John", "age": 30, "city": "New York", "hobbies": ["reading", "swimming", "coding"]}"#,
 
-        // Дополнительные сложные случаи
+        // Additional complex cases
         "Create a detailed explanation of how machine learning algorithms work, including supervised and unsupervised learning approaches.",
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
         "Write a Python function to calculate fibonacci numbers recursively and iteratively.",
@@ -65,7 +65,7 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
     let client = Client::new();
     let mut total_tests = 0;
     let mut accurate_tests = 0;
-    let mut very_accurate_tests = 0; // Точность > 95%
+    let mut very_accurate_tests = 0; // Accuracy > 95%
     let mut total_our_tokens = 0;
     let mut total_google_tokens = 0;
     let mut total_absolute_error = 0;
@@ -83,15 +83,15 @@ async fn test_ml_calibrated_tokenizer_accuracy() {
             }
         );
 
-        // Получаем количество токенов от ML-калиброванного токенизатора
+        // Get token count from ML-calibrated tokenizer
         let our_count =
             match tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(text) {
-            Ok(count) => count,
-            Err(e) => {
-                error!("ML-calibrated tokenizer failed for text: {}", e);
-                continue;
-            }
-        };
+                Ok(count) => count,
+                Err(e) => {
+                    error!("ML-calibrated tokenizer failed for text: {}", e);
+                    continue;
+                }
+            };
 
         // Получаем количество токенов от Google API
         let google_count = match get_google_token_count(&client, &api_key, text).await {
@@ -285,8 +285,8 @@ async fn test_ml_calibrated_performance() {
 
     let start = std::time::Instant::now();
     for _ in 0..iterations {
-        let _ = tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(test_text)
-            .unwrap();
+        let _ =
+            tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(test_text).unwrap();
     }
     let duration = start.elapsed();
 

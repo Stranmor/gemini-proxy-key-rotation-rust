@@ -77,7 +77,7 @@ impl MetricsRegistry {
 
             // Token limit metrics
             token_limit_blocks_total: counter!("gemini_proxy_token_limit_blocks_total"),
-            // Histogram для распределения количества токенов в запросах
+            // Histogram for token count distribution in requests
             request_token_count: histogram!("gemini_proxy_request_token_count"),
 
             // Redis metrics
@@ -100,13 +100,13 @@ impl Default for MetricsRegistry {
 }
 
 impl MetricsRegistry {
-    /// Запись фактического количества токенов по запросу (для гистограммы)
+    /// Record actual token count per request (for histogram)
     pub fn record_request_tokens(&self, count: u64) {
         self.request_token_count.record(count as f64);
         histogram!("gemini_proxy_request_token_count").record(count as f64);
     }
 
-    /// Инкремент блокировок по лимиту токенов
+    /// Increment token limit blocks
     pub fn record_token_limit_block(&self, model: Option<String>) {
         self.token_limit_blocks_total.increment(1);
         match model {

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::time::interval;
 use tracing::{error, info, warn};
 
-/// Центральная система мониторинга
+/// Central monitoring system
 pub struct MonitoringSystem {
     key_health: KeyHealthMonitor,
     start_time: Instant,
@@ -43,14 +43,14 @@ impl MonitoringSystem {
         }
     }
 
-    /// Запускает все системы мониторинга
+    /// Starts all monitoring systems
     pub async fn start(&self) -> Result<()> {
         info!("Starting monitoring systems");
 
-        // Запускаем мониторинг здоровья ключей
+        // Start key health monitoring
         self.key_health.start_monitoring().await;
 
-        // Запускаем систему алертов
+        // Start alert system
         self.start_alerting_system().await;
 
         info!("All monitoring systems started successfully");
@@ -63,7 +63,7 @@ impl MonitoringSystem {
 
         let key_health = self.key_health.clone();
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(60)); // Проверяем каждую минуту
+            let mut interval = interval(Duration::from_secs(60)); // Check every minute
 
             loop {
                 interval.tick().await;
@@ -88,7 +88,7 @@ impl MonitoringSystem {
                 "ALERT: High number of unhealthy API keys detected"
             );
 
-            // Логируем детали нездоровых ключей
+            // Log details of unhealthy keys
             for key_stat in &unhealthy_keys {
                 warn!(
                     key_preview = %key_stat.key_preview,
@@ -100,7 +100,7 @@ impl MonitoringSystem {
             }
         }
 
-        // Проверяем общую статистику
+        // Check general statistics
         let all_stats = key_health.get_health_stats().await;
         let total_requests: u64 = all_stats.values().map(|s| s.total_requests).sum();
         let total_failures: u64 = all_stats.values().map(|s| s.failed_requests).sum();
@@ -122,7 +122,7 @@ impl MonitoringSystem {
         Ok(())
     }
 
-    /// Получает общую статистику системы
+    /// Gets general system statistics
     pub async fn get_system_stats(&self) -> SystemStats {
         let uptime = self.start_time.elapsed();
         let key_stats = self.key_health.get_health_stats().await;
@@ -149,7 +149,7 @@ impl MonitoringSystem {
         }
     }
 
-    /// Получает мониторинг здоровья ключей
+    /// Gets key health monitoring
     pub fn key_health(&self) -> &KeyHealthMonitor {
         &self.key_health
     }

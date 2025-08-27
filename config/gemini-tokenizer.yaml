@@ -7,16 +7,16 @@ server:
   test_mode: false
 
   # Tokenizer settings optimized for reliability + performance
-  tokenizer_type: "smart_parallel"  # Умная параллельная обработка
+  tokenizer_type: "smart_parallel"  # Smart parallel processing
   max_tokens_per_request: 250000   # Token limit (configurable for your needs)
 
   # Smart Parallel tokenizer settings
   tokenizer_config:
-    token_limit: 250000            # Жесткий лимит токенов
-    safe_threshold: 150000         # Безопасный порог (60% от лимита)
-    chars_per_token_conservative: 2.0  # Очень консервативная оценка (реально ~4)
-    precise_tokenization_timeout_ms: 100  # Таймаут точной токенизации
-    enable_parallel_sending: true  # Параллельная отправка + токенизация
+    token_limit: 250000            # Hard token limit
+    safe_threshold: 150000         # Safe threshold (60% of limit)
+    chars_per_token_conservative: 2.0  # Very conservative estimate (actually ~4)
+    precise_tokenization_timeout_ms: 100  # Precise tokenization timeout
+    enable_parallel_sending: true  # Parallel sending + tokenization
 
   # Optional fine-tuning settings
   top_p: 0.9

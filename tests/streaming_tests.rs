@@ -15,12 +15,12 @@ mod streaming_tests {
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": true
         });
-        
+
         let body_bytes = Bytes::from(serde_json::to_vec(&streaming_body).unwrap());
-        
+
         assert!(is_streaming_request(&body_bytes));
-        
-        // Пока что проверим, что JSON парсится корректно
+
+        // For now, check that JSON parses correctly
         let parsed: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(parsed.get("stream").and_then(|v| v.as_bool()), Some(true));
     }
@@ -32,9 +32,9 @@ mod streaming_tests {
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": false
         });
-        
+
         let body_bytes = Bytes::from(serde_json::to_vec(&non_streaming_body).unwrap());
-        
+
         let parsed: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(parsed.get("stream").and_then(|v| v.as_bool()), Some(false));
     }
@@ -45,9 +45,9 @@ mod streaming_tests {
             "model": "gemini-1.5-flash",
             "messages": [{"role": "user", "content": "Hello"}]
         });
-        
+
         let body_bytes = Bytes::from(serde_json::to_vec(&default_body).unwrap());
-        
+
         let parsed: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(parsed.get("stream").and_then(|v| v.as_bool()), None);
     }
@@ -55,10 +55,10 @@ mod streaming_tests {
     #[test]
     fn test_invalid_json_not_streaming() {
         let invalid_body = Bytes::from("invalid json");
-        
+
         assert!(!is_streaming_request(&invalid_body));
-        
-        // Проверим, что JSON не парсится
+
+        // Check that JSON doesn't parse
         assert!(serde_json::from_slice::<serde_json::Value>(&invalid_body).is_err());
     }
 }

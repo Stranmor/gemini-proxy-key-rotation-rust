@@ -45,7 +45,7 @@ async fn test_circuit_breaker_stats() {
     assert_eq!(stats.total_requests, 0);
     assert_eq!(stats.total_failures, 0);
 
-    // Выполняем успешный вызов
+    // Execute successful call
     let _ = circuit_breaker.call(|| async { Ok::<i32, &str>(42) }).await;
 
     let stats = circuit_breaker.get_stats();
@@ -72,13 +72,13 @@ async fn test_circuit_breaker_multiple_failures() {
 
     let circuit_breaker = CircuitBreaker::new("test".to_string(), config);
 
-    // Первая неудача
+    // First failure
     let _ = circuit_breaker
         .call(|| async { Err::<i32, &str>("error1") })
         .await;
     assert_eq!(circuit_breaker.get_state().await, CircuitState::Closed);
 
-    // Вторая неудача должна открыть автомат
+    // Second failure should open the circuit
     let _ = circuit_breaker
         .call(|| async { Err::<i32, &str>("error2") })
         .await;
@@ -95,19 +95,19 @@ async fn test_circuit_breaker_recovery() {
 
     let circuit_breaker = CircuitBreaker::new("test".to_string(), config);
 
-    // Открываем автомат
+    // Open the circuit
     let _ = circuit_breaker
         .call(|| async { Err::<i32, &str>("error") })
         .await;
     assert_eq!(circuit_breaker.get_state().await, CircuitState::Open);
 
-    // Ждем таймаут восстановления
+    // Wait for recovery timeout
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Следующий вызов должен перевести в полуоткрытое состояние
+    // Next call should transition to half-open state
     let result = circuit_breaker.call(|| async { Ok::<i32, &str>(42) }).await;
     assert!(result.is_ok());
 
-    // После успешного вызова автомат должен закрыться
+    // After successful call, circuit should close
     assert_eq!(circuit_breaker.get_state().await, CircuitState::Closed);
 }

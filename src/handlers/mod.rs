@@ -125,10 +125,7 @@ pub fn is_streaming_request(body_bytes: &Bytes) -> bool {
     }
 }
 
-fn process_request_body(
-    body_bytes: Bytes,
-    top_p: Option<f64>,
-) -> Result<(Bytes, HeaderMap, bool)> {
+fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes, HeaderMap, bool)> {
     let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let mut headers = HeaderMap::new();
     let is_streaming = is_streaming_request(&body_bytes);
@@ -210,8 +207,12 @@ async fn try_request_with_key(
         info!("Streaming response detected, bypassing response handlers");
         // For streaming, we need to check the content-type to ensure it's actually streaming
         if let Some(content_type) = response.headers().get("content-type") {
-            if content_type.to_str().unwrap_or("").contains("text/event-stream") 
-                || content_type.to_str().unwrap_or("").contains("text/plain") {
+            if content_type
+                .to_str()
+                .unwrap_or("")
+                .contains("text/event-stream")
+                || content_type.to_str().unwrap_or("").contains("text/plain")
+            {
                 return Ok(response);
             }
         }
@@ -289,7 +290,9 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 
         info!(key = %crate::key_manager::KeyManager::preview_key(&key_info.key), "Attempting to use key");
 
-        let response = match try_request_with_key(&state, &req_context, &key_info, is_streaming).await {
+        let response = match try_request_with_key(&state, &req_context, &key_info, is_streaming)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 // Важно: сохраняем семантику ошибок апстрима.
@@ -377,8 +380,13 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                 tokio::time::sleep(duration).await;
 
                 // Retry the request with the same key after waiting
-                let retry_response = match try_request_with_key(&state, &req_context, &key_info, is_streaming)
-                    .await
+                let retry_response = match try_request_with_key(
+                    &state,
+                    &req_context,
+                    &key_info,
+                    is_streaming,
+                )
+                .await
                 {
                     Ok(r) => r,
                     Err(e) => {
@@ -478,6 +486,5 @@ mod token_limit_tests {
         });
         // With the new implementation, this check is inside the proxy_loop, so we can't test it directly here.
         // We will rely on integration tests to verify this behavior.
-
     }
 }

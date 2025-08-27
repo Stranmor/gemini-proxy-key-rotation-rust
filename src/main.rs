@@ -137,8 +137,9 @@ async fn serve_command(
                 }
             }
             listener.ok_or_else(|| {
-                let final_error_msg =
-                    format!("Failed to bind to any port after 10 attempts. Last port tried: {server_port}");
+                let final_error_msg = format!(
+                    "Failed to bind to any port after 10 attempts. Last port tried: {server_port}"
+                );
                 error!(error = final_error_msg);
                 AppError::Internal {
                     message: final_error_msg,

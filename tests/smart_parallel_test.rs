@@ -3,12 +3,12 @@
 use gemini_proxy::tokenizer::{self, smart_parallel::ProcessingDecision};
 use std::time::Instant;
 
-/// Тест умной параллельной обработки
+/// Smart parallel processing test
 #[tokio::test]
 async fn test_smart_parallel_logic() {
     println!("\n🧠 SMART PARALLEL TOKENIZER TEST\n");
 
-    // Инициализируем ML-токенизатор (нужен для точного подсчета)
+    // Initialize ML tokenizer (needed for precise counting)
     tokenizer::gemini_ml_calibrated::GeminiMLCalibratedTokenizer::initialize()
         .await
         .unwrap();

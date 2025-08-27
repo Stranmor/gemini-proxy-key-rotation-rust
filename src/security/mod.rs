@@ -16,7 +16,7 @@ use tracing::{error, warn};
 
 pub mod token_manager;
 
-/// Security middleware для защиты админ-панели
+/// Security middleware for admin panel protection
 pub struct SecurityMiddleware {
     rate_limiter: Arc<RwLock<HashMap<String, RateLimitEntry>>>,
     max_attempts: u32,
@@ -34,12 +34,12 @@ impl SecurityMiddleware {
     pub fn new() -> Self {
         Self {
             rate_limiter: Arc::new(RwLock::new(HashMap::new())),
-            max_attempts: 5,                           // 5 попыток
-            window_duration: Duration::from_secs(300), // за 5 минут
+            max_attempts: 5,                           // 5 attempts
+            window_duration: Duration::from_secs(300), // in 5 minutes
         }
     }
 
-    /// Middleware для защиты от брутфорса админ-панели
+    /// Middleware for admin panel brute force protection
     pub async fn admin_protection(
         &self,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -49,7 +49,7 @@ impl SecurityMiddleware {
     ) -> Result<Response> {
         let client_ip = addr.ip().to_string();
 
-        // Проверяем rate limit
+        // Check rate limit
         if self.is_rate_limited(&client_ip).await {
             warn!(
                 client_ip = %client_ip,
@@ -60,7 +60,7 @@ impl SecurityMiddleware {
             });
         }
 
-        // Проверяем HTTPS в продакшене
+        // Check HTTPS in production
         if !self.is_secure_connection(&headers) {
             warn!(
                 client_ip = %client_ip,
@@ -73,7 +73,7 @@ impl SecurityMiddleware {
 
         let response = next.run(request).await;
 
-        // Если аутентификация не удалась, записываем попытку
+        // If authentication failed, record attempt
         if response.status() == StatusCode::UNAUTHORIZED {
             self.record_failed_attempt(&client_ip).await;
         }
@@ -93,12 +93,12 @@ impl SecurityMiddleware {
                 blocked_until: None,
             });
 
-        // Проверяем блокировку
+        // Check blocking
         if let Some(blocked_until) = entry.blocked_until {
             if now < blocked_until {
                 return true;
             } else {
-                // Сбрасываем блокировку
+                // Reset blocking
                 entry.blocked_until = None;
                 entry.attempts = 0;
                 entry.window_start = now;

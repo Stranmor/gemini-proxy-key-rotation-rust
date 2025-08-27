@@ -9,8 +9,8 @@ async fn test_security_middleware_rate_limiting() {
     let security = SecurityMiddleware::new();
     let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
 
-    // Тест проверяет, что rate limiting работает
-    // В реальной системе это будет интегрировано с middleware
+    // Test checks that rate limiting works
+    // In real system this will be integrated with middleware
 
     // Проверяем, что IP не заблокирован изначально
     let is_limited = security

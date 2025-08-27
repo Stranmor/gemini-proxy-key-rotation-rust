@@ -44,7 +44,7 @@ impl ConfigValidator {
                 warn!("Configured server.max_tokens_per_request is high: {}. Consider lowering to protect upstream.", limit);
             }
         }
-        // Доп. проверка лимита токенов и предупреждение при слишком высоких значениях
+        // Additional token limit check and warning for too high values
         if let Some(limit) = config.server.max_tokens_per_request {
             if !(1..=2_000_000).contains(&limit) {
                 return Err(AppError::config_validation(

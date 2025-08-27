@@ -33,9 +33,9 @@ groups:
 
     let router = create_router(app_state);
 
-    // Проверяем, что роутер создается без ошибок
+    // Check that router is created without errors
     let _service = router.into_make_service();
-    // Роутер создан успешно, если мы дошли до этой точки
+    // Router created successfully if we reached this point
 }
 
 #[tokio::test]

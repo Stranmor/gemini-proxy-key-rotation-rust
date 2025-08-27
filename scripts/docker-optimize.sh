@@ -195,7 +195,7 @@ main() {
     echo "4. For monitoring: make docker-run-with-tools"
 }
 
-# Обработка аргументов командной строки
+# Process command line arguments
 case "${1:-main}" in
     "cleanup")
         cleanup_old_images

@@ -44,7 +44,7 @@ pub struct ServerConfig {
     pub admin_token: Option<String>,
     #[serde(default)]
     pub top_p: Option<f32>,
-    /// Максимально допустимое число токенов на запрос. Если None — используется дефолт 250_000.
+    /// Maximum allowed number of tokens per request. If None - default 250_000 is used.
     #[serde(default)]
     pub max_tokens_per_request: Option<u64>,
 }
