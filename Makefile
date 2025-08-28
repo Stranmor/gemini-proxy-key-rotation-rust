@@ -91,8 +91,16 @@ run-dev-bg: build-dev setup-config ## Run in development mode (background, logs 
 # Docker commands
 docker-build: ## Build optimized Docker image
 	@echo "🐳 Building optimized Docker image..."
-	docker build --target runtime -t gemini-proxy:latest .
+	export DOCKER_BUILDKIT=1 && docker build --target runtime -t gemini-proxy:latest .
 	@echo "✅ Build complete!"
+
+docker-build-fast: ## Build with maximum optimization (fast Dockerfile + optimized context)
+	@echo "🚀 Building with maximum optimization..."
+	@cp .dockerignore .dockerignore.backup
+	@cp .dockerignore.optimized .dockerignore
+	@export DOCKER_BUILDKIT=1 && docker build -f Dockerfile.optimized --target runtime -t gemini-proxy:latest .
+	@mv .dockerignore.backup .dockerignore
+	@echo "✅ Ultra-fast build complete!"
 
 docker-build-dev: ## Build development Docker image
 	@echo "🐳 Building development Docker image..."

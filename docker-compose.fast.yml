@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  gemini-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimized
+      target: runtime
+      args:
+        RUST_VERSION: "1.75"
+        APP_NAME: "gemini-proxy"
+    ports:
+      - "4806:4806"
+    environment:
+      - PORT=4806
+      - RUST_LOG=info
+    volumes:
+      - ./config.example.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4806/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

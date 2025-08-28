@@ -138,8 +138,8 @@ tokenizer = []
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+lto = "thin"  # Faster than full LTO
+codegen-units = 16  # Parallel compilation
 panic = "abort"
 strip = true
 
@@ -147,6 +147,10 @@ strip = true
 opt-level = 0
 debug = true
 overflow-checks = true
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2  # Optimize dependencies in dev mode
 
 [profile.test]
 opt-level = 1

@@ -2,9 +2,10 @@ services:
   gemini-proxy:
     build:
       context: .
+      dockerfile: Dockerfile.optimized
       target: runtime
       args:
-      - RUST_VERSION=latest
+      - RUST_VERSION=1.82
       - APP_NAME=gemini-proxy
     container_name: gemini-proxy
     ports:
