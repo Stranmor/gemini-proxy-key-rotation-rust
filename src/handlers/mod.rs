@@ -3,6 +3,7 @@
 pub mod base;
 pub mod invalid_api_key;
 pub mod rate_limit;
+pub mod server_error;
 pub mod success;
 pub mod terminal_error;
 pub mod timeout;

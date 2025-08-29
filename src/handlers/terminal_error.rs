@@ -12,14 +12,22 @@ pub struct TerminalErrorHandler;
 impl ResponseHandler for TerminalErrorHandler {
     fn handle(&self, response: &Response, body_bytes: &Bytes, _api_key: &str) -> Option<Action> {
         let status = response.status();
-        // This handler is last in the chain. It catches terminal server errors (5xx)
-        // or any client errors that weren't specifically handled by previous handlers.
-        // We explicitly exclude 400 and 429, as they have dedicated logic paths
-        // (either specific handlers or the main loop's default behavior).
-        if status.is_server_error()
-            || (status.is_client_error()
+        // This handler is last in the chain. It catches terminal errors that
+        // weren't handled by previous handlers.
+        // We explicitly exclude codes that have dedicated handlers:
+        // - 400 (handled by InvalidApiKeyHandler for specific cases)
+        // - 408, 504 (handled by TimeoutHandler)
+        // - 429 (handled by RateLimitHandler)
+        // - 500, 502, 503 (handled by ServerErrorHandler)
+        if (status.is_client_error()
                 && status != StatusCode::BAD_REQUEST
+                && status != StatusCode::REQUEST_TIMEOUT
                 && status != StatusCode::TOO_MANY_REQUESTS)
+            || (status.is_server_error()
+                && status != StatusCode::INTERNAL_SERVER_ERROR
+                && status != StatusCode::BAD_GATEWAY
+                && status != StatusCode::SERVICE_UNAVAILABLE
+                && status != StatusCode::GATEWAY_TIMEOUT)
         {
             let mut builder = Response::builder().status(status);
             if let Some(headers) = builder.headers_mut() {
