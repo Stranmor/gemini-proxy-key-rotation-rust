@@ -55,10 +55,10 @@ async fn test_terminal_error_handler() {
     let handler = TerminalErrorHandler;
     let body_bytes = Bytes::from("bad request");
 
-    // Test with terminal error (500) - terminal handler handles server errors
+    // Test with terminal error (500) - terminal handler should NOT handle this (ServerErrorHandler does)
     let server_error_response = create_mock_response(StatusCode::INTERNAL_SERVER_ERROR);
     let result = handler.handle(&server_error_response, &body_bytes, "test-key");
-    assert!(result.is_some());
+    assert!(result.is_none());
 
     // Test with non-terminal error (400) - excluded by terminal handler
     let bad_request_response = create_mock_response(StatusCode::BAD_REQUEST);
@@ -120,10 +120,16 @@ fn test_handler_response_types() {
         .handle(&rate_limit_response, &body_bytes, "key")
         .is_some());
 
-    // Terminal handler should handle 5xx errors
+    // Terminal handler should NOT handle 5xx errors that have dedicated handlers
     let server_error_response = create_mock_response(StatusCode::INTERNAL_SERVER_ERROR);
     assert!(terminal
         .handle(&server_error_response, &body_bytes, "key")
+        .is_none());
+
+    // Terminal handler should handle other client errors (not 400, 408, 429)
+    let forbidden_response = create_mock_response(StatusCode::FORBIDDEN);
+    assert!(terminal
+        .handle(&forbidden_response, &body_bytes, "key")
         .is_some());
 
     // Invalid key handler should handle 400 with API_KEY_INVALID

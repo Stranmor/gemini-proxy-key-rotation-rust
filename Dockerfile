@@ -117,7 +117,7 @@ FROM rust:${RUST_VERSION} AS development
 WORKDIR /app
 
 # Install development tools and nightly
-RUN rustup toolchain install nightly -y && rustup default nightly
+RUN rustup toolchain install nightly --profile minimal && rustup default nightly
 RUN rustup component add clippy rustfmt llvm-tools-preview
 RUN cargo install cargo-watch cargo-audit cargo-tarpaulin --locked
 
@@ -161,7 +161,7 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     clang \
     && rm -rf /var/lib/apt/lists/* \
-    && yes | rustup toolchain install nightly --profile minimal \
+    && rustup toolchain install nightly --profile minimal \
     && rustup default nightly
 
 # Install Rust components
