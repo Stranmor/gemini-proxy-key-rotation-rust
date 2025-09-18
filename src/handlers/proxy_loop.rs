@@ -46,7 +46,10 @@ async fn try_request_with_key(
 
     match crate::tokenizer::process_text_smart(&request_body_str, send_request).await {
         Ok((response, _processing_result)) => Ok(response),
-        Err(e) => Err(AppError::internal(e.to_string())),
+        Err(e) => {
+            let app_error = AppError::internal(e.to_string());
+            Ok(app_error.into_response())
+        }
     }
 }
 

@@ -182,7 +182,7 @@ async fn try_request_with_key(
     state: &Arc<AppState>,
     req_context: &RequestContext<'_>,
     key_info: &FlattenedKeyInfo,
-    is_streaming: bool,
+    _is_streaming: bool,
 ) -> Result<Response> {
     let url = build_target_url(req_context.uri, key_info)?;
     let client = state.get_client(key_info.proxy_url.as_deref()).await?;
@@ -203,29 +203,8 @@ async fn try_request_with_key(
         AppError::internal(e.to_string())
     })?;
 
-    // For streaming requests, return response directly without buffering
-    if is_streaming && response.status().is_success() {
-        info!("Streaming response detected, bypassing response handlers");
-        // For streaming, we need to check the content-type to ensure it's actually streaming
-        if let Some(content_type) = response.headers().get("content-type") {
-            if content_type
-                .to_str()
-                .unwrap_or("")
-                .contains("text/event-stream")
-                || content_type.to_str().unwrap_or("").contains("text/plain")
-            {
-                return Ok(response);
-            }
-        }
-        // If no streaming content-type, fall through to normal processing
-    }
-
-    let (parts, body) = response.into_parts();
-    let response_bytes = to_bytes(body, usize::MAX)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-
-    Ok(Response::from_parts(parts, Body::from(response_bytes)))
+    // Return response as-is - streaming check will be done in the main handler
+    Ok(response)
 }
 
 /* ---------- main handler ---------- */
@@ -314,6 +293,21 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
                 break;
             }
         };
+
+        // For streaming responses, return immediately without buffering or processing through handlers
+        if is_streaming && response.status().is_success() {
+            if let Some(content_type) = response.headers().get("content-type") {
+                if content_type
+                    .to_str()
+                    .unwrap_or("")
+                    .contains("text/event-stream")
+                    || content_type.to_str().unwrap_or("").contains("text/plain")
+                {
+                    info!("Returning streaming response directly to client");
+                    return Ok(response);
+                }
+            }
+        }
 
         let (parts, body) = response.into_parts();
         let response_bytes = to_bytes(body, usize::MAX)
