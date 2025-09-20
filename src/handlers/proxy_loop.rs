@@ -9,6 +9,7 @@ use crate::{
     key_manager::{FlattenedKeyInfo, KeyManagerTrait},
     proxy,
     state::AppState,
+    tokenizer::count_ml_calibrated_gemini_tokens,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -16,7 +17,7 @@ use axum::{
 };
 use secrecy::ExposeSecret;
 use std::sync::Arc;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 /// Tries a single request with a given key.
 async fn try_request_with_key(
@@ -95,6 +96,52 @@ pub async fn proxy_loop(
     req_context: &RequestContext<'_>,
     model: &Option<String>,
 ) -> Result<Response> {
+    let max_tokens = {
+        let config_guard = state.config.read().await;
+        config_guard.server.max_tokens_per_request
+    };
+
+    if let Some(max_tokens) = max_tokens {
+        if let Ok(body_str) = std::str::from_utf8(req_context.body) {
+            if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(body_str) {
+                let mut total_tokens = 0;
+                if let Some(contents) = json_body.get("contents") {
+                    let mut text_to_tokenize = String::new();
+                    if let Some(contents_array) = contents.as_array() {
+                        for content in contents_array {
+                            if let Some(parts) = content.get("parts").and_then(|p| p.as_array()) {
+                                for part in parts {
+                                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                        text_to_tokenize.push_str(text);
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(text) = contents.as_str() {
+                        text_to_tokenize.push_str(text);
+                    }
+
+                    if !text_to_tokenize.is_empty() {
+                        match count_ml_calibrated_gemini_tokens(&text_to_tokenize) {
+                            Ok(token_count) => {
+                                total_tokens += token_count;
+                            }
+                            Err(e) => {
+                                warn!("Token counting failed: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                if total_tokens > 0 && total_tokens as u64 > max_tokens {
+                    return Err(AppError::RequestTooLarge {
+                        size: total_tokens,
+                        max_size: max_tokens as usize,
+                    });
+                }
+            }
+        }
+    }
     let mut last_response: Option<Response> = None;
 
     loop {

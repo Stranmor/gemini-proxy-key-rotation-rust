@@ -7,6 +7,8 @@ server:
   top_p: 0.7
   # IMPORTANT: Set a strong admin token for admin panel access
   admin_token: "your-secure-admin-token-here"
+  # Maximum number of tokens allowed in the input request. Requests exceeding this limit will be rejected.
+  max_tokens_per_request: 125000
   # HTTP client timeout settings (in seconds)
   # connect_timeout_secs: 10  # Connection timeout
   # request_timeout_secs: 60  # Overall request timeout
