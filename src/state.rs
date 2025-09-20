@@ -6,8 +6,8 @@ use crate::config::AppConfig;
 use crate::error::{AppError, Result};
 use crate::handlers::base::ResponseHandler;
 use crate::handlers::{
-    invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, 
-    success::SuccessHandler, terminal_error::TerminalErrorHandler,
+    invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, success::SuccessHandler,
+    terminal_error::TerminalErrorHandler,
 };
 use crate::key_manager::{KeyManager, KeyManagerTrait};
 use crate::metrics::MetricsRegistry;

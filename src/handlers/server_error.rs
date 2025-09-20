@@ -10,7 +10,7 @@ pub struct ServerErrorHandler;
 impl ResponseHandler for ServerErrorHandler {
     fn handle(&self, response: &Response, body_bytes: &Bytes, _api_key: &str) -> Option<Action> {
         let status = response.status();
-        
+
         // Handle specific server errors that indicate temporary issues
         // and should trigger key rotation instead of returning error to client
         if matches!(
@@ -18,10 +18,10 @@ impl ResponseHandler for ServerErrorHandler {
             StatusCode::INTERNAL_SERVER_ERROR |  // 500
             StatusCode::BAD_GATEWAY |            // 502
             StatusCode::SERVICE_UNAVAILABLE |    // 503
-            StatusCode::GATEWAY_TIMEOUT          // 504 (also handled by TimeoutHandler, but as backup)
+            StatusCode::GATEWAY_TIMEOUT // 504 (also handled by TimeoutHandler, but as backup)
         ) {
             let body_text = String::from_utf8_lossy(body_bytes);
-            
+
             warn!(
                 status = status.as_u16(),
                 response_body = %body_text,
@@ -56,7 +56,7 @@ mod tests {
         let handler = ServerErrorHandler;
         let (response, body) = create_test_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            r#"{"error": {"code": 500,"message": "An internal error has occurred. Please retry or report in https://developers.generativeai.google/guide/troubleshooting","status": "INTERNAL"}}"#
+            r#"{"error": {"code": 500,"message": "An internal error has occurred. Please retry or report in https://developers.generativeai.google/guide/troubleshooting","status": "INTERNAL"}}"#,
         );
 
         let action = handler.handle(&response, &body, "test_key");
@@ -75,7 +75,8 @@ mod tests {
     #[test]
     fn test_server_error_handler_503() {
         let handler = ServerErrorHandler;
-        let (response, body) = create_test_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable");
+        let (response, body) =
+            create_test_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable");
 
         let action = handler.handle(&response, &body, "test_key");
         assert!(matches!(action, Some(Action::RetryNextKey)));

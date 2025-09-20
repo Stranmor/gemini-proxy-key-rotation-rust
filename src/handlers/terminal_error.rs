@@ -20,9 +20,9 @@ impl ResponseHandler for TerminalErrorHandler {
         // - 429 (handled by RateLimitHandler)
         // - 500, 502, 503 (handled by ServerErrorHandler)
         if (status.is_client_error()
-                && status != StatusCode::BAD_REQUEST
-                && status != StatusCode::REQUEST_TIMEOUT
-                && status != StatusCode::TOO_MANY_REQUESTS)
+            && status != StatusCode::BAD_REQUEST
+            && status != StatusCode::REQUEST_TIMEOUT
+            && status != StatusCode::TOO_MANY_REQUESTS)
             || (status.is_server_error()
                 && status != StatusCode::INTERNAL_SERVER_ERROR
                 && status != StatusCode::BAD_GATEWAY

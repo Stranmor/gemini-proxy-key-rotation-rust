@@ -225,15 +225,17 @@ Expected:
 - Services up
 - Healthcheck OK at http://localhost:4806/health
 
-### Troubleshooting healthcheck
+### Troubleshooting Healthcheck
 
-1) Check /app/busybox exists in container:
-```bash
-docker compose exec gemini-proxy ls -l /app/busybox || echo "busybox not present"
-```
+1. **Check container status and logs:**
+   ```bash
+   make status
+   make docker-logs-tail
+   ```
+   Look for errors during startup or in the healthcheck logs.
 
-2) Verify docker-compose healthcheck path/port:
-- http://localhost:4806/health
+2. **Verify port mapping:**
+   Ensure the port shown in `make status` (e.g., `0.0.0.0:4806->4806/tcp`) is correct and not blocked by a firewall.
 
 3) Port conflict
 - Do not kill processes on occupied port.

@@ -1,52 +1,34 @@
-# Example configuration for the Gemini Proxy
+# Example configuration file for Gemini Proxy Key Rotation
+# Copy this file to config.yaml and fill in your actual values.
 
-# Server settings
+# Server and Log settings
 server:
-  # Port the proxy will listen on
+  # Port the proxy will listen on.
   port: 4806
-  # Optional: Default top_p value for generation, must be between 0.0 and 1.0.
-  # This value will be injected into the request body if it's not already present.
-  # top_p: 0.9
-
-  # HTTP client timeout settings (in seconds)
-  connect_timeout_secs: 10  # Connection timeout (default: 10, max: 300)
-  request_timeout_secs: 60  # Overall request timeout (default: 60, max: 600)
-
-  # Admin panel access token (set to enable admin panel)
-  # admin_token: "your-secure-admin-token-here"
-
-  # Security settings
+  # Default top_p value for generation. This is injected into the request if not present.
+  top_p: 0.7
+  # IMPORTANT: Set a strong admin token for admin panel access.
+  # Generate one with: openssl rand -hex 32
+  admin_token: "your-secure-admin-token-here"
+  # Maximum number of tokens allowed in the input request. Requests exceeding this limit will be rejected.
+  max_tokens_per_request: 125000
+  # HTTP client timeout settings (in seconds).
+  connect_timeout_secs: 10
+  request_timeout_secs: 60
+  # Security settings for the admin panel.
   security:
     require_https: true
     max_login_attempts: 5
     lockout_duration_secs: 3600
     session_timeout_secs: 86400
 
-# Redis connection URL
-redis_url: "redis://127.0.0.1:6379"
+# Rate limit behavior: BlockUntilMidnight or RetryNextKey
+# rate_limit_behavior: retryNextKey
 
-# API key groups. The proxy will rotate through keys in a round-robin fashion.
-groups:
-  # Default group. You can have multiple groups.
-  - name: "Default"
-    # Target upstream URL for this group (required)
-    # Must be a valid URL. Example provided uses Google's Generative Language API host.
-    target_url: "https://generativelanguage.googleapis.com"
-    # List of your Google Gemini API keys
-    api_keys:
-      - "your-gemini-api-key-1"
-      - "your-gemini-api-key-2"
-      - "your-gemini-api-key-3"
-    # Optional: Define an upstream proxy for this specific group.
-    # Supported schemes: http, https, socks5
-    # proxy_url: "socks5://user:password@host:port"
-
-  # Example of another group with its own keys and proxy
-  # - name: "Group2-With-Proxy"
-  #   api_keys:
-  #     - "your-other-gemini-key-A"
-  #     - "your-other-gemini-key-B"
-  #   proxy_url: "http://proxy.example.com:4806"  # Example aligned with default host port
+# Redis configuration (optional, for persistent state across restarts).
+# Recommended for production deployments.
+# redis_url: "redis://127.0.0.1:6379"
+# redis_key_prefix: "gemini_proxy:"
 
 # Number of times to retry a request to the upstream service with the SAME key
 # if a retriable server error (5xx) occurs. Defaults to 2.
@@ -56,6 +38,31 @@ internal_retries: 2
 # internal_retries on a 5xx error. Defaults to 5.
 temporary_block_minutes: 5
 
-# Safety multiplier for token calculation to avoid exceeding limits.
-# Defaults to 1.2.
-# safety_multiplier: 1.2
+# --- API Key Groups ---
+# The proxy will rotate through keys in a round-robin fashion within a group.
+groups:
+  - name: "default"
+    # Target upstream URL for this group.
+    target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    # List of your Google Gemini API keys.
+    api_keys:
+      - "YOUR_API_KEY_1_HERE"
+      - "YOUR_API_KEY_2_HERE"
+      # Add more API keys as needed
+
+  - name: "gemini-alt-17"
+    target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_keys:
+      - "YOUR_ALT_API_KEY_1_HERE"
+      - "YOUR_ALT_API_KEY_2_HERE"
+      # Add more API keys as needed
+
+  - name: "gemini-alt-21"
+    target_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    # Optional: Define an upstream proxy for this specific group.
+    # Supported schemes: http, https, socks5
+    # proxy_url: "socks5://user:password@host:port"
+    api_keys:
+      - "YOUR_ALT2_API_KEY_1_HERE"
+      - "YOUR_ALT2_API_KEY_2_HERE"
+      # Add more API keys as needed

@@ -18,8 +18,7 @@ fileExistenceTests:
 
 # Test that the container runs as expected
 commandTests:
-  - name: 'Binary version check'
-    command: '/app/app'
+    command: '/app/gemini-proxy'
     args: ['--version']
     expectedOutput: ['gemini-proxy']
 
@@ -32,4 +31,5 @@ commandTests:
 metadataTest:
   exposedPorts: ['8080']
   user: '1000'
-  workdir: '/app'
+  workdir: '/app''appuser'
+  workdir: '/app''/app'

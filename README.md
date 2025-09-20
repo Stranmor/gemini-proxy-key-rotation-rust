@@ -34,7 +34,9 @@ This repository is a snapshot of my live R&D process. It is raw, unpolished, and
 - 📊 **Health Monitoring**: Real-time key performance tracking
 - 🔒 **Rate Limiting**: IP-based protection
 - 🐳 **Docker Ready**: Optimized containers for deployment
-- 🧪 **Comprehensive Tests**: 100+ tests covering core functionality
+- 🧪 **Comprehensive Tests**: 226 tests covering core functionality
+
+[![Tests](https://img.shields.io/badge/Tests-226-brightgreen.svg)](./tests)
 
 ## 📚 Quick Navigation
 
