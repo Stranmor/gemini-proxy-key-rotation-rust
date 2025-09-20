@@ -111,6 +111,14 @@ impl From<deadpool::managed::CreatePoolError<deadpool_redis::ConfigError>> for A
     }
 }
 
+impl From<axum::Error> for AppError {
+    fn from(err: axum::Error) -> Self {
+        Self::Internal {
+            message: err.to_string(),
+        }
+    }
+}
+
 impl From<validator::ValidationErrors> for AppError {
     fn from(err: validator::ValidationErrors) -> Self {
         let field = err

@@ -22,7 +22,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{error, warn};
+use tracing::{error, error_span, warn_span};
 use uuid::Uuid;
 
 /// Standard error response format following RFC 7807 Problem Details
@@ -286,27 +286,39 @@ impl AppError {
     pub fn log(&self, request_id: Option<&str>) {
         let request_id = request_id.unwrap_or("unknown");
 
-        match self.status_code() {
+        let span = match self.status_code() {
             StatusCode::INTERNAL_SERVER_ERROR
             | StatusCode::BAD_GATEWAY
             | StatusCode::SERVICE_UNAVAILABLE
             | StatusCode::GATEWAY_TIMEOUT => {
-                error!(
-                    error = %self,
-                    request_id = request_id,
-                    error_type = self.error_type(),
-                    "Application error occurred"
-                );
+                error_span!("Application error", error = %self, request_id, error_type = self.error_type())
             }
             _ => {
-                warn!(
-                    error = %self,
-                    request_id = request_id,
-                    error_type = self.error_type(),
-                    "Client error occurred"
-                );
+                warn_span!("Client error", error = %self, request_id, error_type = self.error_type())
             }
-        }
+        };
+
+        span.in_scope(|| match self {
+            AppError::ConfigValidation { field, .. } => {
+                tracing::error!(field = field.as_deref().unwrap_or("unknown"));
+            }
+            AppError::RedisOperation { operation, .. } => {
+                tracing::error!(operation = operation);
+            }
+            AppError::HttpClient {
+                status_code: Some(sc),
+                ..
+            } => {
+                tracing::error!(status_code = sc);
+            }
+            AppError::Validation { field, .. } => {
+                tracing::warn!(field = field);
+            }
+            AppError::Io { operation, .. } => {
+                tracing::error!(operation = operation);
+            }
+            _ => {}
+        });
     }
 }
 

@@ -2,19 +2,13 @@
 
 use crate::{
     error::{AppError, Result},
-    handlers::{
-        base::{Action, ResponseHandler},
-        RequestContext,
-    },
-    key_manager::{FlattenedKeyInfo, KeyManagerTrait},
+    handlers::{base::Action, RequestContext},
+    key_manager::FlattenedKeyInfo,
     proxy,
     state::AppState,
-    tokenizer::count_ml_calibrated_gemini_tokens,
+    tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens,
 };
-use axum::{
-    body::{to_bytes, Body},
-    response::Response,
-};
+use axum::{body::Body, http::StatusCode, response::Response};
 use secrecy::ExposeSecret;
 use std::sync::Arc;
 use tracing::{error, info, trace, warn};
@@ -29,65 +23,16 @@ async fn try_request_with_key(
     let client = state.get_client(key_info.proxy_url.as_deref()).await?;
     let circuit_breaker = state.get_circuit_breaker(&key_info.target_url).await;
 
-    let request_body_str =
-        String::from_utf8(req_context.body.to_vec()).unwrap_or_else(|_| "".to_string());
-
-    let send_request = |body_str: String| async move {
-        proxy::forward_request(
-            &client,
-            key_info,
-            req_context.method.clone(),
-            url.clone(),
-            req_context.headers.clone(),
-            body_str.into(),
-            circuit_breaker.clone(),
-        )
-        .await
-    };
-
-    match crate::tokenizer::process_text_smart(&request_body_str, send_request).await {
-        Ok((response, _processing_result)) => Ok(response),
-        Err(e) => {
-            let app_error = AppError::internal(e.to_string());
-            Ok(app_error.into_response())
-        }
-    }
-}
-
-/// Analyzes the response and determines the next action.
-async fn analyze_response(
-    response: Response,
-    response_handlers: &[Arc<dyn ResponseHandler>],
-    key_info: &FlattenedKeyInfo,
-) -> Result<(Action, Response)> {
-    let (parts, body) = response.into_parts();
-    let response_bytes = to_bytes(body, usize::MAX)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-
-    let response_for_analysis =
-        Response::from_parts(parts.clone(), Body::from(response_bytes.clone()));
-
-    let action_to_take = response_handlers
-        .iter()
-        .find_map(|handler| {
-            handler.handle(
-                &response_for_analysis,
-                &response_bytes,
-                key_info.key.expose_secret(),
-            )
-        });
-
-    if let Some(action) = action_to_take {
-        let final_response = Response::from_parts(parts, Body::from(response_bytes));
-        Ok((action, final_response))
-    } else {
-        let final_response = Response::from_parts(parts.clone(), Body::from(response_bytes.clone()));
-        Ok((
-            Action::ReturnToClient(Response::from_parts(parts, Body::from(response_bytes))),
-            final_response,
-        ))
-    }
+    proxy::forward_request(
+        &client,
+        key_info,
+        req_context.method.clone(),
+        url,
+        req_context.headers.clone(),
+        req_context.body.clone(),
+        circuit_breaker,
+    )
+    .await
 }
 
 /// Main loop for handling proxy requests, iterating through available keys.
@@ -95,6 +40,7 @@ pub async fn proxy_loop(
     state: &Arc<AppState>,
     req_context: &RequestContext<'_>,
     model: &Option<String>,
+    is_streaming: bool,
 ) -> Result<Response> {
     let max_tokens = {
         let config_guard = state.config.read().await;
@@ -131,7 +77,8 @@ pub async fn proxy_loop(
                             }
                         }
                     }
-                } else if let Some(messages) = json_body.get("messages").and_then(|m| m.as_array()) {
+                } else if let Some(messages) = json_body.get("messages").and_then(|m| m.as_array())
+                {
                     let mut text_to_tokenize = String::new();
                     for message in messages {
                         if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
@@ -193,8 +140,24 @@ pub async fn proxy_loop(
             }
         };
 
-        let (action, final_response) =
-            analyze_response(response, &state.response_handlers, &key_info).await?;
+        if is_streaming && response.status().is_success() {
+            if let Some(content_type) = response.headers().get("content-type") {
+                if content_type
+                    .to_str()
+                    .unwrap_or("")
+                    .contains("text/event-stream")
+                    || content_type.to_str().unwrap_or("").contains("text/plain")
+                {
+                    info!("Returning streaming response directly to client");
+                    return Ok(response);
+                }
+            }
+        }
+
+        let (action, final_response) = state
+            .response_processor
+            .process(response, &key_info)
+            .await?;
 
         match action {
             Action::ReturnToClient(resp) => return Ok(resp),
@@ -235,8 +198,19 @@ pub async fn proxy_loop(
         }
     }
 
-    last_response.map(Ok).unwrap_or_else(|| {
-        tracing::warn!("No available API keys for the given group.");
-        Err(AppError::NoHealthyKeys)
-    })
+    last_response.map_or_else(
+        || {
+            tracing::warn!("No available API keys for the given group.");
+            Err(AppError::NoHealthyKeys)
+        },
+        |last_res| {
+            if last_res.status().is_server_error() {
+                let mut new_resp = Response::new(Body::from("All upstream servers failed"));
+                *new_resp.status_mut() = StatusCode::BAD_GATEWAY;
+                Ok(new_resp)
+            } else {
+                Ok(last_res)
+            }
+        },
+    )
 }

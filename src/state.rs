@@ -4,7 +4,7 @@ use crate::admin::SystemInfoCollector;
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::config::AppConfig;
 use crate::error::{AppError, Result};
-use crate::handlers::base::ResponseHandler;
+use crate::handlers::processor::ResponseProcessor;
 use crate::handlers::{
     invalid_api_key::InvalidApiKeyHandler, rate_limit::RateLimitHandler, success::SuccessHandler,
     terminal_error::TerminalErrorHandler,
@@ -29,7 +29,7 @@ pub struct AppState {
     pub redis_pool: Option<Pool>,
     pub key_manager: Arc<RwLock<dyn KeyManagerTrait>>,
     pub http_clients: Arc<RwLock<HashMap<Option<String>, Arc<Client>>>>,
-    pub response_handlers: Arc<Vec<Box<dyn ResponseHandler>>>,
+    pub response_processor: ResponseProcessor,
     pub start_time: Instant,
     pub config: Arc<RwLock<AppConfig>>,
     pub system_info: SystemInfoCollector,
@@ -317,7 +317,7 @@ impl AppState {
         )) as Arc<RwLock<dyn KeyManagerTrait>>;
         let http_clients = build_http_clients(config).await?;
 
-        let response_handlers: Arc<Vec<Box<dyn ResponseHandler>>> = Arc::new(vec![
+        let response_processor = ResponseProcessor::new(vec![
             Box::new(SuccessHandler),
             Box::new(crate::handlers::timeout::TimeoutHandler),
             Box::new(RateLimitHandler),
@@ -336,7 +336,7 @@ impl AppState {
                 redis_pool,
                 key_manager,
                 http_clients: Arc::new(RwLock::new(http_clients)),
-                response_handlers,
+                response_processor,
                 start_time: Instant::now(),
                 config: Arc::new(RwLock::new(config.clone())),
                 system_info: SystemInfoCollector::new(),

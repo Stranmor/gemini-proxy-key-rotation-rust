@@ -11,7 +11,9 @@ async fn test_token_validation_with_limit() {
         .expect("Failed to initialize tokenizer");
 
     // Test with a request that should exceed a very low token limit
-    let large_content = "This is a test message that should exceed the token limit when repeated many times. ".repeat(100);
+    let large_content =
+        "This is a test message that should exceed the token limit when repeated many times. "
+            .repeat(100);
     let request_body = json!({
         "messages": [
             {
@@ -27,13 +29,17 @@ async fn test_token_validation_with_limit() {
         Err(AppError::RequestTooLarge { size, max_size }) => {
             assert!(size > max_size);
             assert_eq!(max_size, 10);
-            println!("Successfully rejected request with {} tokens (limit: {})", size, max_size);
+            println!(
+                "Successfully rejected request with {} tokens (limit: {})",
+                size, max_size
+            );
         }
         _ => panic!("Expected RequestTooLarge error, got: {:?}", result),
     }
 
     // Test with reasonable limit (should pass)
-    let result = gemini_proxy::handlers::validate_token_count_with_limit(&request_body, Some(10000));
+    let result =
+        gemini_proxy::handlers::validate_token_count_with_limit(&request_body, Some(10000));
     assert!(result.is_ok(), "Request should pass with reasonable limit");
 
     // Test with no limit (should pass)
@@ -67,9 +73,15 @@ async fn test_token_validation_gemini_format() {
         Err(AppError::RequestTooLarge { size, max_size }) => {
             assert!(size > max_size);
             assert_eq!(max_size, 10);
-            println!("Successfully rejected Gemini format request with {} tokens (limit: {})", size, max_size);
+            println!(
+                "Successfully rejected Gemini format request with {} tokens (limit: {})",
+                size, max_size
+            );
         }
-        _ => panic!("Expected RequestTooLarge error for Gemini format, got: {:?}", result),
+        _ => panic!(
+            "Expected RequestTooLarge error for Gemini format, got: {:?}",
+            result
+        ),
     }
 }
 
@@ -87,5 +99,8 @@ fn test_token_validation_without_tokenizer() {
 
     // Should not panic and should allow request to proceed
     let result = gemini_proxy::handlers::validate_token_count_with_limit(&request_body, Some(10));
-    assert!(result.is_ok(), "Should not fail when tokenizer is not initialized");
+    assert!(
+        result.is_ok(),
+        "Should not fail when tokenizer is not initialized"
+    );
 }

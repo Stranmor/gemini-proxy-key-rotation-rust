@@ -43,7 +43,7 @@ fn create_test_config(groups: Vec<KeyGroup>, server_port: u16, _db_num: usize) -
             port: server_port,
             top_p: None,
             admin_token: Some("test_token".to_string()),
-            test_mode: true,
+            test_mode: false,
             connect_timeout_secs: 10,
             request_timeout_secs: 60,
         },
@@ -768,20 +768,29 @@ async fn test_url_translation_for_v1_path() {
 
 #[tokio::test]
 async fn test_proxy_handler_returns_502_on_internal_error_from_try_request_with_key() {
-    // Configure an invalid target_url to force URL parse/join error inside try_request_with_key,
-    // which should be treated as non-UpstreamServiceError and mapped to 502 by proxy_handler.
+    // 1. Setup Mock Server to return 500
+    let server = MockServer::start().await;
     let test_api_key = "any-key";
-    let invalid_target = "http:// invalid url"; // space makes it invalid
+    let test_path = "/v1/models";
+    let expected_path = "/v1beta/openai/models";
 
+    Mock::given(method("GET"))
+        .and(path(expected_path))
+        .and(query_param("key", test_api_key))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    // 2. Setup Config and State with a VALID target_url
     let db_num = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let dummy_config_path = create_dummy_config_path_for_test(&temp_dir);
 
     let test_group = KeyGroup {
-        name: "invalid-target-group".to_string(),
+        name: "internal-error-group".to_string(),
         api_keys: vec![test_api_key.to_string()],
         model_aliases: vec![],
-        target_url: invalid_target.to_string(),
+        target_url: server.uri(), // Use the valid mock server URL
         proxy_url: None,
         top_p: None,
     };
@@ -791,18 +800,16 @@ async fn test_proxy_handler_returns_502_on_internal_error_from_try_request_with_
         .expect("AppState failed");
     let app_state = Arc::new(app_state_instance);
 
-    let response = call_proxy_handler(
-        app_state,
-        Method::GET,
-        "/v1/models",
-        axum::body::Body::empty(),
-    )
-    .await;
+    // 3. Call handler
+    let response =
+        call_proxy_handler(app_state, Method::GET, test_path, axum::body::Body::empty()).await;
 
+    // 4. Assertions
+    // The handler should now receive a 500 error from upstream and return a 502 Bad Gateway
     assert_eq!(
         response.status(),
         StatusCode::BAD_GATEWAY,
-        "Non-upstream service errors must map to 502"
+        "Upstream 500 errors should map to 502 Bad Gateway"
     );
 }
 
