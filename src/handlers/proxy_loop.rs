@@ -131,6 +131,25 @@ pub async fn proxy_loop(
                             }
                         }
                     }
+                } else if let Some(messages) = json_body.get("messages").and_then(|m| m.as_array()) {
+                    let mut text_to_tokenize = String::new();
+                    for message in messages {
+                        if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                            text_to_tokenize.push_str(content);
+                            text_to_tokenize.push('\n'); // Add separator between messages
+                        }
+                    }
+
+                    if !text_to_tokenize.is_empty() {
+                        match count_ml_calibrated_gemini_tokens(&text_to_tokenize) {
+                            Ok(token_count) => {
+                                total_tokens += token_count;
+                            }
+                            Err(e) => {
+                                warn!("Token counting for messages failed: {}", e);
+                            }
+                        }
+                    }
                 }
 
                 if total_tokens > 0 && total_tokens as u64 > max_tokens {
