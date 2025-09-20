@@ -156,6 +156,7 @@ groups:
 server:
   port: 4806
   admin_token: "your-secure-admin-token"  # For admin dashboard
+  max_tokens_per_request: 125000  # Token limit per request (prevents quota exhaustion)
 
 # Redis for persistence (optional)
 redis_url: "redis://localhost:6379"
@@ -168,6 +169,25 @@ circuit_breaker:
 # Rate limiting
 max_failures_threshold: 3
 temporary_block_minutes: 5
+```
+
+### 🛡️ Token Limit Protection
+
+The proxy includes built-in protection against quota exhaustion by validating token counts before forwarding requests:
+
+- **Automatic validation**: Counts tokens in incoming requests using ML-calibrated tokenizer
+- **Configurable limits**: Set `max_tokens_per_request` in your config
+- **Clear error messages**: Returns HTTP 400 with detailed token count information
+- **Format support**: Works with both OpenAI (`messages`) and Gemini (`contents`) formats
+
+Example error response for oversized requests:
+```json
+{
+  "error": {
+    "message": "Request body too large: 150000 tokens (max: 125000)",
+    "type": "validation_error"
+  }
+}
 ```
 
 ### Testing Your Setup

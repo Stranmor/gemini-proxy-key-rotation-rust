@@ -94,24 +94,76 @@ struct RequestContext<'a> {
     body: &'a Bytes,
 }
 
-fn validate_token_count_with_limit(json_body: &serde_json::Value) -> Result<()> {
-    let total_text: String = json_body
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .map(|messages| {
-            messages
-                .iter()
-                .filter_map(|message| message.get("content").and_then(|c| c.as_str()))
-                .collect::<Vec<&str>>()
-                .join("\n")
-        })
-        .unwrap_or_default();
+pub fn validate_token_count_with_limit(json_body: &serde_json::Value, max_tokens: Option<u64>) -> Result<()> {
+    // If no limit is configured, skip validation
+    let max_tokens = match max_tokens {
+        Some(limit) => limit,
+        None => return Ok(()),
+    };
 
-    if total_text.is_empty() {
-        return Ok(());
+    let mut total_tokens = 0usize;
+
+    // Handle different request formats
+    if let Some(contents) = json_body.get("contents") {
+        // Gemini native format
+        let mut text_to_tokenize = String::new();
+        if let Some(contents_array) = contents.as_array() {
+            for content in contents_array {
+                if let Some(parts) = content.get("parts").and_then(|p| p.as_array()) {
+                    for part in parts {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            text_to_tokenize.push_str(text);
+                        }
+                    }
+                }
+            }
+        } else if let Some(text) = contents.as_str() {
+            text_to_tokenize.push_str(text);
+        }
+
+        if !text_to_tokenize.is_empty() {
+            match crate::tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(&text_to_tokenize) {
+                Ok(token_count) => {
+                    total_tokens += token_count;
+                }
+                Err(e) => {
+                    warn!("Token counting failed: {}", e);
+                    // If tokenizer fails, allow request to proceed
+                    return Ok(());
+                }
+            }
+        }
+    } else if let Some(messages) = json_body.get("messages").and_then(|m| m.as_array()) {
+        // OpenAI format
+        let mut text_to_tokenize = String::new();
+        for message in messages {
+            if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                text_to_tokenize.push_str(content);
+                text_to_tokenize.push('\n'); // Add separator between messages
+            }
+        }
+
+        if !text_to_tokenize.is_empty() {
+            match crate::tokenizer::gemini_ml_calibrated::count_ml_calibrated_gemini_tokens(&text_to_tokenize) {
+                Ok(token_count) => {
+                    total_tokens += token_count;
+                }
+                Err(e) => {
+                    warn!("Token counting for messages failed: {}", e);
+                    // If tokenizer fails, allow request to proceed
+                    return Ok(());
+                }
+            }
+        }
     }
 
-    // Token validation is now handled by the smart parallel tokenizer
+    // Check if token count exceeds the limit
+    if total_tokens > 0 && total_tokens as u64 > max_tokens {
+        return Err(AppError::RequestTooLarge {
+            size: total_tokens,
+            max_size: max_tokens as usize,
+        });
+    }
 
     Ok(())
 }
@@ -126,13 +178,13 @@ pub fn is_streaming_request(body_bytes: &Bytes) -> bool {
     }
 }
 
-fn process_request_body(body_bytes: Bytes, top_p: Option<f64>) -> Result<(Bytes, HeaderMap, bool)> {
+fn process_request_body(body_bytes: Bytes, top_p: Option<f64>, max_tokens: Option<u64>) -> Result<(Bytes, HeaderMap, bool)> {
     let mut json_body_opt: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let mut headers = HeaderMap::new();
     let is_streaming = is_streaming_request(&body_bytes);
 
     if let Some(json_body) = &json_body_opt {
-        validate_token_count_with_limit(json_body)?;
+        validate_token_count_with_limit(json_body, max_tokens)?;
     }
 
     // Conditionally inject top_p
@@ -217,9 +269,12 @@ pub async fn proxy_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         .map_err(|e| AppError::internal(e.to_string()))?;
 
     // Process request body (token validation and top_p injection)
-    let top_p = state.config.read().await.top_p;
+    let (top_p, max_tokens) = {
+        let config = state.config.read().await;
+        (config.top_p, config.server.max_tokens_per_request)
+    };
     let (processed_body, additional_headers, is_streaming) =
-        process_request_body(body_bytes, top_p.map(|v| v as f64))?;
+        process_request_body(body_bytes, top_p.map(|v| v as f64), max_tokens)?;
 
     // Merge additional headers
     for (key, value) in additional_headers {
@@ -459,7 +514,7 @@ mod token_limit_tests {
         let body = json!({
             "messages": [{"role": "user", "content": ""}]
         });
-        let res = validate_token_count_with_limit(&body);
+        let res = validate_token_count_with_limit(&body, None);
         assert!(
             res.is_ok(),
             "Should not error without tokenizer on empty content"
